@@ -18,7 +18,7 @@ class MemoryService:
         importance: str = "medium",
     ) -> bool:
         with Session(engine) as session:
-            # Check for an exact duplicate
+            # Check for an exact duplicate first
             existing_memory = session.scalar(
                 select(Memory).where(
                     Memory.user_id == user_id,
@@ -29,11 +29,18 @@ class MemoryService:
             if existing_memory:
                 return False
 
+            # Generate embedding once
+            embedding = self.embedding_service.create_embedding(
+                memory_text
+            )
+
+            # Save memory and its embedding
             memory = Memory(
                 user_id=user_id,
                 memory_text=memory_text,
                 category=category,
                 importance=importance,
+                embedding=embedding.tolist(),
             )
 
             session.add(memory)
@@ -61,32 +68,50 @@ class MemoryService:
         user_id: str,
         new_memory: str,
         threshold: float = 0.85,
+        limit: int = 10,
     ) -> list[dict]:
+        # Generate the query embedding only once
+        query_embedding = (
+            self.embedding_service
+            .create_embedding(new_memory)
+            .tolist()
+        )
+
+        # Cosine distance:
+        # 0.0 = identical
+        # larger value = less similar
+        max_distance = 1.0 - threshold
+
         with Session(engine) as session:
-            statement = (
-                select(Memory)
-                .where(Memory.user_id == user_id)
-                .order_by(Memory.created_at)
+            distance_expression = Memory.embedding.cosine_distance(
+                query_embedding
             )
 
-            existing_memories = session.scalars(statement).all()
+            statement = (
+                select(Memory, distance_expression.label("distance"))
+                .where(
+                    Memory.user_id == user_id,
+                    Memory.embedding.is_not(None),
+                    distance_expression <= max_distance,
+                )
+                .order_by(distance_expression)
+                .limit(limit)
+            )
+
+            results = session.execute(statement).all()
 
             similar_memories = []
 
-            for memory in existing_memories:
-                score = self.embedding_service.similarity(
-                    new_memory,
-                    memory.memory_text,
-                )
+            for memory, distance in results:
+                similarity = 1.0 - distance
 
-                if score >= threshold:
-                    similar_memories.append(
-                        {
-                            "id": memory.id,
-                            "memory": memory.memory_text,
-                            "similarity": round(score, 4),
-                        }
-                    )
+                similar_memories.append(
+                    {
+                        "id": memory.id,
+                        "memory": memory.memory_text,
+                        "similarity": round(similarity, 4),
+                    }
+                )
 
             return similar_memories
 
@@ -103,8 +128,17 @@ class MemoryService:
             if not memory:
                 return False
 
+            # Update memory text
             memory.memory_text = memory_text
 
+            # Regenerate embedding because text changed
+            embedding = self.embedding_service.create_embedding(
+                memory_text
+            )
+
+            memory.embedding = embedding.tolist()
+
+            # Update optional fields
             if category is not None:
                 memory.category = category
 
@@ -126,4 +160,3 @@ class MemoryService:
             session.commit()
 
             return True
-
