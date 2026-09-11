@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -47,4 +48,9 @@ class Memory(Base):
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
         nullable=False,
+    )
+
+    embedding: Mapped[list[float] | None] = mapped_column(
+        VECTOR(384),
+        nullable=True,
     )
