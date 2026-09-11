@@ -1,13 +1,13 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.base import Base
 
 
-class Message(Base):
-    __tablename__ = "messages"
+class Conversation(Base):
+    __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -20,23 +20,21 @@ class Message(Base):
         nullable=False,
     )
 
-    conversation_id: Mapped[int] = mapped_column(
-    Integer,
-    nullable=False,
-    )
-
-    role: Mapped[str] = mapped_column(
-        String(20),
+    title: Mapped[str] = mapped_column(
+        String(200),
         nullable=False,
-    )
-
-    content: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
+        default="New Conversation",
     )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
         nullable=False,
     )
