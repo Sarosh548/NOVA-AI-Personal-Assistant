@@ -6,6 +6,11 @@ from models.memory import Memory
 from services.embedding_service import EmbeddingService
 
 
+# Similarity thresholds
+MEMORY_MERGE_THRESHOLD = 0.90
+MEMORY_RELATED_THRESHOLD = 0.75
+
+
 class MemoryService:
     def __init__(self):
         self.embedding_service = EmbeddingService()
@@ -70,23 +75,24 @@ class MemoryService:
         memory_text: str,
         category: str,
         importance: str = "medium",
-        dedup_threshold: float = 0.75,
     ) -> bool:
         """
-        Add a long-term memory only when a sufficiently similar
-        memory does not already exist for this user.
+        Save a new memory or safely update an existing near-duplicate.
+
+        Behavior:
+        - Exact duplicate -> ignore
+        - Similarity >= 0.90 -> update existing memory
+        - Similarity 0.75-0.90 -> treat as related and ignore
+        - Similarity < 0.75 -> create new memory
         """
 
         if not memory_text.strip():
             raise ValueError("memory_text cannot be empty")
 
-        if not 0.0 <= dedup_threshold <= 1.0:
-            raise ValueError(
-                "dedup_threshold must be between 0.0 and 1.0"
-            )
-
         with Session(engine) as session:
-            # Exact duplicate check first.
+            # -------------------------------------------------
+            # 1. Exact duplicate check
+            # -------------------------------------------------
             existing_memory = session.scalar(
                 select(Memory).where(
                     Memory.user_id == user_id,
@@ -97,39 +103,79 @@ class MemoryService:
             if existing_memory:
                 return False
 
-            # Generate the embedding only once.
+            # -------------------------------------------------
+            # 2. Create embedding once
+            # -------------------------------------------------
             embedding = self.embedding_service.create_embedding(
                 memory_text
             )
 
             embedding_list = embedding.tolist()
 
-            # Semantic duplicate check.
+            # -------------------------------------------------
+            # 3. Find related memories
+            # -------------------------------------------------
+            session.execute(
+                text(
+                    "SET LOCAL hnsw.iterative_scan = strict_order"
+                )
+            )
+
             similar_memories = self._find_similar_by_embedding(
                 session=session,
                 user_id=user_id,
                 query_embedding=embedding_list,
-                threshold=dedup_threshold,
+                threshold=MEMORY_RELATED_THRESHOLD,
                 limit=1,
             )
 
-            # A sufficiently similar memory already exists.
-            if similar_memories:
-                return False
+            # -------------------------------------------------
+            # 4. No similar memory -> create new memory
+            # -------------------------------------------------
+            if not similar_memories:
+                memory = Memory(
+                    user_id=user_id,
+                    memory_text=memory_text,
+                    category=category,
+                    importance=importance,
+                    embedding=embedding_list,
+                )
 
-            # Save memory + embedding.
-            memory = Memory(
-                user_id=user_id,
-                memory_text=memory_text,
-                category=category,
-                importance=importance,
-                embedding=embedding_list,
-            )
+                session.add(memory)
+                session.commit()
 
-            session.add(memory)
-            session.commit()
+                return True
 
-            return True
+            # -------------------------------------------------
+            # 5. Similar memory found
+            # -------------------------------------------------
+            match = similar_memories[0]
+
+            if match["similarity"] >= MEMORY_MERGE_THRESHOLD:
+                # Strong duplicate:
+                # update the existing memory with the new wording.
+                memory = session.get(
+                    Memory,
+                    match["id"],
+                )
+
+                if not memory:
+                    return False
+
+                memory.memory_text = memory_text
+                memory.embedding = embedding_list
+                memory.category = category
+                memory.importance = importance
+
+                session.commit()
+
+                return True
+
+            # -------------------------------------------------
+            # 6. Related but not identical:
+            # do not overwrite or create another duplicate.
+            # -------------------------------------------------
+            return False
 
     def get_memories(self, user_id: str) -> list[str]:
         with Session(engine) as session:
@@ -153,14 +199,21 @@ class MemoryService:
         threshold: float = 0.70,
         limit: int = 8,
     ) -> list[dict]:
-        """
-        Find semantically similar memories using pgvector.
-        """
+        """Find semantically similar memories using pgvector."""
 
         if not new_memory.strip():
             raise ValueError("new_memory cannot be empty")
 
-        # Generate the query embedding once.
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError(
+                "threshold must be between 0.0 and 1.0"
+            )
+
+        if limit < 1:
+            raise ValueError(
+                "limit must be greater than 0"
+            )
+
         query_embedding = (
             self.embedding_service
             .create_embedding(new_memory)
@@ -168,7 +221,6 @@ class MemoryService:
         )
 
         with Session(engine) as session:
-            # Enable iterative HNSW scans for filtered searches.
             session.execute(
                 text(
                     "SET LOCAL hnsw.iterative_scan = strict_order"
@@ -199,17 +251,14 @@ class MemoryService:
             if not memory:
                 return False
 
-            # Update text.
             memory.memory_text = memory_text
 
-            # Regenerate embedding because text changed.
             embedding = self.embedding_service.create_embedding(
                 memory_text
             )
 
             memory.embedding = embedding.tolist()
 
-            # Update optional fields.
             if category is not None:
                 memory.category = category
 

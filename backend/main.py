@@ -48,7 +48,9 @@ def chat(request: ChatRequest):
     )
 
     # ---------------------------------------------------------
-    # 2. Retrieve recent conversation history
+    # 2. Get recent conversation history
+    #
+    # This is the history BEFORE the current message.
     # ---------------------------------------------------------
     history = conversation_service.get_history(
         user_id=request.user_id,
@@ -57,10 +59,7 @@ def chat(request: ChatRequest):
     )
 
     # ---------------------------------------------------------
-    # 3. Retrieve only relevant long-term memories
-    #
-    # Instead of loading every memory, semantic search finds
-    # memories related to the current user message.
+    # 3. Retrieve relevant long-term memories
     # ---------------------------------------------------------
     relevant_memories = memory_service.find_similar_memories(
         user_id=request.user_id,
@@ -69,6 +68,7 @@ def chat(request: ChatRequest):
         limit=MEMORY_LIMIT,
     )
 
+    # Convert relevant memories into prompt context
     memory_context = "\n".join(
         f"- {memory['memory']}"
         for memory in relevant_memories
@@ -78,7 +78,7 @@ def chat(request: ChatRequest):
         memory_context = "No relevant long-term memory found."
 
     # ---------------------------------------------------------
-    # 4. Build recent conversation context
+    # 4. Convert recent history into prompt context
     # ---------------------------------------------------------
     history_context = "\n".join(
         f"{message['role']}: {message['content']}"
@@ -103,13 +103,20 @@ Current user message:
 
 Respond naturally as NOVA.
 
-Use the relevant memory and recent conversation when helpful.
-Do not mention the internal memory, embedding, database,
-vector search, or conversation system unless the user
-explicitly asks about how NOVA works.
+Use relevant memory and recent conversation when helpful.
 
-Do not invent personal facts that are not present in the
-provided context.
+Do not mention:
+- internal memory
+- embeddings
+- vector search
+- PostgreSQL
+- databases
+- conversation storage
+
+unless the user explicitly asks how NOVA works.
+
+Do not invent personal facts that are not present
+in the provided context.
 """
 
     # ---------------------------------------------------------
@@ -138,14 +145,16 @@ provided context.
     )
 
     # ---------------------------------------------------------
-    # 9. Extract useful long-term information
+    # 9. Extract useful long-term memory
     # ---------------------------------------------------------
     new_memory = llm_service.extract_memory(
         request.message
     )
 
     # ---------------------------------------------------------
-    # 10. Save extracted memory + embedding
+    # 10. Save new memory if it is useful
+    #
+    # MemoryService handles semantic deduplication.
     # ---------------------------------------------------------
     if new_memory:
         memory_service.add_memory(
@@ -156,11 +165,9 @@ provided context.
         )
 
     # ---------------------------------------------------------
-    # 11. Return response
+    # 11. Return only the public API response
     # ---------------------------------------------------------
     return {
         "response": response,
         "conversation_id": conversation_id,
-        "memories": relevant_memories,
-        "history": history,
     }
