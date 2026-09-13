@@ -6,9 +6,14 @@ from models.memory import Memory
 from services.embedding_service import EmbeddingService
 
 
-# Similarity thresholds
 MEMORY_MERGE_THRESHOLD = 0.90
 MEMORY_RELATED_THRESHOLD = 0.75
+
+IMPORTANCE_BOOST = {
+    "high": 0.05,
+    "medium": 0.02,
+    "low": 0.00,
+}
 
 
 class MemoryService:
@@ -23,7 +28,7 @@ class MemoryService:
         threshold: float,
         limit: int = 10,
     ) -> list[dict]:
-        """Find memories similar to an already-generated embedding."""
+        """Find semantically similar memories for a user."""
 
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("threshold must be between 0.0 and 1.0")
@@ -59,15 +64,32 @@ class MemoryService:
             if similarity < threshold:
                 continue
 
+            importance_boost = IMPORTANCE_BOOST.get(
+                memory.importance,
+                0.02,
+            )
+
+            ranking_score = similarity + importance_boost
+
             similar_memories.append(
                 {
                     "id": memory.id,
                     "memory": memory.memory_text,
+                    "category": memory.category,
+                    "importance": memory.importance,
                     "similarity": round(similarity, 4),
+                    "ranking_score": round(ranking_score, 4),
                 }
             )
 
-        return similar_memories
+        # Similarity remains the main signal.
+        # Importance only gives a small ranking advantage.
+        similar_memories.sort(
+            key=lambda item: item["ranking_score"],
+            reverse=True,
+        )
+
+        return similar_memories[:limit]
 
     def add_memory(
         self,
@@ -78,21 +100,22 @@ class MemoryService:
     ) -> bool:
         """
         Save a new memory or safely update an existing near-duplicate.
-
-        Behavior:
-        - Exact duplicate -> ignore
-        - Similarity >= 0.90 -> update existing memory
-        - Similarity 0.75-0.90 -> treat as related and ignore
-        - Similarity < 0.75 -> create new memory
         """
 
         if not memory_text.strip():
             raise ValueError("memory_text cannot be empty")
 
+        valid_importance = {
+            "high",
+            "medium",
+            "low",
+        }
+
+        if importance not in valid_importance:
+            importance = "medium"
+
         with Session(engine) as session:
-            # -------------------------------------------------
-            # 1. Exact duplicate check
-            # -------------------------------------------------
+            # Exact duplicate check.
             existing_memory = session.scalar(
                 select(Memory).where(
                     Memory.user_id == user_id,
@@ -103,24 +126,21 @@ class MemoryService:
             if existing_memory:
                 return False
 
-            # -------------------------------------------------
-            # 2. Create embedding once
-            # -------------------------------------------------
+            # Generate embedding once.
             embedding = self.embedding_service.create_embedding(
                 memory_text
             )
 
             embedding_list = embedding.tolist()
 
-            # -------------------------------------------------
-            # 3. Find related memories
-            # -------------------------------------------------
+            # Enable iterative HNSW scans.
             session.execute(
                 text(
                     "SET LOCAL hnsw.iterative_scan = strict_order"
                 )
             )
 
+            # Find related memories.
             similar_memories = self._find_similar_by_embedding(
                 session=session,
                 user_id=user_id,
@@ -129,9 +149,7 @@ class MemoryService:
                 limit=1,
             )
 
-            # -------------------------------------------------
-            # 4. No similar memory -> create new memory
-            # -------------------------------------------------
+            # No related memory -> create new memory.
             if not similar_memories:
                 memory = Memory(
                     user_id=user_id,
@@ -146,14 +164,10 @@ class MemoryService:
 
                 return True
 
-            # -------------------------------------------------
-            # 5. Similar memory found
-            # -------------------------------------------------
             match = similar_memories[0]
 
+            # Strong duplicate -> update existing memory.
             if match["similarity"] >= MEMORY_MERGE_THRESHOLD:
-                # Strong duplicate:
-                # update the existing memory with the new wording.
                 memory = session.get(
                     Memory,
                     match["id"],
@@ -171,10 +185,7 @@ class MemoryService:
 
                 return True
 
-            # -------------------------------------------------
-            # 6. Related but not identical:
-            # do not overwrite or create another duplicate.
-            # -------------------------------------------------
+            # Related but not strong enough to merge.
             return False
 
     def get_memories(self, user_id: str) -> list[str]:
@@ -199,20 +210,10 @@ class MemoryService:
         threshold: float = 0.70,
         limit: int = 8,
     ) -> list[dict]:
-        """Find semantically similar memories using pgvector."""
+        """Find relevant memories using similarity + importance ranking."""
 
         if not new_memory.strip():
             raise ValueError("new_memory cannot be empty")
-
-        if not 0.0 <= threshold <= 1.0:
-            raise ValueError(
-                "threshold must be between 0.0 and 1.0"
-            )
-
-        if limit < 1:
-            raise ValueError(
-                "limit must be greater than 0"
-            )
 
         query_embedding = (
             self.embedding_service
@@ -263,6 +264,9 @@ class MemoryService:
                 memory.category = category
 
             if importance is not None:
+                if importance not in {"high", "medium", "low"}:
+                    importance = "medium"
+
                 memory.importance = importance
 
             session.commit()

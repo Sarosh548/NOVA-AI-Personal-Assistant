@@ -17,7 +17,7 @@ conversation_service = ConversationService()
 
 # Retrieval configuration
 MEMORY_LIMIT = 8
-MEMORY_THRESHOLD = 0.70
+MEMORY_THRESHOLD = 0.65
 HISTORY_LIMIT = 20
 
 
