@@ -156,3 +156,77 @@ Do not add explanations.
             "category": category,
             "importance": importance,
         }
+
+    def resolve_memory_conflict(
+        self,
+        new_memory: str,
+        new_category: str,
+        existing_memory: str,
+    ) -> str:
+        """
+        Decide whether a new memory conflicts with an existing memory.
+
+        Returns:
+            "UPDATE" when the new fact replaces or changes the old fact.
+            "KEEP" when both facts can remain true.
+        """
+
+        conflict_instructions = f"""
+You are NOVA's memory conflict resolver.
+
+Compare these two personal memory facts.
+
+Existing memory:
+{existing_memory}
+
+New memory:
+{new_memory}
+
+Category:
+{new_category}
+
+Return ONLY one word:
+
+UPDATE
+Use UPDATE when the new fact clearly replaces, changes,
+or corrects the existing fact.
+
+KEEP
+Use KEEP when both facts can remain true together,
+or when there is no clear conflict.
+
+Examples:
+
+Existing:
+I prefer Python.
+
+New:
+I now prefer Java for my projects.
+
+Answer:
+UPDATE
+
+Existing:
+I use Python for AI projects.
+
+New:
+I use Java for Android development.
+
+Answer:
+KEEP
+
+Do not add explanations.
+"""
+
+        response = self.client.responses.create(
+            model="openai/gpt-oss-20b",
+            instructions=conflict_instructions,
+            input="Resolve the memory conflict.",
+        )
+
+        decision = response.output_text.strip().upper()
+
+        if decision == "UPDATE":
+            return "UPDATE"
+
+        return "KEEP"

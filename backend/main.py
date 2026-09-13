@@ -11,9 +11,8 @@ app = FastAPI()
 
 # Shared service instances
 llm_service = LLMService()
-memory_service = MemoryService()
+memory_service = MemoryService(llm_service)
 conversation_service = ConversationService()
-
 
 # Retrieval configuration
 MEMORY_LIMIT = 8

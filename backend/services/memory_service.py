@@ -4,10 +4,11 @@ from sqlalchemy.orm import Session
 from database.connection import engine
 from models.memory import Memory
 from services.embedding_service import EmbeddingService
+from services.llm_service import LLMService
 
 
 MEMORY_MERGE_THRESHOLD = 0.90
-MEMORY_RELATED_THRESHOLD = 0.75
+MEMORY_RELATED_THRESHOLD = 0.60
 
 IMPORTANCE_BOOST = {
     "high": 0.05,
@@ -17,8 +18,9 @@ IMPORTANCE_BOOST = {
 
 
 class MemoryService:
-    def __init__(self):
+    def __init__(self, llm_service: LLMService | None = None):
         self.embedding_service = EmbeddingService()
+        self.llm_service = llm_service or LLMService()
 
     def _find_similar_by_embedding(
         self,
@@ -27,28 +29,45 @@ class MemoryService:
         query_embedding: list[float],
         threshold: float,
         limit: int = 10,
+        category: str | None = None,
     ) -> list[dict]:
-        """Find semantically similar memories for a user."""
+        """
+        Find semantically similar memories.
+
+        Similarity is the primary signal.
+        Importance provides a small ranking boost.
+        """
 
         if not 0.0 <= threshold <= 1.0:
-            raise ValueError("threshold must be between 0.0 and 1.0")
+            raise ValueError(
+                "threshold must be between 0.0 and 1.0"
+            )
 
         if limit < 1:
-            raise ValueError("limit must be greater than 0")
+            raise ValueError(
+                "limit must be greater than 0"
+            )
 
         distance_expression = Memory.embedding.cosine_distance(
             query_embedding
         )
+
+        filters = [
+            Memory.user_id == user_id,
+            Memory.embedding.is_not(None),
+        ]
+
+        if category is not None:
+            filters.append(
+                Memory.category == category
+            )
 
         statement = (
             select(
                 Memory,
                 distance_expression.label("distance"),
             )
-            .where(
-                Memory.user_id == user_id,
-                Memory.embedding.is_not(None),
-            )
+            .where(*filters)
             .order_by(distance_expression)
             .limit(limit)
         )
@@ -77,13 +96,17 @@ class MemoryService:
                     "memory": memory.memory_text,
                     "category": memory.category,
                     "importance": memory.importance,
-                    "similarity": round(similarity, 4),
-                    "ranking_score": round(ranking_score, 4),
+                    "similarity": round(
+                        similarity,
+                        4,
+                    ),
+                    "ranking_score": round(
+                        ranking_score,
+                        4,
+                    ),
                 }
             )
 
-        # Similarity remains the main signal.
-        # Importance only gives a small ranking advantage.
         similar_memories.sort(
             key=lambda item: item["ranking_score"],
             reverse=True,
@@ -91,19 +114,78 @@ class MemoryService:
 
         return similar_memories[:limit]
 
+    def _create_memory(
+        self,
+        session: Session,
+        user_id: str,
+        memory_text: str,
+        category: str,
+        importance: str,
+        embedding: list[float],
+    ) -> int:
+        """Create a memory row and return its ID."""
+
+        memory = Memory(
+            user_id=user_id,
+            memory_text=memory_text,
+            category=category,
+            importance=importance,
+            embedding=embedding,
+        )
+
+        session.add(memory)
+        session.flush()
+
+        return memory.id
+
+    def _update_memory_row(
+        self,
+        memory: Memory,
+        memory_text: str,
+        category: str,
+        importance: str,
+        embedding: list[float],
+    ) -> None:
+        """Update an existing memory row."""
+
+        memory.memory_text = memory_text
+        memory.category = category
+        memory.importance = importance
+        memory.embedding = embedding
+
     def add_memory(
         self,
         user_id: str,
         memory_text: str,
         category: str,
         importance: str = "medium",
-    ) -> bool:
+    ) -> str:
         """
-        Save a new memory or safely update an existing near-duplicate.
+        Add or update a long-term memory.
+
+        Returns:
+            CREATED
+            UPDATED
+            IGNORED
         """
 
         if not memory_text.strip():
-            raise ValueError("memory_text cannot be empty")
+            raise ValueError(
+                "memory_text cannot be empty"
+            )
+
+        valid_categories = {
+            "identity",
+            "goal",
+            "preference",
+            "project",
+            "interest",
+            "context",
+            "personal",
+        }
+
+        if category not in valid_categories:
+            category = "context"
 
         valid_importance = {
             "high",
@@ -115,7 +197,9 @@ class MemoryService:
             importance = "medium"
 
         with Session(engine) as session:
-            # Exact duplicate check.
+            # -------------------------------------------------
+            # 1. Exact duplicate
+            # -------------------------------------------------
             existing_memory = session.scalar(
                 select(Memory).where(
                     Memory.user_id == user_id,
@@ -124,34 +208,42 @@ class MemoryService:
             )
 
             if existing_memory:
-                return False
+                return "IGNORED"
 
-            # Generate embedding once.
-            embedding = self.embedding_service.create_embedding(
-                memory_text
+            # -------------------------------------------------
+            # 2. Create embedding once
+            # -------------------------------------------------
+            embedding = (
+                self.embedding_service
+                .create_embedding(memory_text)
             )
 
             embedding_list = embedding.tolist()
 
-            # Enable iterative HNSW scans.
+            # -------------------------------------------------
+            # 3. Search related memories in the SAME category
+            # -------------------------------------------------
             session.execute(
                 text(
                     "SET LOCAL hnsw.iterative_scan = strict_order"
                 )
             )
 
-            # Find related memories.
             similar_memories = self._find_similar_by_embedding(
                 session=session,
                 user_id=user_id,
                 query_embedding=embedding_list,
                 threshold=MEMORY_RELATED_THRESHOLD,
-                limit=1,
+                limit=5,
+                category=category,
             )
 
-            # No related memory -> create new memory.
+            # -------------------------------------------------
+            # 4. No related same-category memories
+            # -------------------------------------------------
             if not similar_memories:
-                memory = Memory(
+                self._create_memory(
+                    session=session,
                     user_id=user_id,
                     memory_text=memory_text,
                     category=category,
@@ -159,40 +251,107 @@ class MemoryService:
                     embedding=embedding_list,
                 )
 
-                session.add(memory)
                 session.commit()
 
-                return True
+                return "CREATED"
 
-            match = similar_memories[0]
+            # -------------------------------------------------
+            # 5. Strong duplicate
+            # -------------------------------------------------
+            strongest_match = similar_memories[0]
 
-            # Strong duplicate -> update existing memory.
-            if match["similarity"] >= MEMORY_MERGE_THRESHOLD:
+            if (
+                strongest_match["similarity"]
+                >= MEMORY_MERGE_THRESHOLD
+            ):
                 memory = session.get(
                     Memory,
-                    match["id"],
+                    strongest_match["id"],
                 )
 
                 if not memory:
-                    return False
+                    return "IGNORED"
 
-                memory.memory_text = memory_text
-                memory.embedding = embedding_list
-                memory.category = category
-                memory.importance = importance
+                self._update_memory_row(
+                    memory=memory,
+                    memory_text=memory_text,
+                    category=category,
+                    importance=importance,
+                    embedding=embedding_list,
+                )
 
                 session.commit()
 
-                return True
+                return "UPDATED"
 
-            # Related but not strong enough to merge.
-            return False
+            # -------------------------------------------------
+            # 6. Ask LLM about ALL related candidates
+            # -------------------------------------------------
+            candidate_text = "\n".join(
+                f"{index}. {item['memory']}"
+                for index, item in enumerate(
+                    similar_memories,
+                    start=1,
+                )
+            )
 
-    def get_memories(self, user_id: str) -> list[str]:
+            decision = self.llm_service.resolve_memory_conflict(
+                new_memory=memory_text,
+                new_category=category,
+                existing_memory=candidate_text,
+            )
+
+            # -------------------------------------------------
+            # 7. UPDATE
+            # -------------------------------------------------
+            if decision == "UPDATE":
+                memory = session.get(
+                    Memory,
+                    strongest_match["id"],
+                )
+
+                if not memory:
+                    return "IGNORED"
+
+                self._update_memory_row(
+                    memory=memory,
+                    memory_text=memory_text,
+                    category=category,
+                    importance=importance,
+                    embedding=embedding_list,
+                )
+
+                session.commit()
+
+                return "UPDATED"
+
+            # -------------------------------------------------
+            # 8. KEEP / CREATE
+            # -------------------------------------------------
+            self._create_memory(
+                session=session,
+                user_id=user_id,
+                memory_text=memory_text,
+                category=category,
+                importance=importance,
+                embedding=embedding_list,
+            )
+
+            session.commit()
+
+            return "CREATED"
+
+    def get_memories(
+        self,
+        user_id: str,
+    ) -> list[str]:
+
         with Session(engine) as session:
             statement = (
                 select(Memory)
-                .where(Memory.user_id == user_id)
+                .where(
+                    Memory.user_id == user_id
+                )
                 .order_by(Memory.created_at)
             )
 
@@ -207,13 +366,18 @@ class MemoryService:
         self,
         user_id: str,
         new_memory: str,
-        threshold: float = 0.70,
+        threshold: float = 0.65,
         limit: int = 8,
     ) -> list[dict]:
-        """Find relevant memories using similarity + importance ranking."""
+        """
+        Find relevant memories using semantic similarity
+        plus importance-aware ranking.
+        """
 
         if not new_memory.strip():
-            raise ValueError("new_memory cannot be empty")
+            raise ValueError(
+                "new_memory cannot be empty"
+            )
 
         query_embedding = (
             self.embedding_service
@@ -243,28 +407,38 @@ class MemoryService:
         category: str | None = None,
         importance: str | None = None,
     ) -> bool:
+
         if not memory_text.strip():
-            raise ValueError("memory_text cannot be empty")
+            raise ValueError(
+                "memory_text cannot be empty"
+            )
 
         with Session(engine) as session:
-            memory = session.get(Memory, memory_id)
+            memory = session.get(
+                Memory,
+                memory_id,
+            )
 
             if not memory:
                 return False
 
-            memory.memory_text = memory_text
-
-            embedding = self.embedding_service.create_embedding(
-                memory_text
+            embedding = (
+                self.embedding_service
+                .create_embedding(memory_text)
             )
 
+            memory.memory_text = memory_text
             memory.embedding = embedding.tolist()
 
             if category is not None:
                 memory.category = category
 
             if importance is not None:
-                if importance not in {"high", "medium", "low"}:
+                if importance not in {
+                    "high",
+                    "medium",
+                    "low",
+                }:
                     importance = "medium"
 
                 memory.importance = importance
@@ -273,9 +447,16 @@ class MemoryService:
 
             return True
 
-    def delete_memory(self, memory_id: int) -> bool:
+    def delete_memory(
+        self,
+        memory_id: int,
+    ) -> bool:
+
         with Session(engine) as session:
-            memory = session.get(Memory, memory_id)
+            memory = session.get(
+                Memory,
+                memory_id,
+            )
 
             if not memory:
                 return False
