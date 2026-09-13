@@ -1,16 +1,24 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from services.conversation_service import ConversationService
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
-from services.conversation_service import ConversationService
 
 
 app = FastAPI()
 
+
+# Shared service instances
 llm_service = LLMService()
 memory_service = MemoryService()
 conversation_service = ConversationService()
+
+
+# Retrieval configuration
+MEMORY_LIMIT = 8
+MEMORY_THRESHOLD = 0.70
+HISTORY_LIMIT = 20
 
 
 class ChatRequest(BaseModel):
@@ -21,58 +29,97 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "NOVA backend is running!"}
+    return {
+        "message": "NOVA backend is running!"
+    }
 
 
 @app.post("/chat")
 def chat(request: ChatRequest):
 
+    # ---------------------------------------------------------
     # 1. Get an existing conversation or create a new one
-    conversation_id = conversation_service.get_or_create_conversation(
-        user_id=request.user_id,
-        conversation_id=request.conversation_id,
+    # ---------------------------------------------------------
+    conversation_id = (
+        conversation_service.get_or_create_conversation(
+            user_id=request.user_id,
+            conversation_id=request.conversation_id,
+        )
     )
 
-    # 2. Get previous messages for this conversation
+    # ---------------------------------------------------------
+    # 2. Retrieve recent conversation history
+    # ---------------------------------------------------------
     history = conversation_service.get_history(
         user_id=request.user_id,
         conversation_id=conversation_id,
-        limit=20,
+        limit=HISTORY_LIMIT,
     )
 
-    # 3. Get long-term memories
-    memories = memory_service.get_memories(request.user_id)
+    # ---------------------------------------------------------
+    # 3. Retrieve only relevant long-term memories
+    #
+    # Instead of loading every memory, semantic search finds
+    # memories related to the current user message.
+    # ---------------------------------------------------------
+    relevant_memories = memory_service.find_similar_memories(
+        user_id=request.user_id,
+        new_memory=request.message,
+        threshold=MEMORY_THRESHOLD,
+        limit=MEMORY_LIMIT,
+    )
 
     memory_context = "\n".join(
-        f"- {memory}"
-        for memory in memories
+        f"- {memory['memory']}"
+        for memory in relevant_memories
     )
 
+    if not memory_context:
+        memory_context = "No relevant long-term memory found."
+
+    # ---------------------------------------------------------
+    # 4. Build recent conversation context
+    # ---------------------------------------------------------
     history_context = "\n".join(
         f"{message['role']}: {message['content']}"
         for message in history
     )
 
-    # 4. Build context for NOVA
+    if not history_context:
+        history_context = "No previous conversation yet."
+
+    # ---------------------------------------------------------
+    # 5. Build NOVA's contextual prompt
+    # ---------------------------------------------------------
     prompt = f"""
 Relevant long-term memory:
-{memory_context if memory_context else "No relevant long-term memory yet."}
+{memory_context}
 
-Previous conversation:
-{history_context if history_context else "No previous conversation yet."}
+Recent conversation:
+{history_context}
 
 Current user message:
 {request.message}
 
 Respond naturally as NOVA.
-Use relevant memory and previous conversation when helpful.
-Do not mention the internal memory, database, or conversation system unless the user asks.
+
+Use the relevant memory and recent conversation when helpful.
+Do not mention the internal memory, embedding, database,
+vector search, or conversation system unless the user
+explicitly asks about how NOVA works.
+
+Do not invent personal facts that are not present in the
+provided context.
 """
 
-    # 5. Generate NOVA's response
+    # ---------------------------------------------------------
+    # 6. Generate NOVA's response
+    # ---------------------------------------------------------
     response = llm_service.generate_response(prompt)
 
-    # 6. Save user message
+    # ---------------------------------------------------------
+    # 7. Save the user's message
+    # ---------------------------------------------------------
     conversation_service.save_message(
         user_id=request.user_id,
         conversation_id=conversation_id,
@@ -80,7 +127,9 @@ Do not mention the internal memory, database, or conversation system unless the 
         content=request.message,
     )
 
-    # 7. Save assistant response
+    # ---------------------------------------------------------
+    # 8. Save NOVA's response
+    # ---------------------------------------------------------
     conversation_service.save_message(
         user_id=request.user_id,
         conversation_id=conversation_id,
@@ -88,9 +137,16 @@ Do not mention the internal memory, database, or conversation system unless the 
         content=response,
     )
 
-    # 8. Extract and save useful long-term memory
-    new_memory = llm_service.extract_memory(request.message)
+    # ---------------------------------------------------------
+    # 9. Extract useful long-term information
+    # ---------------------------------------------------------
+    new_memory = llm_service.extract_memory(
+        request.message
+    )
 
+    # ---------------------------------------------------------
+    # 10. Save extracted memory + embedding
+    # ---------------------------------------------------------
     if new_memory:
         memory_service.add_memory(
             user_id=request.user_id,
@@ -99,9 +155,12 @@ Do not mention the internal memory, database, or conversation system unless the 
             importance="medium",
         )
 
+    # ---------------------------------------------------------
+    # 11. Return response
+    # ---------------------------------------------------------
     return {
         "response": response,
         "conversation_id": conversation_id,
-        "memories": memories,
+        "memories": relevant_memories,
         "history": history,
     }
