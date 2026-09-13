@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from database.connection import engine
@@ -34,7 +34,7 @@ class MemoryService:
                 memory_text
             )
 
-            # Save memory and its embedding
+            # Save memory and embedding
             memory = Memory(
                 user_id=user_id,
                 memory_text=memory_text,
@@ -70,6 +70,13 @@ class MemoryService:
         threshold: float = 0.85,
         limit: int = 10,
     ) -> list[dict]:
+        # Validate search parameters
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("threshold must be between 0.0 and 1.0")
+
+        if limit < 1:
+            raise ValueError("limit must be greater than 0")
+
         # Generate the query embedding only once
         query_embedding = (
             self.embedding_service
@@ -77,22 +84,26 @@ class MemoryService:
             .tolist()
         )
 
-        # Cosine distance:
-        # 0.0 = identical
-        # larger value = less similar
-        max_distance = 1.0 - threshold
-
         with Session(engine) as session:
+            # Enable iterative HNSW scans for filtered vector search.
+            # This is useful when user_id filtering reduces the number
+            # of candidate vectors returned by the approximate index.
+            session.execute(
+                text("SET LOCAL hnsw.iterative_scan = strict_order")
+            )
+
             distance_expression = Memory.embedding.cosine_distance(
                 query_embedding
             )
 
             statement = (
-                select(Memory, distance_expression.label("distance"))
+                select(
+                    Memory,
+                    distance_expression.label("distance"),
+                )
                 .where(
                     Memory.user_id == user_id,
                     Memory.embedding.is_not(None),
-                    distance_expression <= max_distance,
                 )
                 .order_by(distance_expression)
                 .limit(limit)
@@ -103,13 +114,21 @@ class MemoryService:
             similar_memories = []
 
             for memory, distance in results:
+                distance = float(distance)
                 similarity = 1.0 - distance
+
+                # Apply semantic similarity threshold
+                if similarity < threshold:
+                    continue
 
                 similar_memories.append(
                     {
                         "id": memory.id,
                         "memory": memory.memory_text,
-                        "similarity": round(similarity, 4),
+                        "similarity": round(
+                            similarity,
+                            4,
+                        ),
                     }
                 )
 

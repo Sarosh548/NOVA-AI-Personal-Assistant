@@ -1,0 +1,8 @@
+fastapi==0.141.1
+uvicorn==0.52.4
+sqlalchemy==2.0.52
+psycopg[binary]==3.3.5
+alembic==1.19.2
+pgvector==0.5.0
+sentence-transformers==6.0.1
+openai==3.11.0
