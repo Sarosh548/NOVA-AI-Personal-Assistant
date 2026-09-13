@@ -49,8 +49,6 @@ def chat(request: ChatRequest):
 
     # ---------------------------------------------------------
     # 2. Get recent conversation history
-    #
-    # This is the history BEFORE the current message.
     # ---------------------------------------------------------
     history = conversation_service.get_history(
         user_id=request.user_id,
@@ -68,7 +66,6 @@ def chat(request: ChatRequest):
         limit=MEMORY_LIMIT,
     )
 
-    # Convert relevant memories into prompt context
     memory_context = "\n".join(
         f"- {memory['memory']}"
         for memory in relevant_memories
@@ -152,16 +149,23 @@ in the provided context.
     )
 
     # ---------------------------------------------------------
-    # 10. Save new memory if it is useful
+    # 10. Save structured memory
+    #
+    # LLMService now returns:
+    # {
+    #     "memory_text": "...",
+    #     "category": "...",
+    #     "importance": "..."
+    # }
     #
     # MemoryService handles semantic deduplication.
     # ---------------------------------------------------------
     if new_memory:
         memory_service.add_memory(
             user_id=request.user_id,
-            memory_text=new_memory,
-            category="personal",
-            importance="medium",
+            memory_text=new_memory["memory_text"],
+            category=new_memory["category"],
+            importance=new_memory["importance"],
         )
 
     # ---------------------------------------------------------

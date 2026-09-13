@@ -1,3 +1,4 @@
+import json
 import os
 
 from openai import OpenAI
@@ -26,33 +27,81 @@ class LLMService:
 
         return response.output_text
 
-    def extract_memory(self, message: str) -> str | None:
+    def extract_memory(self, message: str) -> dict | None:
+        """
+        Extract a useful long-term personal memory from the user's message.
+
+        Returns:
+            {
+                "memory_text": str,
+                "category": str,
+                "importance": str
+            }
+
+        Or None when there is nothing worth remembering.
+        """
+
         memory_instructions = """
-You are NOVA's memory extraction system.
+You are NOVA's long-term memory extraction system.
 
-Read the user's message and decide whether it contains a useful
-long-term personal fact that could improve future conversations.
+Analyze ONLY the user's message.
 
-Save facts such as:
-- name
+Your job is to determine whether the message contains
+a useful long-term personal fact that could improve
+future conversations.
+
+SAVE useful long-term facts such as:
+- user's name
 - long-term goals
 - stable preferences
-- important recurring interests
 - ongoing projects
+- important recurring interests
 - useful personal context
 
-Do NOT save:
-- ordinary questions
+DO NOT SAVE:
 - greetings
-- temporary thoughts
+- ordinary questions
+- temporary feelings or thoughts
 - requests
-- one-time statements that are not useful later
+- commands
+- one-time information with no future value
 - information that is not about the user
 
-If there is a useful long-term fact, return ONLY the fact as one short sentence.
+Choose exactly one category:
 
-If there is nothing worth remembering, return exactly:
-NONE
+- "identity"       for name or personal identity facts
+- "goal"           for long-term goals or ambitions
+- "preference"     for stable likes, dislikes, or preferences
+- "project"        for ongoing projects or work
+- "interest"       for recurring interests
+- "context"        for other useful long-term personal context
+
+Choose exactly one importance:
+
+- "high"   = very useful for future conversations
+- "medium" = useful but not critical
+- "low"    = mildly useful
+
+Return ONLY valid JSON.
+
+When there is a useful memory, return:
+
+{
+  "memory_text": "one short clear sentence",
+  "category": "identity|goal|preference|project|interest|context",
+  "importance": "high|medium|low"
+}
+
+When there is nothing worth remembering, return exactly:
+
+{
+  "memory_text": null,
+  "category": null,
+  "importance": null
+}
+
+Do not add markdown.
+Do not add explanations.
 """
 
         response = self.client.responses.create(
@@ -61,9 +110,49 @@ NONE
             input=message,
         )
 
-        memory = response.output_text.strip()
+        raw_output = response.output_text.strip()
 
-        if memory.upper() == "NONE":
+        try:
+            result = json.loads(raw_output)
+        except json.JSONDecodeError:
             return None
 
-        return memory
+        if not isinstance(result, dict):
+            return None
+
+        memory_text = result.get("memory_text")
+        category = result.get("category")
+        importance = result.get("importance")
+
+        # No useful memory
+        if not memory_text:
+            return None
+
+        # Validate category
+        valid_categories = {
+            "identity",
+            "goal",
+            "preference",
+            "project",
+            "interest",
+            "context",
+        }
+
+        if category not in valid_categories:
+            category = "context"
+
+        # Validate importance
+        valid_importance = {
+            "high",
+            "medium",
+            "low",
+        }
+
+        if importance not in valid_importance:
+            importance = "medium"
+
+        return {
+            "memory_text": memory_text.strip(),
+            "category": category,
+            "importance": importance,
+        }
