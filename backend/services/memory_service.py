@@ -7,7 +7,6 @@ from services.embedding_service import EmbeddingService
 from services.llm_service import LLMService
 
 
-MEMORY_MERGE_THRESHOLD = 0.90
 MEMORY_RELATED_THRESHOLD = 0.60
 
 IMPORTANCE_BOOST = {
@@ -34,7 +33,7 @@ class MemoryService:
         """
         Find semantically similar memories.
 
-        Similarity is the primary signal.
+        Similarity is used to find candidate memories.
         Importance provides a small ranking boost.
         """
 
@@ -256,37 +255,10 @@ class MemoryService:
                 return "CREATED"
 
             # -------------------------------------------------
-            # 5. Strong duplicate
+            # 5. Ask LLM to classify the memory relationship
             # -------------------------------------------------
             strongest_match = similar_memories[0]
 
-            if (
-                strongest_match["similarity"]
-                >= MEMORY_MERGE_THRESHOLD
-            ):
-                memory = session.get(
-                    Memory,
-                    strongest_match["id"],
-                )
-
-                if not memory:
-                    return "IGNORED"
-
-                self._update_memory_row(
-                    memory=memory,
-                    memory_text=memory_text,
-                    category=category,
-                    importance=importance,
-                    embedding=embedding_list,
-                )
-
-                session.commit()
-
-                return "UPDATED"
-
-            # -------------------------------------------------
-            # 6. Ask LLM about ALL related candidates
-            # -------------------------------------------------
             candidate_text = "\n".join(
                 f"{index}. {item['memory']}"
                 for index, item in enumerate(
@@ -300,6 +272,12 @@ class MemoryService:
                 new_category=category,
                 existing_memory=candidate_text,
             )
+
+            # -------------------------------------------------
+            # 6. DUPLICATE
+            # -------------------------------------------------
+            if decision == "DUPLICATE":
+                return "IGNORED"
 
             # -------------------------------------------------
             # 7. UPDATE
@@ -372,6 +350,9 @@ class MemoryService:
         """
         Find relevant memories using semantic similarity
         plus importance-aware ranking.
+
+        This method is for retrieval/inspection only.
+        It does not decide whether memories should be merged.
         """
 
         if not new_memory.strip():

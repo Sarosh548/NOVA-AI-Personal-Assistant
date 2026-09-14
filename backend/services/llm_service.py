@@ -6,6 +6,9 @@ from openai import OpenAI
 from services.personality_service import NOVA_PERSONALITY
 
 
+MODEL_NAME = "openai/gpt-oss-20b"
+
+
 class LLMService:
     def __init__(self):
         groq_api_key = os.getenv("GROQ_API_KEY")
@@ -18,27 +21,86 @@ class LLMService:
             base_url="https://api.groq.com/openai/v1",
         )
 
-    def generate_response(self, message: str) -> str:
-        response = self.client.responses.create(
-            model="openai/gpt-oss-20b",
-            instructions=NOVA_PERSONALITY,
-            input=message,
+    # =========================================================
+    # Internal helper
+    # =========================================================
+
+    def _chat_completion(
+        self,
+        instructions: str,
+        user_input: str,
+    ) -> str:
+        """
+        Safely generate plain text.
+
+        This path intentionally does not expose tools.
+        Tool execution will be added later through NOVA's
+        dedicated tool layer.
+        """
+
+        response = self.client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": instructions,
+                },
+                {
+                    "role": "user",
+                    "content": user_input,
+                },
+            ],
         )
 
-        return response.output_text
+        content = response.choices[0].message.content
 
-    def extract_memory(self, message: str) -> dict | None:
+        if not content:
+            return ""
+
+        return content.strip()
+
+    # =========================================================
+    # Normal NOVA response
+    # =========================================================
+
+    def generate_response(self, message: str) -> str:
         """
-        Extract a useful long-term personal memory from the user's message.
+        Generate NOVA's normal conversational response.
 
-        Returns:
-            {
-                "memory_text": str,
-                "category": str,
-                "importance": str
-            }
+        No tools are exposed here yet.
+        Tool execution will be handled by a dedicated tool layer.
+        """
 
-        Or None when there is nothing worth remembering.
+        instructions = f"""
+{NOVA_PERSONALITY}
+
+You are generating NOVA's conversational response.
+
+IMPORTANT:
+- Respond only with normal text.
+- Do not call tools.
+- Do not output tool calls.
+- Do not output JSON unless the user explicitly asks for JSON.
+- Do not pretend that an action was executed when no tool is available.
+- If the user asks for an action that is not currently available,
+  respond naturally and honestly.
+"""
+
+        return self._chat_completion(
+            instructions=instructions,
+            user_input=message,
+        )
+
+    # =========================================================
+    # Memory extraction
+    # =========================================================
+
+    def extract_memory(
+        self,
+        message: str,
+    ) -> dict | None:
+        """
+        Extract a useful long-term personal memory.
         """
 
         memory_instructions = """
@@ -104,13 +166,10 @@ Do not add markdown.
 Do not add explanations.
 """
 
-        response = self.client.responses.create(
-            model="openai/gpt-oss-20b",
+        raw_output = self._chat_completion(
             instructions=memory_instructions,
-            input=message,
+            user_input=message,
         )
-
-        raw_output = response.output_text.strip()
 
         try:
             result = json.loads(raw_output)
@@ -124,11 +183,9 @@ Do not add explanations.
         category = result.get("category")
         importance = result.get("importance")
 
-        # No useful memory
         if not memory_text:
             return None
 
-        # Validate category
         valid_categories = {
             "identity",
             "goal",
@@ -141,7 +198,6 @@ Do not add explanations.
         if category not in valid_categories:
             category = "context"
 
-        # Validate importance
         valid_importance = {
             "high",
             "medium",
@@ -152,10 +208,14 @@ Do not add explanations.
             importance = "medium"
 
         return {
-            "memory_text": memory_text.strip(),
+            "memory_text": str(memory_text).strip(),
             "category": category,
             "importance": importance,
         }
+
+    # =========================================================
+    # Memory conflict resolver
+    # =========================================================
 
     def resolve_memory_conflict(
         self,
@@ -164,19 +224,21 @@ Do not add explanations.
         existing_memory: str,
     ) -> str:
         """
-        Decide whether a new memory conflicts with an existing memory.
+        Decide how a new memory relates to existing memories.
 
         Returns:
-            "UPDATE" when the new fact replaces or changes the old fact.
-            "KEEP" when both facts can remain true.
+            DUPLICATE
+            UPDATE
+            KEEP
         """
 
         conflict_instructions = f"""
-You are NOVA's memory conflict resolver.
+You are NOVA's long-term memory decision system.
 
-Compare these two personal memory facts.
+Your task is to compare a NEW personal memory with
+one or more EXISTING personal memories.
 
-Existing memory:
+Existing memories:
 {existing_memory}
 
 New memory:
@@ -185,48 +247,143 @@ New memory:
 Category:
 {new_category}
 
+You MUST choose exactly ONE action:
+
+DUPLICATE
+Use DUPLICATE when the new memory expresses the same
+underlying fact as an existing memory, even when the
+wording is different.
+
+Example:
+Existing:
+User wants to become a machine learning engineer.
+
+New:
+My goal is to become a machine learning engineer.
+
+Decision:
+DUPLICATE
+
+UPDATE
+Use UPDATE only when the new memory clearly changes,
+corrects, or replaces an existing fact.
+
+The new memory must provide evidence of a change,
+correction, or replacement.
+
+Example:
+Existing:
+User wants to become a machine learning engineer.
+
+New:
+I changed my goal and now want to become a Data Scientist.
+
+Decision:
+UPDATE
+
+KEEP
+Use KEEP when the new memory is a separate fact that
+can remain true together with the existing memory.
+
+Example:
+Existing:
+User wants to become a machine learning engineer.
+
+New:
+My goal is to become a Data Scientist.
+
+Decision:
+KEEP
+
+IMPORTANT RULES:
+
+- Semantic similarity alone does NOT mean DUPLICATE.
+- Related topics do NOT automatically mean DUPLICATE.
+- Similar goals, careers, technologies, projects, or interests
+  can be separate facts.
+- Do NOT use UPDATE unless the new memory clearly indicates
+  that the old fact has changed, been corrected, or replaced.
+- When uncertain between UPDATE and KEEP, prefer KEEP.
+- When the facts clearly describe the same underlying fact,
+  use DUPLICATE.
+- Consider the meaning of the facts, not just the wording.
+
 Return ONLY one word:
 
+DUPLICATE
 UPDATE
-Use UPDATE when the new fact clearly replaces, changes,
-or corrects the existing fact.
-
 KEEP
-Use KEEP when both facts can remain true together,
-or when there is no clear conflict.
-
-Examples:
-
-Existing:
-I prefer Python.
-
-New:
-I now prefer Java for my projects.
-
-Answer:
-UPDATE
-
-Existing:
-I use Python for AI projects.
-
-New:
-I use Java for Android development.
-
-Answer:
-KEEP
-
-Do not add explanations.
 """
 
-        response = self.client.responses.create(
-            model="openai/gpt-oss-20b",
+        decision = self._chat_completion(
             instructions=conflict_instructions,
-            input="Resolve the memory conflict.",
+            user_input="Resolve the memory relationship.",
         )
 
-        decision = response.output_text.strip().upper()
+        decision = decision.strip().upper()
+
+        if decision == "DUPLICATE":
+            return "DUPLICATE"
 
         if decision == "UPDATE":
             return "UPDATE"
 
         return "KEEP"
+
+    # =========================================================
+    # Conversation title
+    # =========================================================
+
+    def generate_conversation_title(
+        self,
+        message: str,
+    ) -> str:
+        """
+        Generate a short human-friendly conversation title.
+        """
+
+        title_instructions = """
+You create short titles for NOVA conversations.
+
+Read the user's first message and create ONE concise title
+that describes the main topic.
+
+Rules:
+- Maximum 6 words.
+- Use normal title-style wording.
+- Do not use quotation marks.
+- Do not use emojis.
+- Do not mention NOVA unless NOVA itself is the main topic.
+- Do not add explanations.
+- Return ONLY the title.
+
+Examples:
+
+User:
+I want to make a study plan for Germany.
+
+Title:
+Germany Study Plan
+
+User:
+Help me fix my FastAPI memory system.
+
+Title:
+Fixing FastAPI Memory
+
+User:
+I want to talk about my AI career.
+
+Title:
+AI Career Planning
+"""
+
+        title = self._chat_completion(
+            instructions=title_instructions,
+            user_input=message,
+        )
+
+        if not title:
+            return "New Conversation"
+
+        return title[:200]
