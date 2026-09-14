@@ -56,7 +56,7 @@ Choose exactly one intent:
 - "question"   = asking for information
 - "advice"     = asking what they should do
 - "planning"   = creating or organizing a plan
-- "reminder"  = asking NOVA to remind them
+- "reminder"   = asking NOVA to remind them
 - "task"       = asking NOVA to manage or track a task
 - "action"     = asking NOVA to perform an external action
 
@@ -105,14 +105,38 @@ Extract:
 
 For scheduled_at:
 
-- Convert relative dates such as "tomorrow", "next Monday",
-  etc. using the current date/time above.
+- Resolve unambiguous dates and times such as:
+  "today at 5 PM"
+  "tomorrow at 9 AM"
+  "next Monday at 6 PM"
+  "in 2 hours"
+
+- Use the current date/time above to calculate relative dates.
 - Use the user's timezone: Asia/Karachi.
 - Include the timezone offset.
-- If the user gives a time without AM/PM, infer it from context.
+
+IMPORTANT:
+
+- If the user gives a clear date/time, return the exact datetime
+  even if that datetime is already in the past.
+- Do NOT change a clear past datetime to null.
+- The backend will separately validate whether the reminder time
+  is in the future.
 - Do not invent a time when none was provided.
-- scheduled_at must be in the future.
-- If the date/time is ambiguous, use null.
+- If the date/time is genuinely ambiguous, use null.
+
+Examples:
+
+User message:
+"Remind me today at 5 PM to test NOVA."
+
+Return scheduled_at as the exact 5 PM datetime for today,
+even if the current time is already after 5 PM.
+
+User message:
+"Remind me tomorrow at 5 PM to test NOVA."
+
+Return tomorrow's 5 PM datetime.
 
 Important:
 
