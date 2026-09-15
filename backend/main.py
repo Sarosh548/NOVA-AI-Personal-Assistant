@@ -228,11 +228,12 @@ def chat(request: ChatRequest):
     if new_memory:
 
         memory_action = memory_service.add_memory(
-            user_id=request.user_id,
-            memory_text=new_memory["memory_text"],
-            category=new_memory["category"],
-            importance=new_memory["importance"],
-        )
+              user_id=request.user_id,
+              memory_text=new_memory["memory_text"],
+              category=new_memory["category"],
+              importance=new_memory["importance"],
+              user_message=user_message,
+)
 
     # -----------------------------------------------------
     # 10. RETURN RESPONSE

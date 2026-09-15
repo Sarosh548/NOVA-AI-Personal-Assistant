@@ -42,9 +42,13 @@ def test_memory_service_returns_correct_categories():
     service = make_service()
 
     assert service.llm_service.resolve_memory_conflict(
-        new_memory="My goal is to become a Data Scientist.",
+        new_memory=(
+            "My goal is to become a Data Scientist."
+        ),
         new_category="goal",
-        existing_memory="User wants to become an AI Engineer.",
+        existing_memory=(
+            "User wants to become an AI Engineer."
+        ),
     ) == "KEEP"
 
 
@@ -127,3 +131,37 @@ def test_memory_service_accepts_valid_importance():
 
     for importance in valid_importance:
         assert importance in valid_importance
+
+
+def test_explicit_goal_change_is_detected():
+    service = make_service()
+
+    assert service._is_explicit_goal_change(
+        "I've changed my career goal again. "
+        "Now I want to become a Machine Learning Engineer."
+    ) is True
+
+
+def test_normal_goal_statement_is_not_goal_change():
+    service = make_service()
+
+    assert service._is_explicit_goal_change(
+        "I want to become a Machine Learning Engineer."
+    ) is False
+
+
+def test_goal_update_language_is_detected():
+    service = make_service()
+
+    assert service._is_explicit_goal_change(
+        "My new career goal is to become "
+        "a Data Scientist."
+    ) is True
+
+
+def test_unrelated_message_is_not_goal_change():
+    service = make_service()
+
+    assert service._is_explicit_goal_change(
+        "I really like working with FastAPI."
+    ) is False

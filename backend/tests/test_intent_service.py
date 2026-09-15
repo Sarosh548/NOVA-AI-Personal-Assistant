@@ -2,7 +2,9 @@ from services.intent_service import IntentService
 
 
 def make_service_without_llm():
-    service = IntentService.__new__(IntentService)
+    service = IntentService.__new__(
+        IntentService
+    )
     return service
 
 
@@ -121,4 +123,73 @@ def test_validate_chat_does_not_require_tool():
     validated = service._validate_result(result)
 
     assert validated["intent"] == "chat"
+    assert validated["requires_tool"] is False
+
+
+def test_validate_goal_change_as_chat_is_still_safe():
+    """
+    _validate_result() should preserve the LLM's chosen
+    intent rather than inventing a new intent type.
+
+    Goal-change understanding itself is tested separately
+    with the live LLM.
+    """
+
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "chat",
+        "task": None,
+        "task_reference": None,
+        "task_action": None,
+        "task_id": None,
+        "priority": None,
+        "reminder_action": None,
+        "reminder_reference": None,
+        "reminder_id": None,
+        "time": None,
+        "scheduled_at": None,
+        "emotion": "neutral",
+        "tone": "friendly",
+        "visual": "none",
+        "action": None,
+        "requires_tool": False,
+    }
+
+    validated = service._validate_result(result)
+
+    assert validated["intent"] == "chat"
+    assert validated["requires_tool"] is False
+
+
+def test_validate_goal_change_does_not_create_tool_fields():
+    """
+    A normal conversational goal-change statement should not
+    accidentally become a task or reminder operation.
+    """
+
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "chat",
+        "task": "become a Machine Learning Engineer",
+        "task_action": None,
+        "task_reference": None,
+        "task_id": None,
+        "priority": None,
+        "reminder_action": None,
+        "reminder_reference": None,
+        "reminder_id": None,
+        "requires_tool": False,
+    }
+
+    validated = service._validate_result(result)
+
+    assert validated["intent"] == "chat"
+    assert validated["task_action"] is None
+    assert validated["task_reference"] is None
+    assert validated["task_id"] is None
+    assert validated["reminder_action"] is None
+    assert validated["reminder_reference"] is None
+    assert validated["reminder_id"] is None
     assert validated["requires_tool"] is False
