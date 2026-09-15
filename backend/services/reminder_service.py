@@ -33,10 +33,8 @@ class ReminderService:
                 tzinfo=local_timezone
             )
 
-        reminder_time_utc = (
-            reminder_time.astimezone(
-                timezone.utc
-            )
+        reminder_time_utc = reminder_time.astimezone(
+            timezone.utc
         )
 
         return reminder_time_utc.replace(
@@ -51,9 +49,6 @@ class ReminderService:
     ) -> int:
         """
         Create a pending reminder.
-
-        The supplied datetime may be timezone-aware.
-        The database value is stored as UTC.
         """
 
         cleaned_title = title.strip()
@@ -122,18 +117,196 @@ class ReminderService:
                 for reminder in reminders
             ]
 
+    def find_matching_reminders(
+        self,
+        user_id: str,
+        reference: str,
+    ) -> list[dict]:
+        """
+        Find active reminders using a natural-language reference.
+
+        Matching is based on meaningful title tokens.
+        Multiple matches are returned so the caller can avoid
+        making an unsafe guess.
+        """
+
+        cleaned_reference = reference.strip()
+
+        if not cleaned_reference:
+            return []
+
+        generic_words = {
+            "a",
+            "an",
+            "the",
+            "my",
+            "me",
+            "to",
+            "please",
+            "reminder",
+            "reminders",
+            "this",
+            "that",
+            "one",
+        }
+
+        reference_tokens = {
+            word
+            for word in cleaned_reference.lower().split()
+            if word not in generic_words
+        }
+
+        if not reference_tokens:
+            return []
+
+        with Session(engine) as session:
+            statement = (
+                select(Reminder)
+                .where(
+                    Reminder.user_id == user_id,
+                    Reminder.status.in_(
+                        ["pending", "processing"]
+                    ),
+                )
+                .order_by(
+                    Reminder.created_at.desc()
+                )
+            )
+
+            reminders = session.scalars(
+                statement
+            ).all()
+
+        matches = []
+
+        for reminder in reminders:
+            title_tokens = {
+                word
+                for word in reminder.title.lower().split()
+                if word not in generic_words
+            }
+
+            if not title_tokens:
+                continue
+
+            overlap = reference_tokens & title_tokens
+
+            if reference_tokens == title_tokens:
+                score = 1.0
+
+            elif (
+                reference_tokens.issubset(
+                    title_tokens
+                )
+                or title_tokens.issubset(
+                    reference_tokens
+                )
+            ):
+                score = 0.90
+
+            else:
+                union = (
+                    reference_tokens | title_tokens
+                )
+
+                score = (
+                    len(overlap) / len(union)
+                    if union
+                    else 0.0
+                )
+
+            if score >= 0.50:
+                matches.append(
+                    {
+                        "id": reminder.id,
+                        "title": reminder.title,
+                        "reminder_time": reminder.reminder_time,
+                        "status": reminder.status,
+                        "_match_score": score,
+                    }
+                )
+
+        matches.sort(
+            key=lambda item: (
+                item["_match_score"],
+                item["id"],
+            ),
+            reverse=True,
+        )
+
+        for match in matches:
+            match.pop("_match_score", None)
+
+        return matches
+
+    def update_reminder(
+        self,
+        reminder_id: int,
+        user_id: str,
+        title: str | None = None,
+        reminder_time: datetime | None = None,
+    ) -> bool:
+        """
+        Update an existing reminder's title and/or time.
+        """
+
+        if title is None and reminder_time is None:
+            raise ValueError(
+                "No reminder fields were provided for update."
+            )
+
+        cleaned_title = None
+
+        if title is not None:
+            cleaned_title = title.strip()
+
+            if not cleaned_title:
+                raise ValueError(
+                    "Reminder title cannot be empty."
+                )
+
+        normalized_time = None
+
+        if reminder_time is not None:
+            normalized_time = (
+                self._normalize_datetime(
+                    reminder_time
+                )
+            )
+
+            if normalized_time <= datetime.utcnow():
+                raise ValueError(
+                    "Reminder time must be in the future."
+                )
+
+        with Session(engine) as session:
+            reminder = session.scalar(
+                select(Reminder).where(
+                    Reminder.id == reminder_id,
+                    Reminder.user_id == user_id,
+                )
+            )
+
+            if not reminder:
+                return False
+
+            if cleaned_title is not None:
+                reminder.title = cleaned_title[:300]
+
+            if normalized_time is not None:
+                reminder.reminder_time = normalized_time
+
+            reminder.updated_at = datetime.utcnow()
+
+            session.commit()
+
+            return True
+
     def claim_due_reminders(self) -> list[dict]:
         """
         Atomically claim due reminders.
 
-        A reminder moves from:
-            pending -> processing
-
-        This prevents the same reminder from being picked up
-        repeatedly by the scheduler while it is being processed.
-
-        PostgreSQL is used here intentionally because NOVA already
-        uses PostgreSQL.
+        pending -> processing
         """
 
         current_time = datetime.utcnow()
@@ -170,9 +343,6 @@ class ReminderService:
         self,
         reminder_id: int,
     ) -> bool:
-        """
-        Mark a processing reminder as completed.
-        """
 
         with Session(engine) as session:
             result = session.execute(
@@ -199,11 +369,6 @@ class ReminderService:
         self,
         reminder_id: int,
     ) -> bool:
-        """
-        Return a processing reminder to pending.
-
-        Useful when notification delivery fails.
-        """
 
         with Session(engine) as session:
             result = session.execute(
@@ -229,9 +394,6 @@ class ReminderService:
     def get_due_reminders(self) -> list[dict]:
         """
         Compatibility helper.
-
-        Returns due pending reminders without claiming them.
-        The scheduler should prefer claim_due_reminders().
         """
 
         current_time = datetime.utcnow()
@@ -268,9 +430,6 @@ class ReminderService:
         reminder_id: int,
         user_id: str,
     ) -> bool:
-        """
-        Mark a user's reminder as completed.
-        """
 
         with Session(engine) as session:
             reminder = session.scalar(
@@ -295,9 +454,6 @@ class ReminderService:
         reminder_id: int,
         user_id: str,
     ) -> bool:
-        """
-        Cancel a user's reminder.
-        """
 
         with Session(engine) as session:
             reminder = session.scalar(
@@ -322,9 +478,6 @@ class ReminderService:
         reminder_id: int,
         user_id: str,
     ) -> bool:
-        """
-        Permanently delete a user's reminder.
-        """
 
         with Session(engine) as session:
             reminder = session.scalar(

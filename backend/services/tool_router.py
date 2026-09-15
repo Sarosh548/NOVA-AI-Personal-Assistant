@@ -8,6 +8,10 @@ from services.task_service import TaskService
 class ToolRouter:
     """
     Central router for NOVA's executable capabilities.
+
+    The user never selects a tool directly.
+    NOVA's understanding layer decides which capability
+    is required, and this router executes it.
     """
 
     def __init__(
@@ -57,7 +61,65 @@ class ToolRouter:
             ),
         }
 
+    # =====================================================
+    # REMINDER
+    # =====================================================
+
     def _execute_reminder(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        reminder_action = (
+            data.get("reminder_action")
+            or "create"
+        )
+
+        if reminder_action == "create":
+            return self._create_reminder(
+                user_id=user_id,
+                data=data,
+            )
+
+        if reminder_action == "list":
+            return self._list_reminders(
+                user_id=user_id,
+            )
+
+        if reminder_action == "complete":
+            return self._complete_reminder(
+                user_id=user_id,
+                data=data,
+            )
+
+        if reminder_action == "cancel":
+            return self._cancel_reminder(
+                user_id=user_id,
+                data=data,
+            )
+
+        if reminder_action == "delete":
+            return self._delete_reminder(
+                user_id=user_id,
+                data=data,
+            )
+
+        if reminder_action == "update":
+            return self._update_reminder(
+                user_id=user_id,
+                data=data,
+            )
+
+        return {
+            "success": False,
+            "tool": "reminder",
+            "action": reminder_action,
+            "result": None,
+            "error": "Unsupported reminder action.",
+        }
+
+    def _create_reminder(
         self,
         user_id: str,
         data: dict[str, Any],
@@ -76,7 +138,7 @@ class ToolRouter:
             return {
                 "success": False,
                 "tool": "reminder",
-                "action": "create_reminder",
+                "action": "create",
                 "result": None,
                 "error": "Reminder task is missing.",
             }
@@ -85,7 +147,7 @@ class ToolRouter:
             return {
                 "success": False,
                 "tool": "reminder",
-                "action": "create_reminder",
+                "action": "create",
                 "result": None,
                 "error": "Reminder time is missing.",
             }
@@ -98,7 +160,7 @@ class ToolRouter:
             return {
                 "success": False,
                 "tool": "reminder",
-                "action": "create_reminder",
+                "action": "create",
                 "result": None,
                 "error": "Invalid reminder datetime.",
             }
@@ -117,7 +179,7 @@ class ToolRouter:
             return {
                 "success": False,
                 "tool": "reminder",
-                "action": "create_reminder",
+                "action": "create",
                 "result": None,
                 "error": str(exc),
             }
@@ -125,7 +187,7 @@ class ToolRouter:
         return {
             "success": True,
             "tool": "reminder",
-            "action": "create_reminder",
+            "action": "create",
             "result": {
                 "reminder_id": reminder_id,
                 "title": str(task),
@@ -133,6 +195,349 @@ class ToolRouter:
                     scheduled_at
                 ),
                 "status": "pending",
+            },
+            "error": None,
+        }
+
+    def _list_reminders(
+        self,
+        user_id: str,
+    ) -> dict[str, Any]:
+
+        reminders = (
+            self.reminder_service
+            .get_pending_reminders(
+                user_id=user_id,
+            )
+        )
+
+        return {
+            "success": True,
+            "tool": "reminder",
+            "action": "list",
+            "result": {
+                "reminders": reminders,
+                "count": len(reminders),
+            },
+            "error": None,
+        }
+
+    def _resolve_reminder_id(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> tuple[int | None, dict[str, Any] | None]:
+
+        reminder_id = data.get("reminder_id")
+
+        if reminder_id is not None:
+            try:
+                reminder_id = int(reminder_id)
+            except (TypeError, ValueError):
+                return None, {
+                    "success": False,
+                    "tool": "reminder",
+                    "action": None,
+                    "result": None,
+                    "error": "Invalid reminder ID.",
+                }
+
+            if reminder_id < 1:
+                return None, {
+                    "success": False,
+                    "tool": "reminder",
+                    "action": None,
+                    "result": None,
+                    "error": "Invalid reminder ID.",
+                }
+
+            return reminder_id, None
+
+        reminder_reference = (
+            data.get("reminder_reference")
+            or data.get("task")
+        )
+
+        if not reminder_reference:
+            return None, {
+                "success": False,
+                "tool": "reminder",
+                "action": None,
+                "result": None,
+                "error": "Reminder reference is missing.",
+            }
+
+        matches = (
+            self.reminder_service
+            .find_matching_reminders(
+                user_id=user_id,
+                reference=str(reminder_reference),
+            )
+        )
+
+        if len(matches) == 0:
+            return None, {
+                "success": False,
+                "tool": "reminder",
+                "action": None,
+                "result": None,
+                "error": (
+                    "Could not find a matching "
+                    "pending reminder."
+                ),
+            }
+
+        if len(matches) > 1:
+            return None, {
+                "success": False,
+                "tool": "reminder",
+                "action": None,
+                "result": {
+                    "matches": matches,
+                    "count": len(matches),
+                },
+                "error": (
+                    "Multiple matching reminders found. "
+                    "Reminder selection is ambiguous."
+                ),
+            }
+
+        return matches[0]["id"], None
+
+    def _complete_reminder(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        reminder_id, error = (
+            self._resolve_reminder_id(
+                user_id=user_id,
+                data=data,
+            )
+        )
+
+        if error:
+            error["action"] = "complete"
+            return error
+
+        success = (
+            self.reminder_service
+            .complete_reminder(
+                reminder_id=reminder_id,
+                user_id=user_id,
+            )
+        )
+
+        if not success:
+            return {
+                "success": False,
+                "tool": "reminder",
+                "action": "complete",
+                "result": None,
+                "error": "Reminder not found.",
+            }
+
+        return {
+            "success": True,
+            "tool": "reminder",
+            "action": "complete",
+            "result": {
+                "reminder_id": reminder_id,
+                "status": "completed",
+            },
+            "error": None,
+        }
+
+    def _cancel_reminder(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        reminder_id, error = (
+            self._resolve_reminder_id(
+                user_id=user_id,
+                data=data,
+            )
+        )
+
+        if error:
+            error["action"] = "cancel"
+            return error
+
+        success = (
+            self.reminder_service
+            .cancel_reminder(
+                reminder_id=reminder_id,
+                user_id=user_id,
+            )
+        )
+
+        if not success:
+            return {
+                "success": False,
+                "tool": "reminder",
+                "action": "cancel",
+                "result": None,
+                "error": "Reminder not found.",
+            }
+
+        return {
+            "success": True,
+            "tool": "reminder",
+            "action": "cancel",
+            "result": {
+                "reminder_id": reminder_id,
+                "status": "cancelled",
+            },
+            "error": None,
+        }
+
+    def _delete_reminder(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        reminder_id, error = (
+            self._resolve_reminder_id(
+                user_id=user_id,
+                data=data,
+            )
+        )
+
+        if error:
+            error["action"] = "delete"
+            return error
+
+        success = (
+            self.reminder_service
+            .delete_reminder(
+                reminder_id=reminder_id,
+                user_id=user_id,
+            )
+        )
+
+        if not success:
+            return {
+                "success": False,
+                "tool": "reminder",
+                "action": "delete",
+                "result": None,
+                "error": "Reminder not found.",
+            }
+
+        return {
+            "success": True,
+            "tool": "reminder",
+            "action": "delete",
+            "result": {
+                "reminder_id": reminder_id,
+                "status": "deleted",
+            },
+            "error": None,
+        }
+
+    def _update_reminder(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        reminder_id, error = (
+            self._resolve_reminder_id(
+                user_id=user_id,
+                data=data,
+            )
+        )
+
+        if error:
+            error["action"] = "update"
+            return error
+
+        title = data.get("task")
+        scheduled_at = data.get("scheduled_at")
+
+        if title is None and scheduled_at is None:
+            return {
+                "success": False,
+                "tool": "reminder",
+                "action": "update",
+                "result": None,
+                "error": (
+                    "No reminder fields were provided "
+                    "for update."
+                ),
+            }
+
+        reminder_datetime = None
+
+        if scheduled_at is not None:
+            try:
+                reminder_datetime = (
+                    datetime.fromisoformat(
+                        str(scheduled_at)
+                    )
+                )
+            except ValueError:
+                return {
+                    "success": False,
+                    "tool": "reminder",
+                    "action": "update",
+                    "result": None,
+                    "error": "Invalid reminder datetime.",
+                }
+
+        try:
+            success = (
+                self.reminder_service
+                .update_reminder(
+                    reminder_id=reminder_id,
+                    user_id=user_id,
+                    title=(
+                        str(title)
+                        if title is not None
+                        else None
+                    ),
+                    reminder_time=reminder_datetime,
+                )
+            )
+
+        except ValueError as exc:
+            return {
+                "success": False,
+                "tool": "reminder",
+                "action": "update",
+                "result": None,
+                "error": str(exc),
+            }
+
+        if not success:
+            return {
+                "success": False,
+                "tool": "reminder",
+                "action": "update",
+                "result": None,
+                "error": "Reminder not found.",
+            }
+
+        return {
+            "success": True,
+            "tool": "reminder",
+            "action": "update",
+            "result": {
+                "reminder_id": reminder_id,
+                "title": (
+                    str(title)
+                    if title is not None
+                    else None
+                ),
+                "scheduled_at": (
+                    str(scheduled_at)
+                    if scheduled_at is not None
+                    else None
+                ),
             },
             "error": None,
         }
@@ -165,6 +570,10 @@ class ToolRouter:
                 break
 
         return text or None
+
+    # =====================================================
+    # TASK
+    # =====================================================
 
     def _execute_task(
         self,
@@ -395,7 +804,8 @@ class ToolRouter:
                 "action": "update",
                 "result": None,
                 "error": (
-                    "No task fields were provided for update."
+                    "No task fields were provided "
+                    "for update."
                 ),
             }
 

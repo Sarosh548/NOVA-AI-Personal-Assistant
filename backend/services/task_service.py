@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,6 +24,29 @@ VALID_PRIORITIES = {
 
 class TaskService:
 
+    def _normalize_datetime(
+        self,
+        task_time: datetime,
+    ) -> datetime:
+        """
+        Normalize task datetime to naive UTC.
+
+        Database task.due_at is stored as a naive datetime,
+        so timezone-aware input is converted to UTC and then
+        stripped of timezone information.
+        """
+
+        if task_time.tzinfo is None:
+            return task_time
+
+        task_time_utc = task_time.astimezone(
+            timezone.utc
+        )
+
+        return task_time_utc.replace(
+            tzinfo=None
+        )
+
     def create_task(
         self,
         user_id: str,
@@ -45,8 +68,16 @@ class TaskService:
                 "Invalid task priority."
             )
 
+        normalized_due_at = None
+
         if due_at is not None:
-            if due_at <= datetime.utcnow():
+            normalized_due_at = (
+                self._normalize_datetime(
+                    due_at
+                )
+            )
+
+            if normalized_due_at <= datetime.utcnow():
                 raise ValueError(
                     "Task due time must be in the future."
                 )
@@ -61,7 +92,7 @@ class TaskService:
             ),
             status="pending",
             priority=priority,
-            due_at=due_at,
+            due_at=normalized_due_at,
         )
 
         with Session(engine) as session:
@@ -86,7 +117,9 @@ class TaskService:
         with Session(engine) as session:
             statement = (
                 select(Task)
-                .where(Task.user_id == user_id)
+                .where(
+                    Task.user_id == user_id
+                )
                 .order_by(
                     Task.due_at.asc().nullslast(),
                     Task.created_at.desc(),
@@ -122,6 +155,13 @@ class TaskService:
     ) -> set[str]:
         """
         Normalize a natural-language task reference.
+
+        Generic assistant words are removed so phrases such as:
+
+            "my LangGraph practice task"
+            "practice LangGraph"
+
+        resolve to the same meaningful tokens.
         """
 
         generic_words = {
@@ -159,6 +199,28 @@ class TaskService:
     ) -> list[dict]:
         """
         Find actionable tasks using a natural-language reference.
+
+        Matching priority:
+
+        1. Exact normalized phrase match
+        2. Strong phrase containment match
+        3. Token-overlap fallback
+
+        If a strong match exists, weak fallback matches are
+        ignored.
+
+        This prevents:
+
+            "practice Docker for my AI Engineer interview"
+
+        from matching both Docker and FastAPI tasks.
+
+        However, a broad reference such as:
+
+            "AI Engineer interview"
+
+        can still return multiple candidates when genuinely
+        ambiguous.
         """
 
         cleaned_reference = reference.strip()
@@ -175,13 +237,61 @@ class TaskService:
         if not reference_tokens:
             return []
 
+        def normalize_phrase(
+            text: str,
+        ) -> str:
+            """
+            Normalize text while preserving word order.
+            """
+
+            words = re.findall(
+                r"[a-z0-9]+",
+                text.lower(),
+            )
+
+            generic_words = {
+                "a",
+                "an",
+                "the",
+                "my",
+                "me",
+                "to",
+                "please",
+                "task",
+                "tasks",
+                "job",
+                "work",
+                "one",
+                "this",
+                "that",
+            }
+
+            meaningful_words = [
+                word
+                for word in words
+                if word not in generic_words
+            ]
+
+            return " ".join(
+                meaningful_words
+            )
+
+        normalized_reference = (
+            normalize_phrase(
+                cleaned_reference
+            )
+        )
+
         with Session(engine) as session:
             statement = (
                 select(Task)
                 .where(
                     Task.user_id == user_id,
                     Task.status.in_(
-                        ["pending", "in_progress"]
+                        [
+                            "pending",
+                            "in_progress",
+                        ]
                     ),
                 )
                 .order_by(
@@ -193,60 +303,103 @@ class TaskService:
                 statement
             ).all()
 
-        matches = []
+        strong_matches = []
+        fallback_matches = []
 
         for task in tasks:
+            normalized_title = (
+                normalize_phrase(
+                    task.title
+                )
+            )
+
             title_tokens = (
                 self._normalize_task_text(
                     task.title
                 )
             )
 
-            if not title_tokens:
+            if (
+                not normalized_title
+                or not title_tokens
+            ):
                 continue
 
-            overlap = (
-                reference_tokens
-                & title_tokens
-            )
+            # ---------------------------------------------
+            # Level 1:
+            # Exact normalized phrase
+            # ---------------------------------------------
 
-            if reference_tokens == title_tokens:
-                score = 1.0
+            if (
+                normalized_reference
+                == normalized_title
+            ):
+                score = 1.00
+
+            # ---------------------------------------------
+            # Level 2:
+            # Full normalized reference inside title
+            # ---------------------------------------------
 
             elif (
-                reference_tokens.issubset(
-                    title_tokens
-                )
-                or title_tokens.issubset(
-                    reference_tokens
-                )
+                normalized_reference
+                and normalized_reference
+                in normalized_title
             ):
-                score = 0.90
+                score = 0.95
 
             else:
+                # -----------------------------------------
+                # Level 3:
+                # Token-overlap fallback
+                # -----------------------------------------
+
+                overlap = (
+                    reference_tokens
+                    & title_tokens
+                )
+
                 union = (
                     reference_tokens
                     | title_tokens
                 )
 
                 score = (
-                    len(overlap) / len(union)
+                    len(overlap)
+                    / len(union)
                     if union
                     else 0.0
                 )
 
-            if score >= 0.50:
-                matches.append(
-                    {
-                        "id": task.id,
-                        "title": task.title,
-                        "description": task.description,
-                        "status": task.status,
-                        "priority": task.priority,
-                        "due_at": task.due_at,
-                        "_match_score": score,
-                    }
+            match = {
+                "id": task.id,
+                "title": task.title,
+                "description": task.description,
+                "status": task.status,
+                "priority": task.priority,
+                "due_at": task.due_at,
+                "_match_score": score,
+            }
+
+            if score >= 0.95:
+                strong_matches.append(
+                    match
                 )
+
+            elif score >= 0.50:
+                fallback_matches.append(
+                    match
+                )
+
+        # ---------------------------------------------
+        # Strong match wins.
+        # ---------------------------------------------
+
+        if strong_matches:
+            matches = strong_matches
+
+        else:
+            matches = fallback_matches
 
         matches.sort(
             key=lambda item: (
@@ -257,7 +410,10 @@ class TaskService:
         )
 
         for match in matches:
-            match.pop("_match_score", None)
+            match.pop(
+                "_match_score",
+                None,
+            )
 
         return matches
 
@@ -274,7 +430,10 @@ class TaskService:
         At least one of priority or due_at must be supplied.
         """
 
-        if priority is None and due_at is None:
+        if (
+            priority is None
+            and due_at is None
+        ):
             raise ValueError(
                 "No task fields were provided for update."
             )
@@ -285,8 +444,16 @@ class TaskService:
                     "Invalid task priority."
                 )
 
+        normalized_due_at = None
+
         if due_at is not None:
-            if due_at <= datetime.utcnow():
+            normalized_due_at = (
+                self._normalize_datetime(
+                    due_at
+                )
+            )
+
+            if normalized_due_at <= datetime.utcnow():
                 raise ValueError(
                     "Task due time must be in the future."
                 )
@@ -305,8 +472,8 @@ class TaskService:
             if priority is not None:
                 task.priority = priority
 
-            if due_at is not None:
-                task.due_at = due_at
+            if normalized_due_at is not None:
+                task.due_at = normalized_due_at
 
             task.updated_at = datetime.utcnow()
 
