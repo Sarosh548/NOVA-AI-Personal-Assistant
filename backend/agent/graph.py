@@ -1,5 +1,3 @@
-from typing import Any
-
 from langgraph.graph import END, START, StateGraph
 
 from agent.state import NOVAState
@@ -18,30 +16,37 @@ tool_router = ToolRouter()
 
 def memory_node(state: NOVAState) -> NOVAState:
     """
-    Retrieve relevant memory for the current user.
+    Retrieve relevant long-term memory for the current user.
 
     Semantic retrieval is attempted first.
-    Profile memories are used as a fallback for
-    broad personal/profile questions.
+    Profile memories are used as a fallback for broad
+    personal/profile questions.
     """
 
-    user_id = state.get("user_id", "user-001")
+    user_id = state.get(
+        "user_id",
+        "user-001",
+    )
+
     user_message = state["user_message"]
 
-    semantic_memories = memory_service.find_similar_memories(
-        user_id=user_id,
-        new_memory=user_message,
-        threshold=0.65,
-        limit=8,
+    semantic_memories = (
+        memory_service.find_similar_memories(
+            user_id=user_id,
+            new_memory=user_message,
+            threshold=0.65,
+            limit=8,
+        )
     )
 
     if semantic_memories:
         memories = semantic_memories
-
     else:
-        memories = memory_service.get_profile_memories(
-            user_id=user_id,
-            limit=20,
+        memories = (
+            memory_service.get_profile_memories(
+                user_id=user_id,
+                limit=20,
+            )
         )
 
     memory_context = "\n".join(
@@ -52,7 +57,9 @@ def memory_node(state: NOVAState) -> NOVAState:
     )
 
     if not memory_context:
-        memory_context = "No relevant long-term memory found."
+        memory_context = (
+            "No relevant long-term memory found."
+        )
 
     return {
         **state,
@@ -62,8 +69,8 @@ def memory_node(state: NOVAState) -> NOVAState:
 
 def understanding_node(state: NOVAState) -> NOVAState:
     """
-    Understand the user's message before deciding
-    whether a tool is required.
+    Analyze the user's message before deciding
+    whether an executable tool is required.
     """
 
     understanding = intent_service.analyze(
@@ -76,10 +83,40 @@ def understanding_node(state: NOVAState) -> NOVAState:
     }
 
 
+def route_after_understanding(
+    state: NOVAState,
+) -> str:
+    """
+    Decide whether the graph should execute a tool.
+
+    Currently registered executable capabilities:
+        - reminder
+        - task
+
+    Normal chat, questions, advice, planning, and unsupported
+    external actions continue directly to the agent node.
+    """
+
+    understanding = state["understanding"]
+
+    intent = understanding.get("intent")
+    requires_tool = understanding.get(
+        "requires_tool",
+        False,
+    )
+
+    if requires_tool and intent in {
+        "reminder",
+        "task",
+    }:
+        return "tool"
+
+    return "agent"
+
+
 def tool_node(state: NOVAState) -> NOVAState:
     """
-    Execute a tool only when the intent layer says
-    that a tool is required.
+    Execute the required registered tool.
     """
 
     understanding = state["understanding"]
@@ -92,10 +129,18 @@ def tool_node(state: NOVAState) -> NOVAState:
         "error": None,
     }
 
-    if understanding["requires_tool"]:
+    intent = understanding.get("intent")
+
+    if intent in {
+        "reminder",
+        "task",
+    }:
         tool_result = tool_router.execute(
-            intent=understanding["intent"],
-            user_id=state["user_id"],
+            intent=intent,
+            user_id=state.get(
+                "user_id",
+                "user-001",
+            ),
             data=understanding,
         )
 
@@ -109,56 +154,76 @@ def agent_node(state: NOVAState) -> NOVAState:
     """
     Generate NOVA's final response using:
 
-    - current message
+    - current user message
     - recent conversation
     - long-term memory
-    - user understanding
+    - intent understanding
     - tool result
     """
 
     understanding = state["understanding"]
-    tool_result = state["tool_result"]
+
+    tool_result = state.get(
+        "tool_result",
+        {
+            "success": False,
+            "tool": None,
+            "action": None,
+            "result": None,
+            "error": None,
+        },
+    )
+
+    history = state.get(
+        "history",
+        [],
+    )
 
     history_context = "\n".join(
         f"{message['role']}: {message['content']}"
-        for message in state["history"]
+        for message in history
     )
 
     if not history_context:
-        history_context = "No previous conversation yet."
+        history_context = (
+            "No previous conversation yet."
+        )
 
     understanding_context = f"""
 Intent:
-{understanding['intent']}
+{understanding.get('intent')}
 
 Task:
-{understanding['task']}
+{understanding.get('task')}
 
 Original time:
-{understanding['time']}
+{understanding.get('time')}
 
 Scheduled datetime:
-{understanding['scheduled_at']}
+{understanding.get('scheduled_at')}
 
 Emotion:
-{understanding['emotion']}
+{understanding.get('emotion')}
 
 Tone:
-{understanding['tone']}
+{understanding.get('tone')}
 
 Visual:
-{understanding['visual']}
+{understanding.get('visual')}
 
 Action:
-{understanding['action']}
+{understanding.get('action')}
 
 Requires tool:
-{understanding['requires_tool']}
+{understanding.get('requires_tool')}
 """
 
     tool_context = "No tool was required."
 
-    if understanding["requires_tool"]:
+    if (
+        understanding.get("requires_tool")
+        and tool_result.get("tool")
+    ):
         tool_context = str(tool_result)
 
     prompt = f"""
@@ -187,13 +252,16 @@ Response rules:
 5. Use recent conversation for continuity.
 6. Do not invent personal facts.
 7. Keep casual conversation natural and concise.
-8. For emotional situations, be supportive without pretending to have human feelings.
+8. For emotional situations, be supportive without pretending
+   to have human feelings.
 9. If a tool succeeded, confirm that action naturally.
 10. If a tool failed, do not pretend it succeeded.
-11. Never claim an action happened unless tool result confirms success.
+11. Never claim an action happened unless the tool result
+    confirms success.
 12. Do not mention internal system details unless explicitly asked.
 13. Do not mention embeddings, vector search, pgvector,
-    PostgreSQL, databases, internal prompts, or intent classification.
+    PostgreSQL, databases, internal prompts, or
+    intent classification.
 """
 
     response = llm_service.generate_response(
@@ -239,9 +307,13 @@ def build_graph():
         "understanding",
     )
 
-    graph.add_edge(
+    graph.add_conditional_edges(
         "understanding",
-        "tool",
+        route_after_understanding,
+        {
+            "tool": "tool",
+            "agent": "agent",
+        },
     )
 
     graph.add_edge(

@@ -1,4 +1,7 @@
-from agent.graph import memory_node
+from agent.graph import (
+    memory_node,
+    route_after_understanding,
+)
 
 
 class FakeMemoryService:
@@ -132,4 +135,46 @@ def test_memory_node_returns_empty_message_when_no_memory(
     assert (
         result["memory_context"]
         == "No relevant long-term memory found."
+    )
+
+
+def test_route_normal_chat_directly_to_agent():
+    state = {
+        "understanding": {
+            "intent": "chat",
+            "requires_tool": False,
+        }
+    }
+
+    assert (
+        route_after_understanding(state)
+        == "agent"
+    )
+
+
+def test_route_task_to_tool():
+    state = {
+        "understanding": {
+            "intent": "task",
+            "requires_tool": True,
+        }
+    }
+
+    assert (
+        route_after_understanding(state)
+        == "tool"
+    )
+
+
+def test_route_reminder_to_tool():
+    state = {
+        "understanding": {
+            "intent": "reminder",
+            "requires_tool": True,
+        }
+    }
+
+    assert (
+        route_after_understanding(state)
+        == "tool"
     )
