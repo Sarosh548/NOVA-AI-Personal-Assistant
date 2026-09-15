@@ -67,7 +67,17 @@ class ToolRouter:
         data: dict[str, Any],
     ) -> dict[str, Any]:
 
-        task = data.get("task")
+        # `task` is the canonical reminder title.
+        # `action` is kept as a compatibility fallback
+        # in case an older/alternate understanding result
+        # still places reminder content there.
+        task = (
+            data.get("task")
+            or self._extract_reminder_title(
+                data.get("action")
+            )
+        )
+
         scheduled_at = data.get("scheduled_at")
 
         if not task:
@@ -135,6 +145,39 @@ class ToolRouter:
             "error": None,
         }
 
+    def _extract_reminder_title(
+        self,
+        action: Any,
+    ) -> str | None:
+        """
+        Compatibility fallback for reminder content that
+        arrives in the `action` field.
+        """
+
+        if not action:
+            return None
+
+        text = str(action).strip()
+
+        if not text:
+            return None
+
+        prefixes = (
+            "reminder to ",
+            "remind me to ",
+            "reminder: ",
+            "remind me ",
+        )
+
+        lowered = text.lower()
+
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+
+        return text or None
+
     def _execute_task(
         self,
         user_id: str,
@@ -163,14 +206,15 @@ class ToolRouter:
                 user_id=user_id,
             )
 
-        # -----------------------------------------------------
+        # -------------------------------------------------
         # Resolve an existing task.
         #
         # Priority:
         #   1. Explicit numeric task ID
         #   2. Natural-language task reference
         #   3. task field as a compatibility fallback
-        # -----------------------------------------------------
+        # -------------------------------------------------
+
         task_id = data.get("task_id")
 
         if task_id is None:

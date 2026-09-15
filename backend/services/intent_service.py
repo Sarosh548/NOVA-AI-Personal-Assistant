@@ -98,6 +98,13 @@ Extract:
 
 - task:
     For task creation, the short title/description of the new task.
+
+    For reminders:
+    put ONLY the reminder content/title here.
+    Example:
+    User: "Remind me tomorrow at 10 AM to submit my CV."
+    task = "submit my CV"
+
     For existing-task actions, this may be null.
 
 - task_reference:
@@ -153,6 +160,14 @@ Task reference rules:
     If the user names the task instead, put the identifying
     task name in task_reference.
 
+Reminder rules:
+
+- The reminder message/content MUST be stored in "task".
+- Do not leave "task" null when the user clearly tells you
+  what they want to be reminded about.
+- "action" may contain a short description too, but "task"
+  is the canonical reminder title.
+
 Examples:
 
 User:
@@ -206,6 +221,20 @@ task_reference = null
 task_action = "list"
 task_id = null
 
+User:
+"Remind me tomorrow at 10 AM to submit my CV."
+
+Return:
+
+task = "submit my CV"
+task_reference = null
+task_action = null
+task_id = null
+priority = null
+time = "tomorrow at 10 AM"
+scheduled_at = the correct ISO datetime
+action = "reminder to submit my CV"
+
 Important:
 
 - Do not invent information.
@@ -238,7 +267,7 @@ Return exactly:
 
 {{
   "intent": "chat|question|advice|planning|reminder|task|action",
-  "task": "new task title or null",
+  "task": "task title, reminder content, or null",
   "task_reference": "existing task reference or null",
   "task_action": "create|list|start|complete|cancel|delete or null",
   "task_id": 123,
@@ -300,6 +329,43 @@ Return exactly:
             "action": None,
             "requires_tool": False,
         }
+
+    def _normalize_reminder_task(
+        self,
+        task: str | None,
+        action: str | None,
+    ) -> str | None:
+        """
+        Normalize reminder content into the canonical `task`
+        field so downstream tools always receive a title.
+        """
+
+        if task:
+            normalized = task.strip()
+
+            if normalized:
+                return normalized
+
+        if not action:
+            return None
+
+        normalized = action.strip()
+
+        prefixes = (
+            "reminder to ",
+            "remind me to ",
+            "reminder: ",
+            "remind me ",
+        )
+
+        lowered = normalized.lower()
+
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                normalized = normalized[len(prefix):].strip()
+                break
+
+        return normalized or None
 
     def _validate_result(self, result: dict) -> dict:
         valid_intents = {
@@ -421,18 +487,34 @@ Return exactly:
         if action is not None:
             action = str(action).strip() or None
 
+        # -------------------------------------------------
+        # Normalize reminder content.
+        #
+        # Reminder text is stored in `task` because the
+        # reminder tool uses that field as its title.
+        # -------------------------------------------------
+
+        if intent == "reminder":
+            task = self._normalize_reminder_task(
+                task=task,
+                action=action,
+            )
+
+        # -------------------------------------------------
+        # Task-specific fields only belong to task intent.
+        # -------------------------------------------------
+
+        if intent != "task":
+            task_reference = None
+            task_action = None
+            task_id = None
+            priority = None
+
         requires_tool = intent in {
             "reminder",
             "task",
             "action",
         }
-
-        if intent != "task":
-            task = None
-            task_reference = None
-            task_action = None
-            task_id = None
-            priority = None
 
         return {
             "intent": intent,
