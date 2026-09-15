@@ -69,12 +69,13 @@ def memory_node(state: NOVAState) -> NOVAState:
 
 def understanding_node(state: NOVAState) -> NOVAState:
     """
-    Analyze the user's message before deciding
-    whether an executable tool is required.
+    Analyze the current message using recent conversation
+    history when follow-up context is required.
     """
 
     understanding = intent_service.analyze(
-        state["user_message"]
+        message=state["user_message"],
+        history=state.get("history", []),
     )
 
     return {
@@ -89,17 +90,17 @@ def route_after_understanding(
     """
     Decide whether the graph should execute a tool.
 
-    Currently registered executable capabilities:
+    Registered executable capabilities:
         - reminder
         - task
 
-    Normal chat, questions, advice, planning, and unsupported
-    external actions continue directly to the agent node.
+    Everything else continues directly to the agent.
     """
 
     understanding = state["understanding"]
 
     intent = understanding.get("intent")
+
     requires_tool = understanding.get(
         "requires_tool",
         False,
@@ -196,6 +197,15 @@ Intent:
 Task:
 {understanding.get('task')}
 
+Task reference:
+{understanding.get('task_reference')}
+
+Task action:
+{understanding.get('task_action')}
+
+Task ID:
+{understanding.get('task_id')}
+
 Original time:
 {understanding.get('time')}
 
@@ -250,16 +260,18 @@ Response rules:
 3. Match detected tone when appropriate.
 4. Use relevant memory when helpful.
 5. Use recent conversation for continuity.
-6. Do not invent personal facts.
-7. Keep casual conversation natural and concise.
-8. For emotional situations, be supportive without pretending
+6. Understand follow-up references using the conversation
+   history when the understanding system provides them.
+7. Do not invent personal facts.
+8. Keep casual conversation natural and concise.
+9. For emotional situations, be supportive without pretending
    to have human feelings.
-9. If a tool succeeded, confirm that action naturally.
-10. If a tool failed, do not pretend it succeeded.
-11. Never claim an action happened unless the tool result
+10. If a tool succeeded, confirm that action naturally.
+11. If a tool failed, do not pretend it succeeded.
+12. Never claim an action happened unless the tool result
     confirms success.
-12. Do not mention internal system details unless explicitly asked.
-13. Do not mention embeddings, vector search, pgvector,
+13. Do not mention internal system details unless explicitly asked.
+14. Do not mention embeddings, vector search, pgvector,
     PostgreSQL, databases, internal prompts, or
     intent classification.
 """

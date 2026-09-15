@@ -22,14 +22,23 @@ class IntentService:
             base_url="https://api.groq.com/openai/v1",
         )
 
-    def analyze(self, message: str) -> dict:
+    def analyze(
+        self,
+        message: str,
+        history: list[dict] | None = None,
+    ) -> dict:
         """
-        Understand the user's intent, emotion, tone, visual,
-        task information, reminder timing, and possible action.
+        Understand the user's current message.
+
+        Recent conversation history is optionally supplied so the
+        understanding layer can resolve follow-up references such
+        as "it", "that task", "the previous one", etc.
         """
 
         if not message.strip():
             return self._default_result()
+
+        history = history or []
 
         now = datetime.now(
             ZoneInfo(USER_TIMEZONE)
@@ -39,16 +48,33 @@ class IntentService:
             timespec="minutes"
         )
 
+        recent_history = history[-10:]
+
+        history_context = "\n".join(
+            f"{item.get('role', 'unknown')}: "
+            f"{item.get('content', '')}"
+            for item in recent_history
+        )
+
+        if not history_context:
+            history_context = (
+                "No previous conversation available."
+            )
+
         instructions = f"""
 You are NOVA's understanding system.
 
-Analyze ONLY the user's message.
+Analyze the user's CURRENT message while using the recent
+conversation only when needed to resolve context or references.
 
 Current date and time:
 {current_datetime}
 
 User timezone:
 {USER_TIMEZONE}
+
+Recent conversation:
+{history_context}
 
 Choose exactly one intent:
 
@@ -101,9 +127,6 @@ Extract:
 
     For reminders:
     put ONLY the reminder content/title here.
-    Example:
-    User: "Remind me tomorrow at 10 AM to submit my CV."
-    task = "submit my CV"
 
     For existing-task actions, this may be null.
 
@@ -111,7 +134,16 @@ Extract:
     A short natural-language reference to an EXISTING task when
     the user wants to start, complete, cancel, or delete a task
     without giving a numeric task ID.
-    Extract the identifying part of the task title.
+
+    Use recent conversation history when the current message
+    contains an indirect reference such as:
+    "it"
+    "that task"
+    "the previous task"
+    "the LangGraph task"
+    "that one"
+
+    Extract the identifying part of the existing task title.
 
 - task_action:
     "create"
@@ -149,7 +181,7 @@ Extract:
 Task reference rules:
 
 - For CREATE:
-    put the new task title in "task".
+    put the NEW task title in "task".
     "task_reference" should be null.
 
 - For LIST:
@@ -157,16 +189,14 @@ Task reference rules:
 
 - For START / COMPLETE / CANCEL / DELETE:
     if the user gives a numeric ID, put it in task_id.
-    If the user names the task instead, put the identifying
+
+    If the user names the task directly, put the identifying
     task name in task_reference.
 
-Reminder rules:
-
-- The reminder message/content MUST be stored in "task".
-- Do not leave "task" null when the user clearly tells you
-  what they want to be reminded about.
-- "action" may contain a short description too, but "task"
-  is the canonical reminder title.
+    If the user uses an indirect reference such as "it" or
+    "that task", use recent conversation history to identify
+    the existing task and put its identifying name in
+    task_reference.
 
 Examples:
 
@@ -188,6 +218,24 @@ Return:
 
 task = null
 task_reference = "AI Engineer CV"
+task_action = "complete"
+task_id = null
+
+Conversation:
+
+user:
+"Create a task to practice LangGraph for my interview."
+
+assistant:
+"Done. I created the task."
+
+User:
+"Complete it."
+
+Return:
+
+task = null
+task_reference = "practice LangGraph for my interview"
 task_action = "complete"
 task_id = null
 
@@ -237,11 +285,15 @@ action = "reminder to submit my CV"
 
 Important:
 
+- Analyze the CURRENT user message.
+- Use history only for conversational context and reference
+  resolution.
+- Do not confuse old user requests with the current request.
 - Do not invent information.
 - For existing-task operations, extract a reference whenever
-  the user clearly identifies the task by name.
+  the user clearly identifies the task directly or indirectly.
 - Do not require the user to know the numeric task ID.
-- Use null when the information is genuinely absent.
+- Use null when information is genuinely absent.
 - Return ONLY valid JSON.
 - Do not use markdown.
 - Do not add explanations.
@@ -487,22 +539,11 @@ Return exactly:
         if action is not None:
             action = str(action).strip() or None
 
-        # -------------------------------------------------
-        # Normalize reminder content.
-        #
-        # Reminder text is stored in `task` because the
-        # reminder tool uses that field as its title.
-        # -------------------------------------------------
-
         if intent == "reminder":
             task = self._normalize_reminder_task(
                 task=task,
                 action=action,
             )
-
-        # -------------------------------------------------
-        # Task-specific fields only belong to task intent.
-        # -------------------------------------------------
 
         if intent != "task":
             task_reference = None

@@ -1,6 +1,7 @@
 from agent.graph import (
     memory_node,
     route_after_understanding,
+    understanding_node,
 )
 
 
@@ -33,6 +34,39 @@ class FakeMemoryService:
         limit,
     ):
         return self.profile_memories
+
+
+class FakeIntentService:
+
+    def __init__(self):
+        self.received_message = None
+        self.received_history = None
+
+    def analyze(
+        self,
+        message,
+        history=None,
+    ):
+        self.received_message = message
+        self.received_history = history
+
+        return {
+            "intent": "task",
+            "task": None,
+            "task_reference": (
+                "practice LangGraph"
+            ),
+            "task_action": "complete",
+            "task_id": None,
+            "priority": None,
+            "time": None,
+            "scheduled_at": None,
+            "emotion": "neutral",
+            "tone": "neutral",
+            "visual": "none",
+            "action": None,
+            "requires_tool": True,
+        }
 
 
 def test_memory_node_uses_semantic_memories_when_available(
@@ -178,3 +212,78 @@ def test_route_reminder_to_tool():
         route_after_understanding(state)
         == "tool"
     )
+
+
+def test_understanding_node_receives_conversation_history(
+    monkeypatch,
+):
+    fake_service = FakeIntentService()
+
+    monkeypatch.setattr(
+        "agent.graph.intent_service",
+        fake_service,
+    )
+
+    history = [
+        {
+            "role": "user",
+            "content": (
+                "Create a task to practice LangGraph."
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "Done. I created the task."
+            ),
+        },
+    ]
+
+    result = understanding_node(
+        {
+            "user_message": "Complete it.",
+            "history": history,
+            "understanding": {},
+            "tool_result": {},
+            "memory_context": "",
+            "response": "",
+        }
+    )
+
+    assert (
+        fake_service.received_message
+        == "Complete it."
+    )
+
+    assert (
+        fake_service.received_history
+        == history
+    )
+
+    assert (
+        result["understanding"]["task_reference"]
+        == "practice LangGraph"
+    )
+
+
+def test_understanding_node_handles_missing_history(
+    monkeypatch,
+):
+    fake_service = FakeIntentService()
+
+    monkeypatch.setattr(
+        "agent.graph.intent_service",
+        fake_service,
+    )
+
+    understanding_node(
+        {
+            "user_message": "Hello NOVA",
+            "understanding": {},
+            "tool_result": {},
+            "memory_context": "",
+            "response": "",
+        }
+    )
+
+    assert fake_service.received_history == []
