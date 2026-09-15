@@ -39,7 +39,8 @@ scheduler_task: asyncio.Task | None = None
 # CONSTANTS
 # =========================================================
 
-HISTORY_LIMIT = 20
+CONTEXT_MAX_MESSAGES = 12
+CONTEXT_MAX_CHARACTERS = 12000
 
 
 # =========================================================
@@ -130,13 +131,14 @@ def chat(request: ChatRequest):
     )
 
     # -----------------------------------------------------
-    # 3. LOAD RECENT HISTORY
+    # 3. LOAD BOUNDED CONVERSATION CONTEXT
     # -----------------------------------------------------
 
-    history = conversation_service.get_history(
+    history = conversation_service.get_context_history(
         user_id=request.user_id,
         conversation_id=conversation_id,
-        limit=HISTORY_LIMIT,
+        max_messages=CONTEXT_MAX_MESSAGES,
+        max_characters=CONTEXT_MAX_CHARACTERS,
     )
 
     # -----------------------------------------------------

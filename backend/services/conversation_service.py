@@ -182,6 +182,83 @@ class ConversationService:
                 for message in messages
             ]
 
+    def get_context_history(
+        self,
+        user_id: str,
+        conversation_id: int,
+        max_messages: int = 12,
+        max_characters: int = 12000,
+    ) -> list[dict]:
+        """
+        Return a bounded conversation context for the AI agent.
+
+        Rules:
+        - Never exceed max_messages.
+        - Never exceed max_characters.
+        - Keep the newest messages while building context.
+        - Preserve complete message entries.
+        - Return the final result in chronological order.
+        """
+
+        if max_messages < 1:
+            raise ValueError(
+                "max_messages must be greater than 0"
+            )
+
+        if max_characters < 1:
+            raise ValueError(
+                "max_characters must be greater than 0"
+            )
+
+        history = self.get_history(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=max_messages,
+        )
+
+        # Defensive enforcement:
+        # Never allow more than max_messages even if
+        # the underlying history provider returns more.
+        history = history[-max_messages:]
+
+        selected_reversed = []
+        total_characters = 0
+
+        for message in reversed(history):
+            role = str(
+                message.get("role", "")
+            )
+
+            content = str(
+                message.get("content", "")
+            )
+
+            message_size = (
+                len(role)
+                + len(content)
+                + 8
+            )
+
+            if selected_reversed:
+                if (
+                    total_characters + message_size
+                    > max_characters
+                ):
+                    break
+
+            selected_reversed.append(
+                {
+                    "role": role,
+                    "content": content,
+                }
+            )
+
+            total_characters += message_size
+
+        selected_reversed.reverse()
+
+        return selected_reversed
+
     def get_conversation_state(
         self,
         user_id: str,
