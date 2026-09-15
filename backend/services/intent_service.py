@@ -84,7 +84,7 @@ Choose exactly one intent:
 - "planning"   = creating or organizing a plan
 - "reminder"   = asking NOVA to remind them
 - "task"       = asking NOVA to create, view, start, complete,
-                 cancel, or delete a task
+                 cancel, delete, or update a task
 - "action"     = asking NOVA to perform an external action
 
 Choose exactly one emotion:
@@ -132,8 +132,8 @@ Extract:
 
 - task_reference:
     A short natural-language reference to an EXISTING task when
-    the user wants to start, complete, cancel, or delete a task
-    without giving a numeric task ID.
+    the user wants to start, complete, cancel, delete, or update
+    a task without giving a numeric task ID.
 
     Use recent conversation history when the current message
     contains an indirect reference such as:
@@ -152,7 +152,11 @@ Extract:
     "complete"
     "cancel"
     "delete"
+    "update"
     or null when not a task request
+
+    Use "update" when the user wants to modify an existing
+    task's priority or due date/time.
 
 - task_id:
     numeric task ID if explicitly given,
@@ -197,6 +201,21 @@ Task reference rules:
     "that task", use recent conversation history to identify
     the existing task and put its identifying name in
     task_reference.
+
+- For UPDATE:
+    if the user gives a numeric ID, put it in task_id.
+
+    If the user names the task directly, put the identifying
+    task name in task_reference.
+
+    If the user uses an indirect reference such as "it",
+    "that task", or "the previous one", use recent conversation
+    history to identify the existing task and put its identifying
+    name in task_reference.
+
+    Put the new priority in "priority" when provided.
+
+    Put the new due date/time in "scheduled_at" when provided.
 
 Examples:
 
@@ -270,6 +289,48 @@ task_action = "list"
 task_id = null
 
 User:
+"Make my LangGraph task high priority."
+
+Return:
+
+task = null
+task_reference = "LangGraph"
+task_action = "update"
+task_id = null
+priority = "high"
+
+Conversation:
+
+user:
+"Create a task to study advanced LangGraph patterns."
+
+assistant:
+"Done. I created the task."
+
+User:
+"Make it high priority."
+
+Return:
+
+task = null
+task_reference = "study advanced LangGraph patterns"
+task_action = "update"
+task_id = null
+priority = "high"
+
+User:
+"Set it for tomorrow at 5 PM."
+
+Return:
+
+task = null
+task_reference = "study advanced LangGraph patterns"
+task_action = "update"
+task_id = null
+priority = null
+scheduled_at = the correct ISO datetime
+
+User:
 "Remind me tomorrow at 10 AM to submit my CV."
 
 Return:
@@ -321,7 +382,7 @@ Return exactly:
   "intent": "chat|question|advice|planning|reminder|task|action",
   "task": "task title, reminder content, or null",
   "task_reference": "existing task reference or null",
-  "task_action": "create|list|start|complete|cancel|delete or null",
+  "task_action": "create|list|start|complete|cancel|delete|update or null",
   "task_id": 123,
   "priority": "low|medium|high or null",
   "time": "original time expression or null",
@@ -470,6 +531,7 @@ Return exactly:
             "complete",
             "cancel",
             "delete",
+            "update",
         }
 
         valid_priorities = {

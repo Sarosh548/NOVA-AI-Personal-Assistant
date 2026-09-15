@@ -32,6 +32,7 @@ class TaskService:
         priority: str = "medium",
         due_at: datetime | None = None,
     ) -> int:
+
         cleaned_title = title.strip()
 
         if not cleaned_title:
@@ -75,6 +76,7 @@ class TaskService:
         user_id: str,
         status: str | None = None,
     ) -> list[dict]:
+
         if status is not None:
             if status not in VALID_STATUSES:
                 raise ValueError(
@@ -120,13 +122,6 @@ class TaskService:
     ) -> set[str]:
         """
         Normalize a natural-language task reference.
-
-        Generic assistant words are removed so phrases such as:
-
-            "my LangGraph practice task"
-            "practice LangGraph"
-
-        resolve to the same meaningful tokens.
         """
 
         generic_words = {
@@ -164,15 +159,6 @@ class TaskService:
     ) -> list[dict]:
         """
         Find actionable tasks using a natural-language reference.
-
-        Matching is performed against active tasks only.
-
-        The reference and title are normalized into meaningful
-        tokens so word-order differences and generic words do
-        not prevent a valid match.
-
-        If multiple tasks match, the caller can ask the user
-        for clarification instead of guessing.
         """
 
         cleaned_reference = reference.strip()
@@ -224,11 +210,9 @@ class TaskService:
                 & title_tokens
             )
 
-            # Exact normalized match.
             if reference_tokens == title_tokens:
                 score = 1.0
 
-            # One side completely identifies the other.
             elif (
                 reference_tokens.issubset(
                     title_tokens
@@ -251,7 +235,6 @@ class TaskService:
                     else 0.0
                 )
 
-            # Require meaningful overlap.
             if score >= 0.50:
                 matches.append(
                     {
@@ -273,17 +256,70 @@ class TaskService:
             reverse=True,
         )
 
-        # Internal score should never leak to callers.
         for match in matches:
             match.pop("_match_score", None)
 
         return matches
+
+    def update_task(
+        self,
+        task_id: int,
+        user_id: str,
+        priority: str | None = None,
+        due_at: datetime | None = None,
+    ) -> bool:
+        """
+        Update mutable task fields.
+
+        At least one of priority or due_at must be supplied.
+        """
+
+        if priority is None and due_at is None:
+            raise ValueError(
+                "No task fields were provided for update."
+            )
+
+        if priority is not None:
+            if priority not in VALID_PRIORITIES:
+                raise ValueError(
+                    "Invalid task priority."
+                )
+
+        if due_at is not None:
+            if due_at <= datetime.utcnow():
+                raise ValueError(
+                    "Task due time must be in the future."
+                )
+
+        with Session(engine) as session:
+            task = session.scalar(
+                select(Task).where(
+                    Task.id == task_id,
+                    Task.user_id == user_id,
+                )
+            )
+
+            if not task:
+                return False
+
+            if priority is not None:
+                task.priority = priority
+
+            if due_at is not None:
+                task.due_at = due_at
+
+            task.updated_at = datetime.utcnow()
+
+            session.commit()
+
+            return True
 
     def complete_task(
         self,
         task_id: int,
         user_id: str,
     ) -> bool:
+
         with Session(engine) as session:
             task = session.scalar(
                 select(Task).where(
@@ -307,6 +343,7 @@ class TaskService:
         task_id: int,
         user_id: str,
     ) -> bool:
+
         with Session(engine) as session:
             task = session.scalar(
                 select(Task).where(
@@ -330,6 +367,7 @@ class TaskService:
         task_id: int,
         user_id: str,
     ) -> bool:
+
         with Session(engine) as session:
             task = session.scalar(
                 select(Task).where(
@@ -353,6 +391,7 @@ class TaskService:
         task_id: int,
         user_id: str,
     ) -> bool:
+
         with Session(engine) as session:
             task = session.scalar(
                 select(Task).where(

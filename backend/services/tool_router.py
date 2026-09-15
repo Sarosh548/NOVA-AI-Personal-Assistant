@@ -8,10 +8,6 @@ from services.task_service import TaskService
 class ToolRouter:
     """
     Central router for NOVA's executable capabilities.
-
-    The user never selects a tool directly.
-    NOVA's understanding layer decides which capability
-    is required, and this router executes it.
     """
 
     def __init__(
@@ -67,10 +63,6 @@ class ToolRouter:
         data: dict[str, Any],
     ) -> dict[str, Any]:
 
-        # `task` is the canonical reminder title.
-        # `action` is kept as a compatibility fallback
-        # in case an older/alternate understanding result
-        # still places reminder content there.
         task = (
             data.get("task")
             or self._extract_reminder_title(
@@ -149,10 +141,6 @@ class ToolRouter:
         self,
         action: Any,
     ) -> str | None:
-        """
-        Compatibility fallback for reminder content that
-        arrives in the `action` field.
-        """
 
         if not action:
             return None
@@ -206,14 +194,11 @@ class ToolRouter:
                 user_id=user_id,
             )
 
-        # -------------------------------------------------
-        # Resolve an existing task.
-        #
-        # Priority:
-        #   1. Explicit numeric task ID
-        #   2. Natural-language task reference
-        #   3. task field as a compatibility fallback
-        # -------------------------------------------------
+        if task_action == "update":
+            return self._update_task(
+                user_id=user_id,
+                data=data,
+            )
 
         task_id = data.get("task_id")
 
@@ -311,28 +296,162 @@ class ToolRouter:
                 "error": "Task not found.",
             }
 
+        status = (
+            "in_progress"
+            if task_action == "start"
+            else (
+                "completed"
+                if task_action == "complete"
+                else (
+                    "cancelled"
+                    if task_action == "cancel"
+                    else (
+                        "deleted"
+                        if task_action == "delete"
+                        else None
+                    )
+                )
+            )
+        )
+
         return {
             "success": True,
             "tool": "task",
             "action": task_action,
             "result": {
                 "task_id": int(task_id),
-                "status": (
-                    "in_progress"
-                    if task_action == "start"
-                    else (
-                        "completed"
-                        if task_action == "complete"
-                        else (
-                            "cancelled"
-                            if task_action == "cancel"
-                            else (
-                                "deleted"
-                                if task_action == "delete"
-                                else None
-                            )
-                        )
-                    )
+                "status": status,
+            },
+            "error": None,
+        }
+
+    def _update_task(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        task_id = data.get("task_id")
+
+        if task_id is None:
+            task_reference = (
+                data.get("task_reference")
+                or data.get("task")
+            )
+
+            if not task_reference:
+                return {
+                    "success": False,
+                    "tool": "task",
+                    "action": "update",
+                    "result": None,
+                    "error": "Task reference is missing.",
+                }
+
+            matches = (
+                self.task_service
+                .find_matching_tasks(
+                    user_id=user_id,
+                    reference=str(task_reference),
+                )
+            )
+
+            if len(matches) == 0:
+                return {
+                    "success": False,
+                    "tool": "task",
+                    "action": "update",
+                    "result": None,
+                    "error": (
+                        "Could not find a matching "
+                        "pending task."
+                    ),
+                }
+
+            if len(matches) > 1:
+                return {
+                    "success": False,
+                    "tool": "task",
+                    "action": "update",
+                    "result": {
+                        "matches": matches,
+                        "count": len(matches),
+                    },
+                    "error": (
+                        "Multiple matching tasks found. "
+                        "Task selection is ambiguous."
+                    ),
+                }
+
+            task_id = matches[0]["id"]
+
+        priority = data.get("priority")
+        scheduled_at = data.get("scheduled_at")
+
+        if priority is None and scheduled_at is None:
+            return {
+                "success": False,
+                "tool": "task",
+                "action": "update",
+                "result": None,
+                "error": (
+                    "No task fields were provided for update."
+                ),
+            }
+
+        due_at = None
+
+        if scheduled_at is not None:
+            try:
+                due_at = datetime.fromisoformat(
+                    str(scheduled_at)
+                )
+            except ValueError:
+                return {
+                    "success": False,
+                    "tool": "task",
+                    "action": "update",
+                    "result": None,
+                    "error": "Invalid task due datetime.",
+                }
+
+        try:
+            success = self.task_service.update_task(
+                task_id=int(task_id),
+                user_id=user_id,
+                priority=priority,
+                due_at=due_at,
+            )
+
+        except ValueError as exc:
+            return {
+                "success": False,
+                "tool": "task",
+                "action": "update",
+                "result": None,
+                "error": str(exc),
+            }
+
+        if not success:
+            return {
+                "success": False,
+                "tool": "task",
+                "action": "update",
+                "result": None,
+                "error": "Task not found.",
+            }
+
+        return {
+            "success": True,
+            "tool": "task",
+            "action": "update",
+            "result": {
+                "task_id": int(task_id),
+                "priority": priority,
+                "due_at": (
+                    str(scheduled_at)
+                    if scheduled_at
+                    else None
                 ),
             },
             "error": None,
