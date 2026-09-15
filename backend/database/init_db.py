@@ -4,6 +4,8 @@ from database.connection import engine
 from models.memory import Memory
 from models.message import Message
 from models.conversation import Conversation
+from models.reminder import Reminder
+from models.task import Task
 
 
 def initialize_database() -> None:

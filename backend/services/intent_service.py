@@ -25,7 +25,7 @@ class IntentService:
     def analyze(self, message: str) -> dict:
         """
         Understand the user's intent, emotion, tone, visual,
-        task, time, and possible action.
+        task information, reminder timing, and possible action.
         """
 
         if not message.strip():
@@ -57,7 +57,8 @@ Choose exactly one intent:
 - "advice"     = asking what they should do
 - "planning"   = creating or organizing a plan
 - "reminder"   = asking NOVA to remind them
-- "task"       = asking NOVA to manage or track a task
+- "task"       = asking NOVA to create, view, start, complete,
+                 cancel, or delete a task
 - "action"     = asking NOVA to perform an external action
 
 Choose exactly one emotion:
@@ -95,17 +96,130 @@ Choose exactly one visual:
 
 Extract:
 
-- task: short description of what the user wants, or null
-- time: user's original time expression, or null
-- scheduled_at: exact ISO 8601 datetime in the user's timezone,
-  or null when no schedule exists
-- action: short external action description, or null
-- requires_tool: true for reminders or external actions,
-  otherwise false
+- task:
+    For task creation, the short title/description of the new task.
+    For existing-task actions, this may be null.
+
+- task_reference:
+    A short natural-language reference to an EXISTING task when
+    the user wants to start, complete, cancel, or delete a task
+    without giving a numeric task ID.
+    Extract the identifying part of the task title.
+
+- task_action:
+    "create"
+    "list"
+    "start"
+    "complete"
+    "cancel"
+    "delete"
+    or null when not a task request
+
+- task_id:
+    numeric task ID if explicitly given,
+    otherwise null
+
+- priority:
+    "low"
+    "medium"
+    "high"
+    or null when not provided
+
+- time:
+    user's original time expression, or null
+
+- scheduled_at:
+    exact ISO 8601 datetime in the user's timezone,
+    or null when no schedule exists
+
+- action:
+    short external action description, or null
+
+- requires_tool:
+    true for reminders, tasks, or external actions,
+    otherwise false
+
+Task reference rules:
+
+- For CREATE:
+    put the new task title in "task".
+    "task_reference" should be null.
+
+- For LIST:
+    "task_reference" should normally be null.
+
+- For START / COMPLETE / CANCEL / DELETE:
+    if the user gives a numeric ID, put it in task_id.
+    If the user names the task instead, put the identifying
+    task name in task_reference.
+
+Examples:
+
+User:
+"Add a high priority task to finish my AI Engineer CV."
+
+Return:
+
+task = "finish my AI Engineer CV"
+task_reference = null
+task_action = "create"
+task_id = null
+priority = "high"
+
+User:
+"I finished my AI Engineer CV task. Mark it as completed."
+
+Return:
+
+task = null
+task_reference = "AI Engineer CV"
+task_action = "complete"
+task_id = null
+
+User:
+"Complete task 3."
+
+Return:
+
+task = null
+task_reference = null
+task_action = "complete"
+task_id = 3
+
+User:
+"Cancel my gym task."
+
+Return:
+
+task = null
+task_reference = "gym"
+task_action = "cancel"
+task_id = null
+
+User:
+"Show me my pending tasks."
+
+Return:
+
+task = null
+task_reference = null
+task_action = "list"
+task_id = null
+
+Important:
+
+- Do not invent information.
+- For existing-task operations, extract a reference whenever
+  the user clearly identifies the task by name.
+- Do not require the user to know the numeric task ID.
+- Use null when the information is genuinely absent.
+- Return ONLY valid JSON.
+- Do not use markdown.
+- Do not add explanations.
 
 For scheduled_at:
 
-- Resolve unambiguous dates and times such as:
+- Resolve clear dates and times such as:
   "today at 5 PM"
   "tomorrow at 9 AM"
   "next Monday at 6 PM"
@@ -114,43 +228,21 @@ For scheduled_at:
 - Use the current date/time above to calculate relative dates.
 - Use the user's timezone: Asia/Karachi.
 - Include the timezone offset.
-
-IMPORTANT:
-
-- If the user gives a clear date/time, return the exact datetime
-  even if that datetime is already in the past.
-- Do NOT change a clear past datetime to null.
-- The backend will separately validate whether the reminder time
-  is in the future.
+- If a clear datetime is given, return it even if it is
+  already in the past.
+- The backend separately validates whether the time is allowed.
 - Do not invent a time when none was provided.
-- If the date/time is genuinely ambiguous, use null.
-
-Examples:
-
-User message:
-"Remind me today at 5 PM to test NOVA."
-
-Return scheduled_at as the exact 5 PM datetime for today,
-even if the current time is already after 5 PM.
-
-User message:
-"Remind me tomorrow at 5 PM to test NOVA."
-
-Return tomorrow's 5 PM datetime.
-
-Important:
-
-- Do not invent information.
-- Use null when information is not present.
-- Return ONLY valid JSON.
-- Do not use markdown.
-- Do not add explanations.
+- If genuinely ambiguous, use null.
 
 Return exactly:
 
 {{
   "intent": "chat|question|advice|planning|reminder|task|action",
-  "task": "short description or null",
+  "task": "new task title or null",
+  "task_reference": "existing task reference or null",
+  "task_action": "create|list|start|complete|cancel|delete or null",
+  "task_id": 123,
+  "priority": "low|medium|high or null",
   "time": "original time expression or null",
   "scheduled_at": "ISO datetime with timezone or null",
   "emotion": "happy|sad|angry|stressed|excited|romantic|playful|neutral",
@@ -196,6 +288,10 @@ Return exactly:
         return {
             "intent": "chat",
             "task": None,
+            "task_reference": None,
+            "task_action": None,
+            "task_id": None,
+            "priority": None,
             "time": None,
             "scheduled_at": None,
             "emotion": "neutral",
@@ -249,6 +345,21 @@ Return exactly:
             "reminder",
         }
 
+        valid_task_actions = {
+            "create",
+            "list",
+            "start",
+            "complete",
+            "cancel",
+            "delete",
+        }
+
+        valid_priorities = {
+            "low",
+            "medium",
+            "high",
+        }
+
         intent = result.get("intent")
         emotion = result.get("emotion")
         tone = result.get("tone")
@@ -267,12 +378,37 @@ Return exactly:
             visual = "none"
 
         task = result.get("task")
+        task_reference = result.get("task_reference")
+        task_action = result.get("task_action")
+        task_id = result.get("task_id")
+        priority = result.get("priority")
         time = result.get("time")
         scheduled_at = result.get("scheduled_at")
         action = result.get("action")
 
         if task is not None:
             task = str(task).strip() or None
+
+        if task_reference is not None:
+            task_reference = (
+                str(task_reference).strip()
+                or None
+            )
+
+        if task_action not in valid_task_actions:
+            task_action = None
+
+        if task_id is not None:
+            try:
+                task_id = int(task_id)
+            except (TypeError, ValueError):
+                task_id = None
+
+        if task_id is not None and task_id < 1:
+            task_id = None
+
+        if priority not in valid_priorities:
+            priority = None
 
         if time is not None:
             time = str(time).strip() or None
@@ -285,16 +421,26 @@ Return exactly:
         if action is not None:
             action = str(action).strip() or None
 
-        # Backend-level safety rule:
-        # reminders and actions always require a tool.
         requires_tool = intent in {
             "reminder",
+            "task",
             "action",
         }
+
+        if intent != "task":
+            task = None
+            task_reference = None
+            task_action = None
+            task_id = None
+            priority = None
 
         return {
             "intent": intent,
             "task": task,
+            "task_reference": task_reference,
+            "task_action": task_action,
+            "task_id": task_id,
+            "priority": priority,
             "time": time,
             "scheduled_at": scheduled_at,
             "emotion": emotion,
