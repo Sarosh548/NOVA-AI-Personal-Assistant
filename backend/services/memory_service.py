@@ -340,6 +340,64 @@ class MemoryService:
                 for memory in memories
             ]
 
+    def get_profile_memories(
+        self,
+        user_id: str,
+        limit: int = 20,
+    ) -> list[dict]:
+        """
+        Retrieve stable profile-style memories.
+
+        This is separate from semantic retrieval.
+
+        It is useful for broad questions such as:
+        - "Who am I?"
+        - "What do you know about me?"
+        - "What are my goals?"
+        """
+
+        if limit < 1:
+            raise ValueError(
+                "limit must be greater than 0"
+            )
+
+        profile_categories = {
+            "identity",
+            "personal",
+            "goal",
+            "preference",
+            "project",
+        }
+
+        with Session(engine) as session:
+            statement = (
+                select(Memory)
+                .where(
+                    Memory.user_id == user_id,
+                    Memory.category.in_(
+                        profile_categories
+                    ),
+                )
+                .order_by(
+                    Memory.created_at.asc()
+                )
+                .limit(limit)
+            )
+
+            memories = session.scalars(
+                statement
+            ).all()
+
+            return [
+                {
+                    "id": memory.id,
+                    "memory": memory.memory_text,
+                    "category": memory.category,
+                    "importance": memory.importance,
+                }
+                for memory in memories
+            ]
+
     def find_similar_memories(
         self,
         user_id: str,
