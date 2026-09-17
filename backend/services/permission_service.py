@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -5,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from database.connection import engine
 from models.permission import Permission
+from services.risk_policy_service import (
+    RiskAssessment,
+    RiskPolicyService,
+)
 
 
 @dataclass(frozen=True)
@@ -21,43 +27,68 @@ class PermissionDecision:
 
     reason:
         Human-readable explanation for the decision.
-    """
 
+    risk_level:
+        Risk classification produced by RiskPolicyService.
+
+    risk_flags:
+        Deterministic risk factors that caused elevation.
+    """
 
     allowed: bool
     requires_confirmation: bool
     reason: str
+    risk_level: str = "low"
+    risk_flags: tuple[str, ...] = ()
 
 
 class PermissionService:
     """
     Generic permission and safety policy layer for NOVA.
 
-    The service does not execute tools.
-    It only decides whether a requested tool/action
-    is permitted to proceed.
-
     Persistent permission modes:
 
         allow:
-            Action may execute without confirmation.
+            Action may execute without confirmation unless the
+            risk policy classifies it as high risk.
 
         confirm:
             Confirmation is required for autonomous/background
             execution. An explicit user request is sufficient
-            for the current interactive flow.
+            for normal medium/low risk work.
 
         deny:
             Action is blocked.
 
+    Risk policy:
+
+        low:
+            Normal read-only work.
+
+        medium:
+            Normal state-changing work.
+
+        high:
+            Sensitive, financial, destructive broad-scope,
+            credential-related, or external-target operations.
+
+            High-risk operations ALWAYS require explicit
+            confirmation and cannot be bypassed by:
+                - interactive execution
+                - persisted "allow"
+                - autonomous execution
+
     If no persistent permission exists:
 
         Read-only actions:
-            allowed.
+            allowed when risk policy allows.
 
-        State-changing actions:
+        Medium-risk state-changing actions:
             explicitly requested by the user -> allowed.
             otherwise -> confirmation required.
+
+        High-risk actions:
+            confirmation always required.
 
     Unknown tools/actions are denied safely.
     """
@@ -83,11 +114,23 @@ class PermissionService:
         "deny",
     }
 
+    def __init__(
+        self,
+        risk_policy_service: RiskPolicyService | None = None,
+    ):
+        self.risk_policy_service = (
+            risk_policy_service
+            if risk_policy_service is not None
+            else RiskPolicyService()
+        )
+
     def _normalize(
         self,
         value: str,
     ) -> str:
-        return str(value).strip().lower()
+        return str(
+            value
+        ).strip().lower()
 
     def get_permission(
         self,
@@ -98,14 +141,20 @@ class PermissionService:
         """
         Return the persisted permission mode for a
         user/tool/action combination.
-
-        Returns None when no persistent permission exists.
         """
 
-        normalized_tool = self._normalize(tool)
-        normalized_action = self._normalize(action)
+        normalized_tool = self._normalize(
+            tool
+        )
 
-        if not normalized_tool or not normalized_action:
+        normalized_action = self._normalize(
+            action
+        )
+
+        if (
+            not normalized_tool
+            or not normalized_action
+        ):
             return None
 
         with Session(engine) as session:
@@ -113,7 +162,8 @@ class PermissionService:
                 select(Permission).where(
                     Permission.user_id == user_id,
                     Permission.tool == normalized_tool,
-                    Permission.action == normalized_action,
+                    Permission.action
+                    == normalized_action,
                 )
             )
 
@@ -131,13 +181,19 @@ class PermissionService:
     ) -> bool:
         """
         Create or update a persistent permission.
-
-        Returns True when the permission is saved successfully.
         """
 
-        normalized_tool = self._normalize(tool)
-        normalized_action = self._normalize(action)
-        normalized_mode = self._normalize(mode)
+        normalized_tool = self._normalize(
+            tool
+        )
+
+        normalized_action = self._normalize(
+            action
+        )
+
+        normalized_mode = self._normalize(
+            mode
+        )
 
         if not normalized_tool:
             raise ValueError(
@@ -169,7 +225,8 @@ class PermissionService:
                 select(Permission).where(
                     Permission.user_id == user_id,
                     Permission.tool == normalized_tool,
-                    Permission.action == normalized_action,
+                    Permission.action
+                    == normalized_action,
                 )
             )
 
@@ -181,7 +238,9 @@ class PermissionService:
                     mode=normalized_mode,
                 )
 
-                session.add(permission)
+                session.add(
+                    permission
+                )
 
             else:
                 permission.mode = normalized_mode
@@ -234,10 +293,18 @@ class PermissionService:
         Returning False means the permission did not exist.
         """
 
-        normalized_tool = self._normalize(tool)
-        normalized_action = self._normalize(action)
+        normalized_tool = self._normalize(
+            tool
+        )
 
-        if not normalized_tool or not normalized_action:
+        normalized_action = self._normalize(
+            action
+        )
+
+        if (
+            not normalized_tool
+            or not normalized_action
+        ):
             return False
 
         with Session(engine) as session:
@@ -245,14 +312,18 @@ class PermissionService:
                 select(Permission).where(
                     Permission.user_id == user_id,
                     Permission.tool == normalized_tool,
-                    Permission.action == normalized_action,
+                    Permission.action
+                    == normalized_action,
                 )
             )
 
             if permission is None:
                 return False
 
-            session.delete(permission)
+            session.delete(
+                permission
+            )
+
             session.commit()
 
             return True
@@ -263,46 +334,25 @@ class PermissionService:
         tool: str,
         action: str,
         user_requested: bool = False,
+        data: dict | None = None,
     ) -> PermissionDecision:
         """
         Check whether NOVA may execute a tool/action.
 
-        Persistent permission is evaluated first.
+        The risk policy is evaluated before the final execution
+        decision.
 
-        For state-changing actions:
-
-            persisted allow
-                -> allowed
-
-            persisted confirm
-                -> explicit user request allowed
-                -> background action requires confirmation
-
-            persisted deny
-                -> denied
-
-            no persisted permission
-                -> explicit user request allowed
-                -> background action requires confirmation
-
-        For read-only actions:
-
-            no persisted permission
-                -> allowed
-
-            persisted allow
-                -> allowed
-
-            persisted confirm
-                -> explicit request allowed
-                -> background requires confirmation
-
-            persisted deny
-                -> denied
+        High-risk operations always require confirmation unless
+        the action is explicitly denied by persistent permission.
         """
 
-        normalized_tool = self._normalize(tool)
-        normalized_action = self._normalize(action)
+        normalized_tool = self._normalize(
+            tool
+        )
+
+        normalized_action = self._normalize(
+            action
+        )
 
         if not normalized_tool:
             return PermissionDecision(
@@ -333,11 +383,21 @@ class PermissionService:
                 ),
             )
 
+        risk = self.risk_policy_service.assess(
+            tool=normalized_tool,
+            action=normalized_action,
+            data=data,
+        )
+
         persisted_mode = self.get_permission(
             user_id=user_id,
             tool=normalized_tool,
             action=normalized_action,
         )
+
+        # -------------------------------------------------
+        # Explicit persistent deny always wins.
+        # -------------------------------------------------
 
         if persisted_mode == "deny":
             return PermissionDecision(
@@ -348,7 +408,34 @@ class PermissionService:
                     f"'{normalized_tool}' is denied by the "
                     "user's saved permission."
                 ),
+                risk_level=risk.level,
+                risk_flags=risk.flags,
             )
+
+        # -------------------------------------------------
+        # High-risk safety boundary.
+        #
+        # Neither "allow" nor interactive execution can
+        # bypass this confirmation requirement.
+        # -------------------------------------------------
+
+        if risk.level == "high":
+            return PermissionDecision(
+                allowed=False,
+                requires_confirmation=True,
+                reason=(
+                    f"High-risk action '{normalized_action}' "
+                    f"on tool '{normalized_tool}' requires "
+                    "explicit confirmation under NOVA's "
+                    f"safety policy. {risk.reason}"
+                ),
+                risk_level=risk.level,
+                risk_flags=risk.flags,
+            )
+
+        # -------------------------------------------------
+        # Persisted allow.
+        # -------------------------------------------------
 
         if persisted_mode == "allow":
             return PermissionDecision(
@@ -359,7 +446,13 @@ class PermissionService:
                     f"'{normalized_tool}' is allowed by the "
                     "user's saved permission."
                 ),
+                risk_level=risk.level,
+                risk_flags=risk.flags,
             )
+
+        # -------------------------------------------------
+        # Persisted confirm.
+        # -------------------------------------------------
 
         if persisted_mode == "confirm":
             if user_requested:
@@ -371,6 +464,8 @@ class PermissionService:
                         f"'{normalized_tool}' was explicitly "
                         "requested by the user."
                     ),
+                    risk_level=risk.level,
+                    risk_flags=risk.flags,
                 )
 
             return PermissionDecision(
@@ -381,7 +476,13 @@ class PermissionService:
                     f"'{normalized_tool}' requires confirmation "
                     "under the user's saved permission."
                 ),
+                risk_level=risk.level,
+                risk_flags=risk.flags,
             )
+
+        # -------------------------------------------------
+        # Read-only action.
+        # -------------------------------------------------
 
         if normalized_action in self.READ_ONLY_ACTIONS:
             return PermissionDecision(
@@ -391,7 +492,13 @@ class PermissionService:
                     f"Read-only action '{normalized_action}' "
                     "is allowed."
                 ),
+                risk_level=risk.level,
+                risk_flags=risk.flags,
             )
+
+        # -------------------------------------------------
+        # Explicitly requested medium-risk action.
+        # -------------------------------------------------
 
         if user_requested:
             return PermissionDecision(
@@ -402,7 +509,13 @@ class PermissionService:
                     f"'{normalized_tool}' was explicitly "
                     "requested by the user."
                 ),
+                risk_level=risk.level,
+                risk_flags=risk.flags,
             )
+
+        # -------------------------------------------------
+        # Autonomous/background medium-risk action.
+        # -------------------------------------------------
 
         return PermissionDecision(
             allowed=False,
@@ -412,4 +525,6 @@ class PermissionService:
                 f"'{normalized_tool}' changes user state "
                 "and requires confirmation."
             ),
+            risk_level=risk.level,
+            risk_flags=risk.flags,
         )

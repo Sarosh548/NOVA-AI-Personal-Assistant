@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.permission_service import (
-    PermissionDecision,
     PermissionService,
 )
 from services.planner_service import (
@@ -24,6 +23,8 @@ class StepPermissionDecision:
     allowed: bool
     requires_confirmation: bool
     reason: str
+    risk_level: str = "low"
+    risk_flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,10 @@ class PlanPermissionDecision:
     allowed: bool
     requires_confirmation: bool
     reason: str
-    steps: tuple[StepPermissionDecision, ...] = field(
+    steps: tuple[
+        StepPermissionDecision,
+        ...
+    ] = field(
         default_factory=tuple
     )
 
@@ -57,18 +61,17 @@ class PlanPermissionService:
     """
     Evaluate permission for a multi-step NOVA plan.
 
+    Individual step data is passed to PermissionService so the
+    risk engine can evaluate sensitive payloads, targets, and
+    operational context.
+
+    The workflow remains an all-or-nothing authorization boundary.
+
     This service does not:
     - execute tools
     - create confirmations
     - modify the database
     - change permissions
-
-    It only combines the existing PermissionService decisions
-    into one safe workflow-level decision.
-
-    This all-or-nothing boundary prevents an agentic workflow
-    from executing harmless-looking steps before a later
-    sensitive step has been authorized.
     """
 
     def __init__(
@@ -85,14 +88,16 @@ class PlanPermissionService:
         self,
         *,
         user_id: str,
-        steps: list[PlanStep | dict[str, Any]],
+        steps: list[
+            PlanStep | dict[str, Any]
+        ],
         user_requested: bool,
     ) -> PlanPermissionDecision:
         """
         Evaluate every step in a workflow.
 
         Existing PermissionService remains the source of truth
-        for individual tool/action policy.
+        for individual tool/action permission plus risk.
 
         The workflow is denied when any step is denied.
 
@@ -144,12 +149,14 @@ class PlanPermissionService:
             step_id = normalized["step_id"]
             tool = normalized["tool"]
             action = normalized["action"]
+            data = normalized["data"]
 
             decision = self.permission_service.check(
                 user_id=user_id,
                 tool=tool,
                 action=action,
                 user_requested=user_requested,
+                data=data,
             )
 
             step_decisions.append(
@@ -162,6 +169,19 @@ class PlanPermissionService:
                         decision.requires_confirmation
                     ),
                     reason=decision.reason,
+                    risk_level=getattr(
+                        decision,
+                        "risk_level",
+                        "low",
+                    ),
+                    risk_flags=tuple(
+                        getattr(
+                            decision,
+                            "risk_flags",
+                            (),
+                        )
+                        or ()
+                    ),
                 )
             )
 
@@ -234,7 +254,7 @@ class PlanPermissionService:
     def _normalize_step(
         self,
         step: PlanStep | dict[str, Any],
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         """
         Normalize supported step representations.
 
@@ -257,6 +277,11 @@ class PlanPermissionService:
             action = str(
                 step.action
             ).strip().lower()
+
+            data = dict(
+                step.data
+                or {}
+            )
 
         elif isinstance(
             step,
@@ -283,6 +308,21 @@ class PlanPermissionService:
                 )
             ).strip().lower()
 
+            raw_data = step.get(
+                "data",
+                {},
+            )
+
+            if not isinstance(
+                raw_data,
+                dict,
+            ):
+                return None
+
+            data = dict(
+                raw_data
+            )
+
         else:
             return None
 
@@ -299,6 +339,7 @@ class PlanPermissionService:
             "step_id": step_id,
             "tool": tool,
             "action": action,
+            "data": data,
         }
 
     def _blocked(

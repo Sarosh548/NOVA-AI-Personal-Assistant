@@ -29,6 +29,7 @@ class FakePermissionService:
         tool,
         action,
         user_requested=False,
+        data=None,
     ):
         self.calls.append(
             {
@@ -36,6 +37,7 @@ class FakePermissionService:
                 "tool": tool,
                 "action": action,
                 "user_requested": user_requested,
+                "data": data,
             }
         )
 
@@ -120,7 +122,9 @@ def test_all_allowed_steps_allow_entire_workflow():
         for step in result.steps
     )
 
-    assert len(permission_service.calls) == 2
+    assert len(
+        permission_service.calls
+    ) == 2
 
 
 def test_any_confirmation_required_step_requires_whole_workflow_confirmation():
@@ -176,10 +180,7 @@ def test_any_confirmation_required_step_requires_whole_workflow_confirmation():
     assert result.allowed is False
     assert result.requires_confirmation is True
 
-    assert (
-        "step-2"
-        in result.reason
-    )
+    assert "step-2" in result.reason
 
     assert result.steps[0].allowed is True
     assert (
@@ -236,10 +237,7 @@ def test_denied_step_blocks_entire_workflow():
     assert result.allowed is False
     assert result.requires_confirmation is False
 
-    assert (
-        "step-2"
-        in result.reason
-    )
+    assert "step-2" in result.reason
 
     assert (
         result.steps[1].allowed
@@ -479,5 +477,85 @@ def test_permission_service_receives_correct_user_context():
             "tool": "task",
             "action": "list",
             "user_requested": False,
+            "data": {},
         }
     ]
+
+
+def test_step_data_is_forwarded_to_permission_service():
+    permission_service = FakePermissionService()
+
+    service = PlanPermissionService(
+        permission_service=permission_service
+    )
+
+    step_data = {
+        "task": "Create financial report",
+        "amount": 5000,
+    }
+
+    service.check(
+        user_id="specific-user",
+        steps=[
+            PlanStep(
+                step_id="step-1",
+                tool="task",
+                action="create",
+                data=step_data,
+            )
+        ],
+        user_requested=True,
+    )
+
+    assert permission_service.calls == [
+        {
+            "user_id": "specific-user",
+            "tool": "task",
+            "action": "create",
+            "user_requested": True,
+            "data": step_data,
+        }
+    ]
+
+
+def test_permission_decision_risk_metadata_is_preserved():
+    permission_service = FakePermissionService(
+        decisions={
+            (
+                "finance",
+                "create",
+            ): PermissionDecision(
+                allowed=False,
+                requires_confirmation=True,
+                reason="High-risk operation.",
+                risk_level="high",
+                risk_flags=(
+                    "high_risk_tool",
+                ),
+            )
+        }
+    )
+
+    service = PlanPermissionService(
+        permission_service=permission_service
+    )
+
+    result = service.check(
+        user_id="user-001",
+        steps=[
+            PlanStep(
+                step_id="step-1",
+                tool="finance",
+                action="create",
+                data={},
+            )
+        ],
+        user_requested=True,
+    )
+
+    assert result.allowed is False
+    assert result.requires_confirmation is True
+    assert result.steps[0].risk_level == "high"
+    assert result.steps[0].risk_flags == (
+        "high_risk_tool",
+    )
