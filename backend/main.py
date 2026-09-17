@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from agent.graph import build_graph
 from services.conversation_service import ConversationService
+from services.execution_context import ExecutionContext
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
 from services.reminder_scheduler import ReminderScheduler
@@ -13,49 +14,27 @@ from services.reminder_service import ReminderService
 
 app = FastAPI()
 
-
-# =========================================================
-# SERVICES
-# =========================================================
-
 llm_service = LLMService()
 memory_service = MemoryService(llm_service)
 conversation_service = ConversationService()
 
-# LangGraph agent
 agent_graph = build_graph()
 
-# Reminder system
 reminder_service = ReminderService()
-
 reminder_scheduler = ReminderScheduler(
     interval_seconds=5
 )
-
 scheduler_task: asyncio.Task | None = None
-
-
-# =========================================================
-# CONSTANTS
-# =========================================================
 
 CONTEXT_MAX_MESSAGES = 12
 CONTEXT_MAX_CHARACTERS = 12000
 
-
-# =========================================================
-# REQUEST MODEL
-# =========================================================
 
 class ChatRequest(BaseModel):
     message: str
     user_id: str = "user-001"
     conversation_id: int | None = None
 
-
-# =========================================================
-# STARTUP
-# =========================================================
 
 @app.on_event("startup")
 async def startup_event():
@@ -66,12 +45,10 @@ async def startup_event():
             reminder_scheduler.run()
         )
 
-    print("NOVA reminder scheduler started automatically.")
+    print(
+        "NOVA reminder scheduler started automatically."
+    )
 
-
-# =========================================================
-# SHUTDOWN
-# =========================================================
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -87,12 +64,10 @@ async def shutdown_event():
 
         scheduler_task = None
 
-    print("NOVA reminder scheduler stopped.")
+    print(
+        "NOVA reminder scheduler stopped."
+    )
 
-
-# =========================================================
-# ROOT
-# =========================================================
 
 @app.get("/")
 def home():
@@ -101,27 +76,14 @@ def home():
     }
 
 
-# =========================================================
-# CHAT
-# =========================================================
-
 @app.post("/chat")
 def chat(request: ChatRequest):
-
-    # -----------------------------------------------------
-    # 1. VALIDATE MESSAGE
-    # -----------------------------------------------------
-
     user_message = request.message.strip()
 
     if not user_message:
         return {
             "error": "message cannot be empty"
         }
-
-    # -----------------------------------------------------
-    # 2. GET OR CREATE CONVERSATION
-    # -----------------------------------------------------
 
     conversation_id = (
         conversation_service.get_or_create_conversation(
@@ -130,25 +92,20 @@ def chat(request: ChatRequest):
         )
     )
 
-    # -----------------------------------------------------
-    # 3. LOAD BOUNDED CONVERSATION CONTEXT
-    # -----------------------------------------------------
-
-    history = conversation_service.get_context_history(
-        user_id=request.user_id,
-        conversation_id=conversation_id,
-        max_messages=CONTEXT_MAX_MESSAGES,
-        max_characters=CONTEXT_MAX_CHARACTERS,
+    history = (
+        conversation_service.get_context_history(
+            user_id=request.user_id,
+            conversation_id=conversation_id,
+            max_messages=CONTEXT_MAX_MESSAGES,
+            max_characters=CONTEXT_MAX_CHARACTERS,
+        )
     )
 
-    # -----------------------------------------------------
-    # 4. CREATE CONVERSATION TITLE
-    # -----------------------------------------------------
-
     if not history:
-
-        title = llm_service.generate_conversation_title(
-            user_message
+        title = (
+            llm_service.generate_conversation_title(
+                user_message
+            )
         )
 
         conversation_service.update_conversation_title(
@@ -157,18 +114,31 @@ def chat(request: ChatRequest):
             title=title,
         )
 
-    # -----------------------------------------------------
-    # 5. INITIAL AGENT STATE
-    # -----------------------------------------------------
+    execution_context = (
+        ExecutionContext.interactive()
+    )
 
     initial_state = {
         "user_id": request.user_id,
         "conversation_id": conversation_id,
         "user_message": user_message,
         "history": history,
-
         "understanding": {},
-
+        "plan": {},
+        "permission": {
+            "allowed": False,
+            "requires_confirmation": False,
+            "reason": "Permission check not performed yet.",
+        },
+        "user_requested": execution_context.user_requested,
+        "execution_context": execution_context,
+        "confirmation": {
+            "id": None,
+            "status": None,
+            "tool": None,
+            "action": None,
+            "reason": None,
+        },
         "tool_result": {
             "success": False,
             "tool": None,
@@ -176,14 +146,9 @@ def chat(request: ChatRequest):
             "result": None,
             "error": None,
         },
-
         "memory_context": "",
         "response": "",
     }
-
-    # -----------------------------------------------------
-    # 6. RUN LANGGRAPH
-    # -----------------------------------------------------
 
     result = agent_graph.invoke(
         initial_state
@@ -191,11 +156,19 @@ def chat(request: ChatRequest):
 
     response = result["response"]
     understanding = result["understanding"]
+    plan = result.get(
+        "plan",
+        {},
+    )
+    permission = result.get(
+        "permission",
+        {},
+    )
+    confirmation = result.get(
+        "confirmation",
+        {},
+    )
     tool_result = result["tool_result"]
-
-    # -----------------------------------------------------
-    # 7. SAVE USER MESSAGE
-    # -----------------------------------------------------
 
     conversation_service.save_message(
         user_id=request.user_id,
@@ -204,20 +177,12 @@ def chat(request: ChatRequest):
         content=user_message,
     )
 
-    # -----------------------------------------------------
-    # 8. SAVE NOVA RESPONSE
-    # -----------------------------------------------------
-
     conversation_service.save_message(
         user_id=request.user_id,
         conversation_id=conversation_id,
         role="assistant",
         content=response,
     )
-
-    # -----------------------------------------------------
-    # 9. EXTRACT LONG-TERM MEMORY
-    # -----------------------------------------------------
 
     new_memory = llm_service.extract_memory(
         user_message
@@ -226,23 +191,21 @@ def chat(request: ChatRequest):
     memory_action = None
 
     if new_memory:
-
         memory_action = memory_service.add_memory(
-              user_id=request.user_id,
-              memory_text=new_memory["memory_text"],
-              category=new_memory["category"],
-              importance=new_memory["importance"],
-              user_message=user_message,
-)
-
-    # -----------------------------------------------------
-    # 10. RETURN RESPONSE
-    # -----------------------------------------------------
+            user_id=request.user_id,
+            memory_text=new_memory["memory_text"],
+            category=new_memory["category"],
+            importance=new_memory["importance"],
+            user_message=user_message,
+        )
 
     return {
         "response": response,
         "conversation_id": conversation_id,
         "understanding": understanding,
+        "plan": plan,
+        "permission": permission,
+        "confirmation": confirmation,
         "tool_result": tool_result,
         "memory_action": memory_action,
     }
