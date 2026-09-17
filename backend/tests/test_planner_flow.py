@@ -113,11 +113,27 @@ def test_planner_to_permission_to_tool_flow_for_task(
     assert planned_state["plan"]["tool"] == "task"
     assert planned_state["plan"]["action"] == "create"
 
+    assert len(planned_state["plan"]["steps"]) == 1
+
+    step = planned_state["plan"]["steps"][0]
+
+    assert step["step_id"] == "step-1"
+    assert step["tool"] == "task"
+    assert step["action"] == "create"
+    assert step["data"]["task"] == "Practice Python"
+    assert step["depends_on"] == []
+
     permission_state = graph.permission_node(
         planned_state
     )
 
-    assert permission_state["permission"]["allowed"] is True
+    assert planned_state["plan"]["steps"][0]["tool"] == "task"
+
+    assert (
+        permission_state["permission"]["allowed"]
+        is True
+    )
+
     assert (
         permission_state["permission"]
         ["requires_confirmation"]
@@ -212,6 +228,16 @@ def test_planner_to_permission_to_tool_flow_for_reminder(
         planned_state["plan"]["action"]
         == "create"
     )
+
+    assert len(planned_state["plan"]["steps"]) == 1
+
+    step = planned_state["plan"]["steps"][0]
+
+    assert step["step_id"] == "step-1"
+    assert step["tool"] == "reminder"
+    assert step["action"] == "create"
+    assert step["data"]["task"] == "Call HR"
+    assert step["depends_on"] == []
 
     permission_state = graph.permission_node(
         planned_state
@@ -311,6 +337,7 @@ def test_normal_chat_does_not_enter_tool_flow(
         planned_state["plan"]["action"]
         is None
     )
+    assert planned_state["plan"]["steps"] == []
 
     permission_state = graph.permission_node(
         planned_state

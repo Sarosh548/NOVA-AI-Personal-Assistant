@@ -1,4 +1,7 @@
-from services.planner_service import PlannerService
+from services.planner_service import (
+    PlanStep,
+    PlannerService,
+)
 
 
 def test_planner_returns_non_tool_plan_for_normal_chat():
@@ -28,6 +31,7 @@ def test_planner_returns_non_tool_plan_for_normal_chat():
     assert plan.requires_tool is False
     assert plan.tool is None
     assert plan.action is None
+    assert plan.steps == ()
 
 
 def test_planner_creates_task_plan():
@@ -69,6 +73,18 @@ def test_planner_creates_task_plan():
     assert plan.data["tool"] == "task"
     assert plan.data["action"] == "create"
 
+    assert len(plan.steps) == 1
+
+    step = plan.steps[0]
+
+    assert isinstance(step, PlanStep)
+    assert step.step_id == "step-1"
+    assert step.tool == "task"
+    assert step.action == "create"
+    assert step.data["task"] == "Practice Python"
+    assert step.data["task_action"] == "create"
+    assert step.depends_on == ()
+
 
 def test_planner_creates_reminder_plan():
     planner = PlannerService()
@@ -108,6 +124,17 @@ def test_planner_creates_reminder_plan():
     assert plan.data["tool"] == "reminder"
     assert plan.data["action"] == "create"
 
+    assert len(plan.steps) == 1
+
+    step = plan.steps[0]
+
+    assert step.step_id == "step-1"
+    assert step.tool == "reminder"
+    assert step.action == "create"
+    assert step.data["task"] == "Call HR"
+    assert step.data["reminder_action"] == "create"
+    assert step.depends_on == ()
+
 
 def test_planner_rejects_unavailable_tool():
     planner = PlannerService()
@@ -134,6 +161,7 @@ def test_planner_rejects_unavailable_tool():
     assert plan.requires_tool is False
     assert plan.tool is None
     assert plan.action is None
+    assert plan.steps == ()
     assert "not currently available" in plan.reason
 
 
@@ -166,6 +194,7 @@ def test_planner_rejects_unsupported_action():
     assert plan.requires_tool is False
     assert plan.tool is None
     assert plan.action is None
+    assert plan.steps == ()
     assert "No valid action" in plan.reason
 
 
@@ -198,6 +227,260 @@ def test_planner_does_not_execute_any_tool():
     assert plan.tool == "task"
     assert plan.action == "complete"
 
-    # Planner only creates a decision.
-    # It must never contain an execution result.
+    assert len(plan.steps) == 1
+    assert plan.steps[0].tool == "task"
+    assert plan.steps[0].action == "complete"
+
     assert "tool_result" not in plan.data
+    assert "tool_result" not in plan.steps[0].data
+
+
+def test_plan_step_supports_dependencies():
+    step = PlanStep(
+        step_id="step-2",
+        tool="task",
+        action="complete",
+        data={
+            "task_action": "complete",
+            "task_id": 13,
+        },
+        depends_on=("step-1",),
+    )
+
+    assert step.step_id == "step-2"
+    assert step.tool == "task"
+    assert step.action == "complete"
+    assert step.data["task_id"] == 13
+    assert step.depends_on == ("step-1",)
+
+
+def test_planner_creates_valid_multi_step_plan():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "task",
+            "description": "Manage tasks.",
+            "actions": [
+                "create",
+                "list",
+                "complete",
+            ],
+        },
+        {
+            "name": "reminder",
+            "description": "Manage reminders.",
+            "actions": [
+                "create",
+                "list",
+            ],
+        },
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "task",
+                "action": "list",
+                "data": {},
+                "depends_on": [],
+            },
+            {
+                "step_id": "step-2",
+                "tool": "reminder",
+                "action": "create",
+                "data": {
+                    "reminder_action": "create",
+                    "task": "Review task list",
+                    "scheduled_at": (
+                        "2026-09-18T10:00:00+05:00"
+                    ),
+                },
+                "depends_on": ["step-1"],
+            },
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is True
+    assert plan.tool is None
+    assert plan.action is None
+    assert len(plan.steps) == 2
+
+    first = plan.steps[0]
+    second = plan.steps[1]
+
+    assert first.step_id == "step-1"
+    assert first.tool == "task"
+    assert first.action == "list"
+    assert first.depends_on == ()
+
+    assert second.step_id == "step-2"
+    assert second.tool == "reminder"
+    assert second.action == "create"
+    assert second.depends_on == ("step-1",)
+
+    assert (
+        plan.data["steps"][1]["depends_on"]
+        == ["step-1"]
+    )
+
+
+def test_planner_rejects_duplicate_multi_step_ids():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "task",
+            "description": "Manage tasks.",
+            "actions": ["list"],
+        }
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "task",
+                "action": "list",
+                "data": {},
+                "depends_on": [],
+            },
+            {
+                "step_id": "step-1",
+                "tool": "task",
+                "action": "list",
+                "data": {},
+                "depends_on": [],
+            },
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "Duplicate plan step ID" in plan.reason
+
+
+def test_planner_rejects_unknown_multi_step_dependency():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "task",
+            "description": "Manage tasks.",
+            "actions": ["list"],
+        }
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "task",
+                "action": "list",
+                "data": {},
+                "depends_on": ["missing-step"],
+            }
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "depends on unknown step" in plan.reason
+
+
+def test_planner_rejects_multi_step_self_dependency():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "task",
+            "description": "Manage tasks.",
+            "actions": ["list"],
+        }
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "task",
+                "action": "list",
+                "data": {},
+                "depends_on": ["step-1"],
+            }
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "cannot depend on itself" in plan.reason
+
+
+def test_planner_rejects_multi_step_dependency_cycle():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "task",
+            "description": "Manage tasks.",
+            "actions": ["list"],
+        }
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "task",
+                "action": "list",
+                "data": {},
+                "depends_on": ["step-2"],
+            },
+            {
+                "step_id": "step-2",
+                "tool": "task",
+                "action": "list",
+                "data": {},
+                "depends_on": ["step-1"],
+            },
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "dependency cycle" in plan.reason
+
+
+def test_planner_rejects_unsupported_multi_step_action():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "task",
+            "description": "Manage tasks.",
+            "actions": ["list"],
+        }
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "task",
+                "action": "delete",
+                "data": {},
+                "depends_on": [],
+            }
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "not supported" in plan.reason

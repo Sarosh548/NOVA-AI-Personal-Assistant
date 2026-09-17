@@ -10,7 +10,7 @@ class NOVAExecutionService:
     """
     Shared execution boundary for NOVA.
 
-    Interactive requests and future autonomous/background
+    Interactive requests and autonomous/background
     workflows use this service to execute the NOVA graph.
 
     The execution context is explicit so the caller cannot
@@ -71,6 +71,12 @@ class NOVAExecutionService:
                 "tool": None,
                 "action": None,
                 "result": None,
+                "error": None,
+            },
+            "workflow_result": {
+                "success": False,
+                "status": None,
+                "steps": [],
                 "error": None,
             },
             "memory_context": "",

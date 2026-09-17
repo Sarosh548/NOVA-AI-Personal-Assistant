@@ -15,5 +15,6 @@ class NOVAState(TypedDict):
     execution_context: ExecutionContext
     confirmation: dict[str, Any]
     tool_result: dict[str, Any]
+    workflow_result: dict[str, Any]
     memory_context: str
     response: str

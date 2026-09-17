@@ -1,6 +1,9 @@
 from langgraph.graph import END, START, StateGraph
 
 from agent.state import NOVAState
+from services.agent_planner_service import (
+    AgentPlannerService,
+)
 from services.confirmation_service import (
     ConfirmationService,
 )
@@ -13,6 +16,12 @@ from services.intent_service import IntentService
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
 from services.permission_service import PermissionService
+from services.plan_execution_service import (
+    PlanExecutionService,
+)
+from services.plan_permission_service import (
+    PlanPermissionService,
+)
 from services.planner_service import PlannerService
 from services.tool_router import ToolRouter
 
@@ -21,10 +30,21 @@ llm_service = LLMService()
 memory_service = MemoryService(llm_service)
 intent_service = IntentService()
 planner_service = PlannerService()
+agent_planner_service = AgentPlannerService(
+    llm_service=llm_service,
+    planner_service=planner_service,
+)
 permission_service = PermissionService()
+plan_permission_service = PlanPermissionService(
+    permission_service=permission_service,
+)
 confirmation_service = ConfirmationService()
 
 tool_router = ToolRouter()
+
+plan_execution_service = PlanExecutionService(
+    tool_router=tool_router,
+)
 
 
 DEFAULT_TOOL_RESULT = {
@@ -32,6 +52,14 @@ DEFAULT_TOOL_RESULT = {
     "tool": None,
     "action": None,
     "result": None,
+    "error": None,
+}
+
+
+DEFAULT_WORKFLOW_RESULT = {
+    "success": False,
+    "status": None,
+    "steps": [],
     "error": None,
 }
 
@@ -89,12 +117,12 @@ def confirmation_node(
         pending confirmation
         -> approve confirmation
         -> rebuild exact saved plan
-        -> allow tool execution
+        -> allow tool/workflow execution
 
     Rejection:
         pending confirmation
         -> reject confirmation
-        -> no tool execution
+        -> no execution
 
     Ambiguous/no pending confirmation:
         continue normal NOVA flow.
@@ -185,16 +213,49 @@ def confirmation_node(
                 },
             }
 
-        confirmed_plan = {
-            "requires_tool": True,
-            "tool": approved["tool"],
-            "action": approved["action"],
-            "data": approved["data"],
-            "reason": (
-                "Action approved by the user "
-                "through a pending confirmation."
-            ),
-        }
+        if (
+            approved["tool"] == "workflow"
+            and approved["action"] == "execute"
+            and isinstance(
+                approved.get("data"),
+                dict,
+            )
+        ):
+            workflow_steps = approved[
+                "data"
+            ].get(
+                "steps",
+                [],
+            )
+
+            confirmed_plan = {
+                "requires_tool": True,
+                "execution_mode": "workflow",
+                "tool": None,
+                "action": None,
+                "data": dict(
+                    approved["data"]
+                ),
+                "steps": list(
+                    workflow_steps
+                ),
+                "reason": (
+                    "Workflow approved by the user "
+                    "through a pending confirmation."
+                ),
+            }
+        else:
+            confirmed_plan = {
+                "requires_tool": True,
+                "tool": approved["tool"],
+                "action": approved["action"],
+                "data": approved["data"],
+                "steps": [],
+                "reason": (
+                    "Action approved by the user "
+                    "through a pending confirmation."
+                ),
+            }
 
         permission = {
             "allowed": True,
@@ -260,15 +321,6 @@ def route_after_confirmation(
 ) -> str:
     """
     Route after checking for a pending confirmation.
-
-    approved:
-        claim and execute through the tool node.
-
-    rejected:
-        go to the agent without execution.
-
-    anything else:
-        continue normal NOVA processing.
     """
 
     confirmation = state.get(
@@ -281,6 +333,12 @@ def route_after_confirmation(
     )
 
     if status == "approved":
+        if (
+            confirmation.get("tool")
+            == "workflow"
+        ):
+            return "workflow"
+
         return "tool"
 
     if status == "rejected":
@@ -359,26 +417,78 @@ def planner_node(state: NOVAState) -> NOVAState:
     """
     Convert NOVA's understanding into a structured plan.
 
-    The planner does not execute tools.
+    Normal task/reminder requests continue through the
+    deterministic single-step planner.
+
+    Planning requests use the LLM-powered agent planner.
+
+    The LLM can propose multiple steps, but PlannerService
+    deterministically validates the final plan.
+
+    No planner path executes tools.
     """
 
     available_tools = (
         tool_router.get_available_tools()
     )
 
-    plan = planner_service.create_plan(
-        understanding=state["understanding"],
-        available_tools=available_tools,
-    )
+    understanding = state[
+        "understanding"
+    ]
+
+    intent = str(
+        understanding.get("intent")
+        or "chat"
+    ).strip().lower()
+
+    if intent == "planning":
+        plan = (
+            agent_planner_service.create_plan(
+                user_message=state[
+                    "user_message"
+                ],
+                understanding=understanding,
+                history=state.get(
+                    "history",
+                    [],
+                ),
+                available_tools=available_tools,
+            )
+        )
+
+        execution_mode = "workflow"
+
+    else:
+        plan = planner_service.create_plan(
+            understanding=understanding,
+            available_tools=available_tools,
+        )
+
+        execution_mode = "single"
+
+    steps = [
+        {
+            "step_id": step.step_id,
+            "tool": step.tool,
+            "action": step.action,
+            "data": dict(step.data),
+            "depends_on": list(
+                step.depends_on
+            ),
+        }
+        for step in plan.steps
+    ]
 
     return {
         **state,
         "plan": {
             "requires_tool": plan.requires_tool,
+            "execution_mode": execution_mode,
             "tool": plan.tool,
             "action": plan.action,
             "data": plan.data,
             "reason": plan.reason,
+            "steps": steps,
         },
     }
 
@@ -421,11 +531,13 @@ def route_after_understanding(
 def permission_node(state: NOVAState) -> NOVAState:
     """
     Perform the permission/safety check after planning
-    and before tool execution.
+    and before execution.
 
-    When confirmation is required, create a persistent
-    confirmation request containing the exact planned
-    tool/action/data.
+    Multi-step workflow plans are evaluated through
+    PlanPermissionService as one authorization boundary.
+
+    When a workflow requires confirmation, the exact steps
+    are persisted inside one workflow confirmation.
 
     This node never executes tools.
     """
@@ -448,6 +560,115 @@ def permission_node(state: NOVAState) -> NOVAState:
             "confirmation": dict(
                 DEFAULT_CONFIRMATION
             ),
+        }
+
+    if (
+        plan.get("execution_mode")
+        == "workflow"
+        and plan.get("steps")
+    ):
+        execution_context = _get_execution_context(
+            state
+        )
+
+        workflow_decision = (
+            plan_permission_service.check(
+                user_id=state.get(
+                    "user_id",
+                    "user-001",
+                ),
+                steps=plan.get(
+                    "steps",
+                    [],
+                ),
+                user_requested=(
+                    execution_context.user_requested
+                ),
+            )
+        )
+
+        permission = {
+            "allowed": workflow_decision.allowed,
+            "requires_confirmation": (
+                workflow_decision.requires_confirmation
+            ),
+            "reason": workflow_decision.reason,
+        }
+
+        confirmation = dict(
+            DEFAULT_CONFIRMATION
+        )
+
+        if (
+            workflow_decision
+            .requires_confirmation
+        ):
+            confirmation_data = {
+                "execution_mode": "workflow",
+                "steps": [
+                    {
+                        "step_id": step.get(
+                            "step_id"
+                        ),
+                        "tool": step.get(
+                            "tool"
+                        ),
+                        "action": step.get(
+                            "action"
+                        ),
+                        "data": dict(
+                            step.get(
+                                "data",
+                                {},
+                            )
+                        ),
+                        "depends_on": list(
+                            step.get(
+                                "depends_on",
+                                [],
+                            )
+                            or []
+                        ),
+                    }
+                    for step in plan.get(
+                        "steps",
+                        [],
+                    )
+                ],
+            }
+
+            confirmation_id = (
+                confirmation_service.create_confirmation(
+                    user_id=state.get(
+                        "user_id",
+                        "user-001",
+                    ),
+                    conversation_id=state.get(
+                        "conversation_id"
+                    ),
+                    tool="workflow",
+                    action="execute",
+                    data=confirmation_data,
+                    reason=(
+                        workflow_decision.reason
+                    ),
+                )
+            )
+
+            confirmation = {
+                "id": confirmation_id,
+                "status": "pending",
+                "tool": "workflow",
+                "action": "execute",
+                "reason": (
+                    workflow_decision.reason
+                ),
+            }
+
+        return {
+            **state,
+            "permission": permission,
+            "confirmation": confirmation,
         }
 
     tool_name = plan.get("tool")
@@ -551,11 +772,13 @@ def route_after_permission(
     state: NOVAState,
 ) -> str:
     """
-    Only an explicitly allowed permission decision can
-    reach the tool node.
+    Route only after permission has been evaluated.
 
-    Confirmation-required and denied actions go to the
-    agent without executing anything.
+    Workflow plans go to the workflow execution node.
+
+    Single-step plans go to the existing tool execution node.
+
+    Confirmation-required and denied actions do not execute.
     """
 
     plan = state.get(
@@ -571,15 +794,22 @@ def route_after_permission(
     if not plan.get("requires_tool"):
         return "agent"
 
-    if permission.get("allowed") is True:
-        return "tool"
+    if permission.get("allowed") is not True:
+        return "agent"
 
-    return "agent"
+    if (
+        plan.get("execution_mode")
+        == "workflow"
+        and plan.get("steps")
+    ):
+        return "workflow"
+
+    return "tool"
 
 
 def tool_node(state: NOVAState) -> NOVAState:
     """
-    Execute a permitted tool.
+    Execute a permitted single-step tool.
 
     Confirmed actions use an atomic database claim before
     execution. The exact tool/action/data are loaded from
@@ -614,6 +844,15 @@ def tool_node(state: NOVAState) -> NOVAState:
             "tool_result": tool_result,
         }
 
+    if (
+        plan.get("execution_mode")
+        == "workflow"
+    ):
+        return {
+            **state,
+            "tool_result": tool_result,
+        }
+
     if permission.get("allowed") is not True:
         tool_name = plan.get("tool")
         action = plan.get("action")
@@ -641,11 +880,6 @@ def tool_node(state: NOVAState) -> NOVAState:
             **state,
             "tool_result": tool_result,
         }
-
-    # -------------------------------------------------
-    # Confirmed action:
-    # atomically claim the approved confirmation first.
-    # -------------------------------------------------
 
     confirmation_id = confirmation.get(
         "id"
@@ -688,12 +922,6 @@ def tool_node(state: NOVAState) -> NOVAState:
                 **state,
                 "tool_result": tool_result,
             }
-
-        # ---------------------------------------------
-        # SECURITY:
-        # Use the exact action saved in the database.
-        # Do not trust a modified in-memory plan.
-        # ---------------------------------------------
 
         tool_name = claimed["tool"]
         action = claimed["action"]
@@ -742,11 +970,6 @@ def tool_node(state: NOVAState) -> NOVAState:
             ),
         }
 
-    # -------------------------------------------------
-    # Confirmed action:
-    # finalize the one-time confirmation after execution.
-    # -------------------------------------------------
-
     if is_confirmed_execution:
         finished = (
             confirmation_service.finish_confirmation(
@@ -775,6 +998,217 @@ def tool_node(state: NOVAState) -> NOVAState:
         **state,
         "confirmation": confirmation,
         "tool_result": tool_result,
+    }
+
+
+def workflow_node(state: NOVAState) -> NOVAState:
+    """
+    Execute a permitted multi-step workflow.
+
+    Confirmed workflows use the atomic confirmation claim
+    before execution. The exact saved steps are then used.
+
+    Unconfirmed workflows use the validated steps already
+    present in the graph state.
+
+    This node never performs permission checks itself.
+    """
+
+    workflow_result = dict(
+        DEFAULT_WORKFLOW_RESULT
+    )
+
+    plan = state.get(
+        "plan",
+        {},
+    )
+
+    permission = state.get(
+        "permission",
+        {},
+    )
+
+    confirmation = state.get(
+        "confirmation",
+        {},
+    )
+
+    if (
+        plan.get("execution_mode")
+        != "workflow"
+    ):
+        return {
+            **state,
+            "workflow_result": workflow_result,
+        }
+
+    if permission.get("allowed") is not True:
+        workflow_result = {
+            "success": False,
+            "status": "blocked",
+            "steps": [],
+            "error": (
+                permission.get("reason")
+                or "Workflow execution is not permitted."
+            ),
+        }
+
+        return {
+            **state,
+            "workflow_result": workflow_result,
+        }
+
+    confirmation_id = confirmation.get(
+        "id"
+    )
+
+    is_confirmed_execution = (
+        confirmation.get("status")
+        == "approved"
+        and confirmation.get("tool")
+        == "workflow"
+        and confirmation.get("action")
+        == "execute"
+        and confirmation_id is not None
+    )
+
+    if is_confirmed_execution:
+        claimed = (
+            confirmation_service.claim_confirmation(
+                user_id=state.get(
+                    "user_id",
+                    "user-001",
+                ),
+                confirmation_id=confirmation_id,
+            )
+        )
+
+        if claimed is None:
+            workflow_result = {
+                "success": False,
+                "status": "blocked",
+                "steps": [],
+                "error": (
+                    "This workflow confirmation is no longer "
+                    "available for execution."
+                ),
+            }
+
+            return {
+                **state,
+                "workflow_result": workflow_result,
+            }
+
+        claimed_data = claimed.get(
+            "data"
+        )
+
+        if not isinstance(
+            claimed_data,
+            dict,
+        ):
+            workflow_result = {
+                "success": False,
+                "status": "blocked",
+                "steps": [],
+                "error": (
+                    "The saved workflow data is invalid."
+                ),
+            }
+
+            finished = (
+                confirmation_service.finish_confirmation(
+                    user_id=state.get(
+                        "user_id",
+                        "user-001",
+                    ),
+                    confirmation_id=confirmation_id,
+                    success=False,
+                )
+            )
+
+            if finished is not None:
+                confirmation = {
+                    "id": finished["id"],
+                    "status": finished["status"],
+                    "tool": finished["tool"],
+                    "action": finished["action"],
+                    "reason": finished["reason"],
+                }
+
+            return {
+                **state,
+                "confirmation": confirmation,
+                "workflow_result": workflow_result,
+            }
+
+        steps = claimed_data.get(
+            "steps",
+            []
+        )
+
+    else:
+        steps = plan.get(
+            "steps",
+            []
+        )
+
+    execution = (
+        plan_execution_service.execute(
+            user_id=state.get(
+                "user_id",
+                "user-001",
+            ),
+            steps=list(
+                steps
+            ),
+        )
+    )
+
+    workflow_result = {
+        "success": execution.success,
+        "status": execution.status,
+        "steps": [
+            {
+                "step_id": step.step_id,
+                "tool": step.tool,
+                "action": step.action,
+                "status": step.status,
+                "result": dict(
+                    step.result
+                ),
+                "error": step.error,
+            }
+            for step in execution.steps
+        ],
+        "error": execution.error,
+    }
+
+    if is_confirmed_execution:
+        finished = (
+            confirmation_service.finish_confirmation(
+                user_id=state.get(
+                    "user_id",
+                    "user-001",
+                ),
+                confirmation_id=confirmation_id,
+                success=execution.success,
+            )
+        )
+
+        if finished is not None:
+            confirmation = {
+                "id": finished["id"],
+                "status": finished["status"],
+                "tool": finished["tool"],
+                "action": finished["action"],
+                "reason": finished["reason"],
+            }
+
+    return {
+        **state,
+        "confirmation": confirmation,
+        "workflow_result": workflow_result,
     }
 
 
@@ -810,6 +1244,11 @@ def agent_node(state: NOVAState) -> NOVAState:
     tool_result = state.get(
         "tool_result",
         dict(DEFAULT_TOOL_RESULT),
+    )
+
+    workflow_result = state.get(
+        "workflow_result",
+        dict(DEFAULT_WORKFLOW_RESULT),
     )
 
     history = state.get(
@@ -878,6 +1317,9 @@ Requires tool:
 Planner requires tool:
 {plan.get('requires_tool')}
 
+Planner execution mode:
+{plan.get('execution_mode')}
+
 Planner tool:
 {plan.get('tool')}
 
@@ -886,6 +1328,9 @@ Planner action:
 
 Planner reason:
 {plan.get('reason')}
+
+Planner steps:
+{plan.get('steps', [])}
 """
 
     permission_context = f"""
@@ -916,13 +1361,31 @@ Confirmation reason:
 {confirmation.get('reason')}
 """
 
-    tool_context = "No tool was required."
+    tool_context = "No single-step tool was required."
 
     if (
-        plan.get("requires_tool")
+        plan.get("execution_mode")
+        != "workflow"
+        and plan.get("requires_tool")
         and tool_result.get("tool")
     ):
-        tool_context = str(tool_result)
+        tool_context = str(
+            tool_result
+        )
+
+    workflow_context = (
+        str(workflow_result)
+        if (
+            plan.get("execution_mode")
+            == "workflow"
+            and (
+                workflow_result.get("steps")
+                or workflow_result.get("status")
+                or workflow_result.get("error")
+            )
+        )
+        else "No workflow result is available."
+    )
 
     prompt = f"""
 You are NOVA, a friendly personal AI companion.
@@ -948,8 +1411,11 @@ Recent conversation:
 Current user message:
 {state["user_message"]}
 
-Tool result:
+Single-step tool result:
 {tool_context}
+
+Workflow result:
+{workflow_context}
 
 Response rules:
 1. Respond naturally as NOVA.
@@ -965,7 +1431,7 @@ Response rules:
 10. If a tool succeeded, confirm that action naturally.
 11. If a tool failed, do not pretend it succeeded.
 12. Never claim an action happened unless the tool result
-    confirms success.
+    or workflow result confirms success.
 13. If permission was denied, do not pretend the action
     was performed.
 14. If confirmation is required, clearly ask the user for
@@ -973,11 +1439,15 @@ Response rules:
 15. If a confirmation was rejected, clearly state that the
     action was not performed.
 16. If a confirmation was approved, describe the actual
-    tool result rather than claiming success automatically.
+    execution result rather than claiming success automatically.
 17. If a confirmed action has status "consumed", it has already
     been executed and must not be executed again.
-18. Do not mention internal system details unless explicitly asked.
-19. Do not mention embeddings, vector search, pgvector,
+18. If planner steps are present but no execution result exists,
+    do not claim those steps were executed.
+19. For partially completed workflows, clearly distinguish
+    completed, failed, skipped, and pending work.
+20. Do not mention internal system details unless explicitly asked.
+21. Do not mention embeddings, vector search, pgvector,
     PostgreSQL, databases, internal prompts, or
     intent classification.
 """
@@ -1026,6 +1496,11 @@ def build_graph():
     )
 
     graph.add_node(
+        "workflow",
+        workflow_node,
+    )
+
+    graph.add_node(
         "agent",
         agent_node,
     )
@@ -1040,6 +1515,7 @@ def build_graph():
         route_after_confirmation,
         {
             "tool": "tool",
+            "workflow": "workflow",
             "agent": "agent",
             "memory": "memory",
         },
@@ -1065,12 +1541,18 @@ def build_graph():
         route_after_permission,
         {
             "tool": "tool",
+            "workflow": "workflow",
             "agent": "agent",
         },
     )
 
     graph.add_edge(
         "tool",
+        "agent",
+    )
+
+    graph.add_edge(
+        "workflow",
         "agent",
     )
 

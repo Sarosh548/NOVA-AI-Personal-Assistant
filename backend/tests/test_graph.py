@@ -4,6 +4,10 @@ from agent.graph import (
     planner_node,
     route_after_understanding,
 )
+from services.planner_service import (
+    PlanDecision,
+    PlanStep,
+)
 
 
 def test_planner_node_creates_task_plan():
@@ -36,6 +40,16 @@ def test_planner_node_creates_task_plan():
     assert result["plan"]["tool"] == "task"
     assert result["plan"]["action"] == "create"
     assert result["plan"]["data"]["task"] == "Practice Python"
+
+    assert len(result["plan"]["steps"]) == 1
+
+    step = result["plan"]["steps"][0]
+
+    assert step["step_id"] == "step-1"
+    assert step["tool"] == "task"
+    assert step["action"] == "create"
+    assert step["data"]["task"] == "Practice Python"
+    assert step["depends_on"] == []
 
 
 def test_planner_node_creates_reminder_plan():
@@ -70,6 +84,16 @@ def test_planner_node_creates_reminder_plan():
     assert result["plan"]["action"] == "create"
     assert result["plan"]["data"]["task"] == "Call HR"
 
+    assert len(result["plan"]["steps"]) == 1
+
+    step = result["plan"]["steps"][0]
+
+    assert step["step_id"] == "step-1"
+    assert step["tool"] == "reminder"
+    assert step["action"] == "create"
+    assert step["data"]["task"] == "Call HR"
+    assert step["depends_on"] == []
+
 
 def test_planner_node_does_not_require_tool_for_chat():
     state = {
@@ -98,6 +122,152 @@ def test_planner_node_does_not_require_tool_for_chat():
     assert result["plan"]["requires_tool"] is False
     assert result["plan"]["tool"] is None
     assert result["plan"]["action"] is None
+    assert result["plan"]["steps"] == []
+
+
+def test_planner_node_uses_agent_planner_for_planning_intent(
+    monkeypatch,
+):
+    calls = []
+
+    class FakeAgentPlannerService:
+        def create_plan(
+            self,
+            *,
+            user_message,
+            understanding,
+            history,
+            available_tools,
+        ):
+            calls.append(
+                {
+                    "user_message": user_message,
+                    "understanding": understanding,
+                    "history": history,
+                    "available_tools": available_tools,
+                }
+            )
+
+            return PlanDecision(
+                requires_tool=True,
+                tool=None,
+                action=None,
+                data={
+                    "steps": [
+                        {
+                            "step_id": "step-1",
+                            "tool": "task",
+                            "action": "list",
+                            "data": {},
+                            "depends_on": [],
+                        },
+                        {
+                            "step_id": "step-2",
+                            "tool": "reminder",
+                            "action": "create",
+                            "data": {
+                                "reminder_action": "create",
+                                "task": "Review tasks",
+                            },
+                            "depends_on": [
+                                "step-1"
+                            ],
+                        },
+                    ]
+                },
+                reason="Validated 2 executable plan steps.",
+                steps=(
+                    PlanStep(
+                        step_id="step-1",
+                        tool="task",
+                        action="list",
+                        data={},
+                        depends_on=(),
+                    ),
+                    PlanStep(
+                        step_id="step-2",
+                        tool="reminder",
+                        action="create",
+                        data={
+                            "reminder_action": "create",
+                            "task": "Review tasks",
+                        },
+                        depends_on=(
+                            "step-1",
+                        ),
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        graph,
+        "agent_planner_service",
+        FakeAgentPlannerService(),
+    )
+
+    history = [
+        {
+            "role": "user",
+            "content": "I want to organize my day.",
+        },
+    ]
+
+    state = {
+        "user_id": "user-001",
+        "conversation_id": None,
+        "user_message": (
+            "Show my tasks and remind me to review them."
+        ),
+        "history": history,
+        "understanding": {
+            "intent": "planning",
+            "requires_tool": True,
+        },
+        "plan": {},
+        "tool_result": {
+            "success": False,
+            "tool": None,
+            "action": None,
+            "result": None,
+            "error": None,
+        },
+        "memory_context": "",
+        "response": "",
+    }
+
+    result = planner_node(state)
+
+    assert len(calls) == 1
+
+    assert calls[0]["user_message"] == (
+        "Show my tasks and remind me to review them."
+    )
+
+    assert calls[0]["understanding"]["intent"] == (
+        "planning"
+    )
+
+    assert calls[0]["history"] == history
+
+    assert result["plan"]["requires_tool"] is True
+    assert result["plan"]["tool"] is None
+    assert result["plan"]["action"] is None
+    assert len(result["plan"]["steps"]) == 2
+
+    first_step = result["plan"]["steps"][0]
+    second_step = result["plan"]["steps"][1]
+
+    assert first_step["step_id"] == "step-1"
+    assert first_step["tool"] == "task"
+    assert first_step["action"] == "list"
+    assert first_step["depends_on"] == []
+
+    assert second_step["step_id"] == "step-2"
+    assert second_step["tool"] == "reminder"
+    assert second_step["action"] == "create"
+    assert second_step["depends_on"] == [
+        "step-1"
+    ]
 
 
 def test_route_after_understanding_uses_existing_plan_for_tool():
@@ -191,7 +361,9 @@ def test_understanding_node_passes_message_to_intent_service(
     history = [
         {
             "role": "user",
-            "content": "I want to improve my Python.",
+            "content": (
+                "I want to improve my Python."
+            ),
         },
     ]
 

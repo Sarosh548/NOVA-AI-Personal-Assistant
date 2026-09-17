@@ -31,11 +31,11 @@ class LLMService:
         user_input: str,
     ) -> str:
         """
-        Safely generate plain text.
+        Safely generate plain text from explicit system
+        instructions and user input.
 
-        This path intentionally does not expose tools.
-        Tool execution will be added later through NOVA's
-        dedicated tool layer.
+        This is the provider-level boundary used by NOVA's
+        different LLM capabilities.
         """
 
         response = self.client.chat.completions.create(
@@ -58,6 +58,36 @@ class LLMService:
             return ""
 
         return content.strip()
+
+    # =========================================================
+    # Generic instruction-driven generation
+    # =========================================================
+
+    def generate_with_instructions(
+        self,
+        *,
+        instructions: str,
+        user_input: str,
+    ) -> str:
+        """
+        Generate a response using caller-provided instructions.
+
+        This is intended for specialized NOVA LLM capabilities
+        such as:
+        - planning
+        - structured reasoning
+        - classification
+        - extraction
+        - future agent workflows
+
+        Unlike generate_response(), this method does not inject
+        NOVA's conversational response rules.
+        """
+
+        return self._chat_completion(
+            instructions=instructions,
+            user_input=user_input,
+        )
 
     # =========================================================
     # Normal NOVA response
