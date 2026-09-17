@@ -18,6 +18,8 @@ class WorkflowService:
     Responsibilities:
     - create durable workflows
     - persist exact workflow step definitions
+    - schedule autonomous workflows
+    - find due autonomous workflows
     - manage workflow state transitions
     - atomically claim workflows
     - atomically claim individual steps
@@ -95,6 +97,29 @@ class WorkflowService:
             tzinfo=None
         )
 
+    @staticmethod
+    def _normalize_datetime(
+        value: datetime | None,
+    ) -> datetime | None:
+        """
+        Normalize datetime input to naive UTC.
+
+        Naive values are treated as UTC because internal workflow
+        timestamps are stored as naive UTC.
+        """
+
+        if value is None:
+            return None
+
+        if value.tzinfo is None:
+            return value
+
+        return value.astimezone(
+            timezone.utc
+        ).replace(
+            tzinfo=None
+        )
+
     @classmethod
     def _json_safe(
         cls,
@@ -103,13 +128,6 @@ class WorkflowService:
         """
         Convert common Python/SQLAlchemy values into JSON-safe
         structures.
-
-        Workflow plans and results are persisted in JSON columns.
-        Database/model timestamps are datetime objects, so they
-        must be represented as ISO-8601 strings before persistence.
-
-        Unknown non-JSON values are converted to strings as a
-        defensive final fallback.
         """
 
         if value is None:
@@ -156,15 +174,19 @@ class WorkflowService:
         steps: list[dict[str, Any]],
         execution_mode: str = "workflow",
         status: str = "pending",
+        scheduled_at: datetime | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """
         Create a durable workflow and its immutable execution
         step definitions.
 
-        When an idempotency key is supplied, an existing workflow
-        for the same user/key is returned instead of creating a
-        duplicate workflow.
+        scheduled_at:
+            Optional UTC datetime at which the workflow becomes
+            eligible for autonomous background execution.
+
+            A None scheduled_at means the workflow is eligible
+            immediately, provided execution_mode is autonomous.
         """
 
         if not str(user_id).strip():
@@ -203,6 +225,12 @@ class WorkflowService:
             raise ValueError(
                 "Workflow execution mode is missing."
             )
+
+        normalized_scheduled_at = (
+            self._normalize_datetime(
+                scheduled_at
+            )
+        )
 
         normalized_idempotency_key = None
 
@@ -249,6 +277,7 @@ class WorkflowService:
                 conversation_id=conversation_id,
                 status=status,
                 execution_mode=normalized_execution_mode,
+                scheduled_at=normalized_scheduled_at,
                 plan=self._json_safe(
                     plan
                 ),
@@ -263,7 +292,10 @@ class WorkflowService:
                 completed_at=None,
             )
 
-            session.add(workflow)
+            session.add(
+                workflow
+            )
+
             session.flush()
 
             for step in normalized_steps:
@@ -292,7 +324,9 @@ class WorkflowService:
                 )
 
             session.commit()
-            session.refresh(workflow)
+            session.refresh(
+                workflow
+            )
 
             return self._workflow_to_dict(
                 session=session,
@@ -337,7 +371,10 @@ class WorkflowService:
 
         normalized_limit = max(
             1,
-            min(int(limit), 200),
+            min(
+                int(limit),
+                200,
+            ),
         )
 
         with Session(self.engine) as session:
@@ -351,6 +388,77 @@ class WorkflowService:
                     Workflow.id.desc(),
                 )
                 .limit(normalized_limit)
+            ).all()
+
+            return [
+                self._workflow_to_dict(
+                    session=session,
+                    workflow=workflow,
+                )
+                for workflow in workflows
+            ]
+
+    def list_due_autonomous_workflows(
+        self,
+        *,
+        limit: int = 50,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Return autonomous workflows that are eligible for
+        background execution.
+
+        Only pending workflows are selected.
+
+        This is intentionally separate from normal user-
+        initiated workflow execution so an interactive workflow
+        can never accidentally become background work.
+        """
+
+        normalized_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
+        normalized_limit = max(
+            1,
+            min(
+                int(limit),
+                200,
+            ),
+        )
+
+        with Session(self.engine) as session:
+            statement = (
+                select(Workflow)
+                .where(
+                    Workflow.execution_mode
+                    == "autonomous",
+                    Workflow.status
+                    == "pending",
+                )
+                .where(
+                    (
+                        Workflow.scheduled_at.is_(None)
+                    )
+                    | (
+                        Workflow.scheduled_at
+                        <= normalized_now
+                    )
+                )
+                .order_by(
+                    Workflow.scheduled_at.asc().nullsfirst(),
+                    Workflow.created_at.asc(),
+                    Workflow.id.asc(),
+                )
+                .limit(normalized_limit)
+            )
+
+            workflows = session.scalars(
+                statement
             ).all()
 
             return [
@@ -484,15 +592,6 @@ class WorkflowService:
     ) -> dict[str, Any] | None:
         """
         Atomically claim exactly one workflow step.
-
-        A step may be claimed when it is:
-            pending
-            failed
-            blocked
-            skipped
-
-        Including skipped allows a dependent step to be retried
-        after the dependency that originally failed has succeeded.
         """
 
         now = self._utc_now_naive()
@@ -764,10 +863,8 @@ class WorkflowService:
             }
 
             workflow.status = new_status
-            workflow.result = (
-                self._json_safe(
-                    result_payload
-                )
+            workflow.result = self._json_safe(
+                result_payload
             )
             workflow.error = result_payload[
                 "error"
@@ -781,7 +878,9 @@ class WorkflowService:
                 workflow.completed_at = now
 
             session.commit()
-            session.refresh(workflow)
+            session.refresh(
+                workflow
+            )
 
             return self._workflow_to_dict(
                 session=session,
@@ -849,7 +948,9 @@ class WorkflowService:
                 workflow.completed_at = now
 
             session.commit()
-            session.refresh(workflow)
+            session.refresh(
+                workflow
+            )
 
             return self._workflow_to_dict(
                 session=session,
@@ -1050,6 +1151,7 @@ class WorkflowService:
             "execution_mode": (
                 workflow.execution_mode
             ),
+            "scheduled_at": workflow.scheduled_at,
             "plan": workflow.plan,
             "result": workflow.result,
             "error": workflow.error,

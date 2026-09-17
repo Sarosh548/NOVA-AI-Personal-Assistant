@@ -62,6 +62,12 @@ class Workflow(Base):
         default="workflow",
     )
 
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        index=True,
+    )
+
     plan: Mapped[dict] = mapped_column(
         JSON,
         nullable=False,
@@ -116,5 +122,11 @@ class Workflow(Base):
             "user_id",
             "status",
             "created_at",
+        ),
+        Index(
+            "ix_workflows_autonomous_due",
+            "execution_mode",
+            "status",
+            "scheduled_at",
         ),
     )
