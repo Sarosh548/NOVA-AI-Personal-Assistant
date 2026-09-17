@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from services.notification_service import NotificationService
 from services.reminder_service import ReminderService
 
 
@@ -12,13 +13,15 @@ class ReminderScheduler:
     Lightweight NOVA reminder scheduler.
 
     It checks PostgreSQL periodically for due reminders,
-    claims them atomically, processes them, and marks them
-    completed.
+    claims them atomically, delivers a notification, and
+    marks the reminder completed only after successful delivery.
     """
 
     def __init__(
         self,
         interval_seconds: int = 5,
+        reminder_service: ReminderService | None = None,
+        notification_service: NotificationService | None = None,
     ):
         if interval_seconds < 1:
             raise ValueError(
@@ -26,12 +29,24 @@ class ReminderScheduler:
             )
 
         self.interval_seconds = interval_seconds
-        self.reminder_service = ReminderService()
+        self.reminder_service = (
+            reminder_service
+            if reminder_service is not None
+            else ReminderService()
+        )
+        self.notification_service = (
+            notification_service
+            if notification_service is not None
+            else NotificationService()
+        )
         self._running = False
 
     async def process_due_reminders(self) -> None:
         """
         Find and process all reminders that are currently due.
+
+        A reminder is completed only after the notification
+        service confirms successful delivery.
         """
 
         reminders = (
@@ -45,26 +60,30 @@ class ReminderScheduler:
             title = reminder["title"]
 
             try:
-                # -------------------------------------------------
-                # Temporary notification action
-                #
-                # For now we log/print the reminder.
-                # Later this same processor will call the real
-                # notification layer (push, WebSocket, voice, etc).
-                # -------------------------------------------------
-                logger.info(
-                    "REMINDER DUE | user=%s | id=%s | title=%s",
-                    user_id,
-                    reminder_id,
-                    title,
+                delivered = (
+                    self.notification_service.notify(
+                        user_id=user_id,
+                        title="NOVA Reminder",
+                        body=title,
+                        notification_type="reminder",
+                        metadata={
+                            "reminder_id": reminder_id,
+                        },
+                    )
                 )
 
-                print(
-                    f"\n[NOVA REMINDER] "
-                    f"user={user_id} "
-                    f"id={reminder_id} "
-                    f"title={title}\n"
-                )
+                if not delivered:
+                    logger.warning(
+                        "Notification delivery failed "
+                        "for reminder %s.",
+                        reminder_id,
+                    )
+
+                    self.reminder_service.mark_reminder_pending(
+                        reminder_id
+                    )
+
+                    continue
 
                 completed = (
                     self.reminder_service
@@ -75,7 +94,8 @@ class ReminderScheduler:
 
                 if not completed:
                     logger.warning(
-                        "Could not mark reminder %s as completed.",
+                        "Could not mark reminder %s as completed "
+                        "after successful notification.",
                         reminder_id,
                     )
 
@@ -85,7 +105,6 @@ class ReminderScheduler:
                     reminder_id,
                 )
 
-                # Put it back to pending so it can be retried.
                 self.reminder_service.mark_reminder_pending(
                     reminder_id
                 )

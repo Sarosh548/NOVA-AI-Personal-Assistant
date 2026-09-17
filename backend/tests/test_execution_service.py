@@ -61,6 +61,26 @@ def test_autonomous_execution_builds_autonomous_state():
     assert len(graph.calls) == 1
 
 
+def test_execute_autonomous_forces_autonomous_context():
+    graph = FakeAgentGraph()
+    service = NOVAExecutionService(graph)
+
+    result = service.execute_autonomous(
+        user_id="user-001",
+        conversation_id=None,
+        user_message="A background event occurred.",
+        history=[],
+    )
+
+    assert (
+        result["execution_context"].mode
+        == ExecutionMode.AUTONOMOUS
+    )
+    assert result["execution_context"].user_requested is False
+    assert result["user_requested"] is False
+    assert len(graph.calls) == 1
+
+
 def test_initial_state_preserves_core_execution_data():
     graph = FakeAgentGraph()
     service = NOVAExecutionService(graph)

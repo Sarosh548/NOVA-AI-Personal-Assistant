@@ -9,6 +9,7 @@ from services.execution_context import ExecutionContext
 from services.execution_service import NOVAExecutionService
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
+from services.notification_service import NotificationService
 from services.reminder_scheduler import ReminderScheduler
 from services.reminder_service import ReminderService
 
@@ -25,9 +26,14 @@ execution_service = NOVAExecutionService(
 )
 
 reminder_service = ReminderService()
+notification_service = NotificationService()
+
 reminder_scheduler = ReminderScheduler(
-    interval_seconds=5
+    interval_seconds=5,
+    reminder_service=reminder_service,
+    notification_service=notification_service,
 )
+
 scheduler_task: asyncio.Task | None = None
 
 CONTEXT_MAX_MESSAGES = 12

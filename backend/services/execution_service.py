@@ -10,7 +10,7 @@ class NOVAExecutionService:
     """
     Shared execution boundary for NOVA.
 
-    Both interactive requests and future autonomous/background
+    Interactive requests and future autonomous/background
     workflows use this service to execute the NOVA graph.
 
     The execution context is explicit so the caller cannot
@@ -100,4 +100,28 @@ class NOVAExecutionService:
 
         return self.agent_graph.invoke(
             initial_state
+        )
+
+    def execute_autonomous(
+        self,
+        *,
+        user_id: str,
+        conversation_id: int | None,
+        user_message: str,
+        history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Execute NOVA through the autonomous/background boundary.
+
+        Autonomous callers do not provide an execution context
+        themselves. This prevents them from accidentally passing
+        interactive permissions.
+        """
+
+        return self.execute(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            user_message=user_message,
+            history=history,
+            execution_context=ExecutionContext.autonomous(),
         )
