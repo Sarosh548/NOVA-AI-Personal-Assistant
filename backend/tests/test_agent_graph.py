@@ -1,5 +1,8 @@
 from agent.graph import (
     memory_node,
+    permission_node,
+    planner_node,
+    route_after_permission,
     route_after_understanding,
     understanding_node,
 )
@@ -67,6 +70,38 @@ class FakeIntentService:
             "action": None,
             "requires_tool": True,
         }
+
+
+class FakeToolMetadataRouter:
+
+    def get_available_tools(self):
+        return [
+            {
+                "name": "task",
+                "description": "Manage tasks.",
+                "actions": [
+                    "create",
+                    "list",
+                    "start",
+                    "complete",
+                    "cancel",
+                    "delete",
+                    "update",
+                ],
+            },
+            {
+                "name": "reminder",
+                "description": "Manage reminders.",
+                "actions": [
+                    "create",
+                    "list",
+                    "complete",
+                    "cancel",
+                    "delete",
+                    "update",
+                ],
+            },
+        ]
 
 
 def test_memory_node_uses_semantic_memories_when_available(
@@ -186,31 +221,182 @@ def test_route_normal_chat_directly_to_agent():
     )
 
 
-def test_route_task_to_tool():
-    state = {
-        "understanding": {
-            "intent": "task",
-            "requires_tool": True,
-        }
-    }
+def test_task_plan_passes_through_permission_to_tool(
+    monkeypatch,
+):
+    fake_router = FakeToolMetadataRouter()
 
-    assert (
-        route_after_understanding(state)
-        == "tool"
+    monkeypatch.setattr(
+        "agent.graph.tool_router",
+        fake_router,
     )
 
-
-def test_route_reminder_to_tool():
     state = {
+        "user_id": "user-001",
+        "conversation_id": None,
+        "user_message": (
+            "Create a task to practice Python"
+        ),
+        "history": [],
+        "understanding": {
+            "intent": "task",
+            "task": "Practice Python",
+            "task_reference": None,
+            "task_action": "create",
+            "task_id": None,
+            "priority": "high",
+            "time": None,
+            "scheduled_at": None,
+            "action": None,
+            "requires_tool": True,
+        },
+        "plan": {},
+        "permission": {},
+        "user_requested": True,
+        "tool_result": {},
+        "memory_context": "",
+        "response": "",
+    }
+
+    planned_state = planner_node(state)
+
+    assert (
+        planned_state["plan"]["requires_tool"]
+        is True
+    )
+
+    assert (
+        planned_state["plan"]["tool"]
+        == "task"
+    )
+
+    assert (
+        planned_state["plan"]["action"]
+        == "create"
+    )
+
+    permission_state = permission_node(
+        planned_state
+    )
+
+    assert (
+        permission_state["permission"]["allowed"]
+        is True
+    )
+
+    assert (
+        permission_state["permission"]
+        ["requires_confirmation"]
+        is False
+    )
+
+    route = route_after_permission(
+        permission_state
+    )
+
+    assert route == "tool"
+
+
+def test_reminder_plan_passes_through_permission_to_tool(
+    monkeypatch,
+):
+    fake_router = FakeToolMetadataRouter()
+
+    monkeypatch.setattr(
+        "agent.graph.tool_router",
+        fake_router,
+    )
+
+    state = {
+        "user_id": "user-001",
+        "conversation_id": None,
+        "user_message": (
+            "Remind me tomorrow to call HR"
+        ),
+        "history": [],
         "understanding": {
             "intent": "reminder",
+            "task": "Call HR",
+            "task_reference": None,
+            "task_action": None,
+            "task_id": None,
+            "priority": None,
+            "time": "tomorrow",
+            "scheduled_at": (
+                "2026-09-18T10:00:00+05:00"
+            ),
+            "reminder_action": "create",
+            "reminder_reference": None,
+            "reminder_id": None,
+            "action": None,
             "requires_tool": True,
-        }
+        },
+        "plan": {},
+        "permission": {},
+        "user_requested": True,
+        "tool_result": {},
+        "memory_context": "",
+        "response": "",
+    }
+
+    planned_state = planner_node(state)
+
+    assert (
+        planned_state["plan"]["requires_tool"]
+        is True
+    )
+
+    assert (
+        planned_state["plan"]["tool"]
+        == "reminder"
+    )
+
+    assert (
+        planned_state["plan"]["action"]
+        == "create"
+    )
+
+    permission_state = permission_node(
+        planned_state
+    )
+
+    assert (
+        permission_state["permission"]["allowed"]
+        is True
+    )
+
+    assert (
+        permission_state["permission"]
+        ["requires_confirmation"]
+        is False
+    )
+
+    route = route_after_permission(
+        permission_state
+    )
+
+    assert route == "tool"
+
+
+def test_confirmation_required_action_routes_to_agent():
+    state = {
+        "plan": {
+            "requires_tool": True,
+            "tool": "task",
+            "action": "delete",
+        },
+        "permission": {
+            "allowed": False,
+            "requires_confirmation": True,
+            "reason": (
+                "Confirmation required."
+            ),
+        },
     }
 
     assert (
-        route_after_understanding(state)
-        == "tool"
+        route_after_permission(state)
+        == "agent"
     )
 
 
@@ -286,4 +472,7 @@ def test_understanding_node_handles_missing_history(
         }
     )
 
-    assert fake_service.received_history == []
+    assert (
+        fake_service.received_history
+        == []
+    )

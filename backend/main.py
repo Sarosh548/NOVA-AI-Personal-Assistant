@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from agent.graph import build_graph
 from services.conversation_service import ConversationService
 from services.execution_context import ExecutionContext
+from services.execution_service import NOVAExecutionService
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
 from services.reminder_scheduler import ReminderScheduler
@@ -19,6 +20,9 @@ memory_service = MemoryService(llm_service)
 conversation_service = ConversationService()
 
 agent_graph = build_graph()
+execution_service = NOVAExecutionService(
+    agent_graph
+)
 
 reminder_service = ReminderService()
 reminder_scheduler = ReminderScheduler(
@@ -118,40 +122,12 @@ def chat(request: ChatRequest):
         ExecutionContext.interactive()
     )
 
-    initial_state = {
-        "user_id": request.user_id,
-        "conversation_id": conversation_id,
-        "user_message": user_message,
-        "history": history,
-        "understanding": {},
-        "plan": {},
-        "permission": {
-            "allowed": False,
-            "requires_confirmation": False,
-            "reason": "Permission check not performed yet.",
-        },
-        "user_requested": execution_context.user_requested,
-        "execution_context": execution_context,
-        "confirmation": {
-            "id": None,
-            "status": None,
-            "tool": None,
-            "action": None,
-            "reason": None,
-        },
-        "tool_result": {
-            "success": False,
-            "tool": None,
-            "action": None,
-            "result": None,
-            "error": None,
-        },
-        "memory_context": "",
-        "response": "",
-    }
-
-    result = agent_graph.invoke(
-        initial_state
+    result = execution_service.execute(
+        user_id=request.user_id,
+        conversation_id=conversation_id,
+        user_message=user_message,
+        history=history,
+        execution_context=execution_context,
     )
 
     response = result["response"]

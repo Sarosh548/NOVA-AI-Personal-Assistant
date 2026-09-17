@@ -3,21 +3,36 @@ from typing import Any
 
 from services.reminder_service import ReminderService
 from services.task_service import TaskService
+from services.tool_registry import ToolRegistry
 
 
 class ToolRouter:
     """
     Central router for NOVA's executable capabilities.
 
-    The user never selects a tool directly.
-    NOVA's understanding layer decides which capability
-    is required, and this router executes it.
+    The router maps a high-level intent to a registered tool.
+    Individual tools remain responsible for their own actions.
+
+    The registry keeps tool discovery, registration, metadata,
+    and execution separate from the routing layer.
+
+    Future tools such as:
+    - calendar
+    - email
+    - messaging
+    - web
+    - documents
+    - system APIs
+
+    can be added without turning this router into one large
+    hard-coded routing layer.
     """
 
     def __init__(
         self,
         reminder_service: ReminderService | None = None,
         task_service: TaskService | None = None,
+        registry: ToolRegistry | None = None,
     ):
         self.reminder_service = (
             reminder_service
@@ -29,6 +44,75 @@ class ToolRouter:
             or TaskService()
         )
 
+        self.registry = registry or ToolRegistry()
+
+        self._register_default_tools()
+
+    # =====================================================
+    # TOOL REGISTRATION
+    # =====================================================
+
+    def _register_default_tools(self) -> None:
+        """
+        Register NOVA's currently available tools.
+        """
+
+        if not self.registry.has("reminder"):
+            self.registry.register(
+                name="reminder",
+                description=(
+                    "Create, list, complete, cancel, "
+                    "delete, and update reminders."
+                ),
+                actions=(
+                    "create",
+                    "list",
+                    "complete",
+                    "cancel",
+                    "delete",
+                    "update",
+                ),
+                handler=self._execute_reminder,
+            )
+
+        if not self.registry.has("task"):
+            self.registry.register(
+                name="task",
+                description=(
+                    "Create, list, start, complete, "
+                    "cancel, delete, and update tasks."
+                ),
+                actions=(
+                    "create",
+                    "list",
+                    "start",
+                    "complete",
+                    "cancel",
+                    "delete",
+                    "update",
+                ),
+                handler=self._execute_task,
+            )
+
+    # =====================================================
+    # TOOL DISCOVERY
+    # =====================================================
+
+    def get_available_tools(self) -> list[dict[str, Any]]:
+        """
+        Return metadata for tools currently available to NOVA.
+
+        This method is intended for future planner/agent layers
+        so they can inspect NOVA's capabilities without needing
+        direct access to tool handlers.
+        """
+
+        return self.registry.get_available_tools()
+
+    # =====================================================
+    # CENTRAL EXECUTION
+    # =====================================================
+
     def execute(
         self,
         intent: str,
@@ -36,30 +120,14 @@ class ToolRouter:
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
 
+        tool_name = str(intent).strip()
         payload = data or {}
 
-        if intent == "reminder":
-            return self._execute_reminder(
-                user_id=user_id,
-                data=payload,
-            )
-
-        if intent == "task":
-            return self._execute_task(
-                user_id=user_id,
-                data=payload,
-            )
-
-        return {
-            "success": False,
-            "tool": None,
-            "action": None,
-            "result": None,
-            "error": (
-                f"No tool is registered for intent "
-                f"'{intent}'."
-            ),
-        }
+        return self.registry.execute(
+            name=tool_name,
+            user_id=user_id,
+            data=payload,
+        )
 
     # =====================================================
     # REMINDER
@@ -475,10 +543,8 @@ class ToolRouter:
 
         if scheduled_at is not None:
             try:
-                reminder_datetime = (
-                    datetime.fromisoformat(
-                        str(scheduled_at)
-                    )
+                reminder_datetime = datetime.fromisoformat(
+                    str(scheduled_at)
                 )
             except ValueError:
                 return {

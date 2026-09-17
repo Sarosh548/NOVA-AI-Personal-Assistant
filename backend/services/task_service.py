@@ -24,6 +24,21 @@ VALID_PRIORITIES = {
 
 class TaskService:
 
+    def _utc_now_naive(self) -> datetime:
+        """
+        Return the current UTC time as a naive datetime.
+
+        Task timestamps in the current database are stored as
+        naive UTC datetimes, so timezone-aware UTC time is
+        converted back to a naive datetime for consistency.
+        """
+
+        return datetime.now(
+            timezone.utc
+        ).replace(
+            tzinfo=None
+        )
+
     def _normalize_datetime(
         self,
         task_time: datetime,
@@ -77,7 +92,7 @@ class TaskService:
                 )
             )
 
-            if normalized_due_at <= datetime.utcnow():
+            if normalized_due_at <= self._utc_now_naive():
                 raise ValueError(
                     "Task due time must be in the future."
                 )
@@ -397,7 +412,6 @@ class TaskService:
 
         if strong_matches:
             matches = strong_matches
-
         else:
             matches = fallback_matches
 
@@ -453,7 +467,7 @@ class TaskService:
                 )
             )
 
-            if normalized_due_at <= datetime.utcnow():
+            if normalized_due_at <= self._utc_now_naive():
                 raise ValueError(
                     "Task due time must be in the future."
                 )
@@ -475,7 +489,9 @@ class TaskService:
             if normalized_due_at is not None:
                 task.due_at = normalized_due_at
 
-            task.updated_at = datetime.utcnow()
+            task.updated_at = (
+                self._utc_now_naive()
+            )
 
             session.commit()
 
@@ -499,7 +515,9 @@ class TaskService:
                 return False
 
             task.status = "completed"
-            task.updated_at = datetime.utcnow()
+            task.updated_at = (
+                self._utc_now_naive()
+            )
 
             session.commit()
 
@@ -523,7 +541,9 @@ class TaskService:
                 return False
 
             task.status = "in_progress"
-            task.updated_at = datetime.utcnow()
+            task.updated_at = (
+                self._utc_now_naive()
+            )
 
             session.commit()
 
@@ -547,7 +567,9 @@ class TaskService:
                 return False
 
             task.status = "cancelled"
-            task.updated_at = datetime.utcnow()
+            task.updated_at = (
+                self._utc_now_naive()
+            )
 
             session.commit()
 

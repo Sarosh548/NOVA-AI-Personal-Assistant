@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from services.task_service import TaskService
 
@@ -153,7 +153,9 @@ def test_update_task_updates_due_time(
     service = TaskService()
 
     future_time = (
-        datetime.utcnow()
+        datetime.now(timezone.utc).replace(
+            tzinfo=None
+        )
         + timedelta(hours=2)
     )
 
@@ -211,7 +213,9 @@ def test_update_task_updates_priority_and_due_time(
     service = TaskService()
 
     future_time = (
-        datetime.utcnow()
+        datetime.now(timezone.utc).replace(
+            tzinfo=None
+        )
         + timedelta(hours=3)
     )
 

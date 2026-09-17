@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from services.tool_router import ToolRouter
 
@@ -26,7 +26,13 @@ class FakeReminderService:
             {
                 "id": 101,
                 "title": "submit CV",
-                "reminder_time": datetime(2030, 1, 1, 10, 0),
+                "reminder_time": datetime(
+                    2030,
+                    1,
+                    1,
+                    10,
+                    0,
+                ),
                 "status": "pending",
             }
         ]
@@ -206,8 +212,15 @@ def test_reminder_update_changes_time():
         reminder_service=fake_service
     )
 
-    future_time = datetime.utcnow() + timedelta(
-        hours=2
+    future_time = (
+        datetime.now(
+            timezone.utc
+        ).replace(
+            tzinfo=None
+        )
+        + timedelta(
+            hours=2
+        )
     )
 
     result = router.execute(
@@ -227,10 +240,14 @@ def test_reminder_update_changes_time():
     assert result["action"] == "update"
     assert result["result"]["reminder_id"] == 101
 
-    assert len(fake_service.updated_calls) == 1
+    assert len(
+        fake_service.updated_calls
+    ) == 1
 
     assert (
-        fake_service.updated_calls[0]["reminder_id"]
+        fake_service.updated_calls[0][
+            "reminder_id"
+        ]
         == 101
     )
 

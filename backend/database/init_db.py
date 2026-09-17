@@ -6,6 +6,8 @@ from models.message import Message
 from models.conversation import Conversation
 from models.reminder import Reminder
 from models.task import Task
+from models.permission import Permission
+from models.confirmation import Confirmation
 
 
 def initialize_database() -> None:
