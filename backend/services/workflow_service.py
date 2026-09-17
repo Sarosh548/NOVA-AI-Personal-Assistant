@@ -41,21 +41,6 @@ class WorkflowService:
         "cancelled",
     }
 
-    ACTIVE_STEP_STATUSES = {
-        "pending",
-        "running",
-        "failed",
-        "blocked",
-        "skipped",
-    }
-
-    TERMINAL_STEP_STATUSES = {
-        "completed",
-        "failed",
-        "skipped",
-        "blocked",
-    }
-
     WORKFLOW_TRANSITIONS = {
         "pending": {
             "awaiting_confirmation",
@@ -110,6 +95,58 @@ class WorkflowService:
             tzinfo=None
         )
 
+    @classmethod
+    def _json_safe(
+        cls,
+        value: Any,
+    ) -> Any:
+        """
+        Convert common Python/SQLAlchemy values into JSON-safe
+        structures.
+
+        Workflow plans and results are persisted in JSON columns.
+        Database/model timestamps are datetime objects, so they
+        must be represented as ISO-8601 strings before persistence.
+
+        Unknown non-JSON values are converted to strings as a
+        defensive final fallback.
+        """
+
+        if value is None:
+            return None
+
+        if isinstance(
+            value,
+            datetime,
+        ):
+            return value.isoformat()
+
+        if isinstance(
+            value,
+            dict,
+        ):
+            return {
+                str(key): cls._json_safe(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(
+            value,
+            (list, tuple),
+        ):
+            return [
+                cls._json_safe(item)
+                for item in value
+            ]
+
+        if isinstance(
+            value,
+            (str, int, float, bool),
+        ):
+            return value
+
+        return str(value)
+
     def create_workflow(
         self,
         *,
@@ -135,12 +172,18 @@ class WorkflowService:
                 "Workflow user_id is missing."
             )
 
-        if not isinstance(plan, dict):
+        if not isinstance(
+            plan,
+            dict,
+        ):
             raise ValueError(
                 "Workflow plan must be a dictionary."
             )
 
-        if not isinstance(steps, list):
+        if not isinstance(
+            steps,
+            list,
+        ):
             raise ValueError(
                 "Workflow steps must be a list."
             )
@@ -151,7 +194,9 @@ class WorkflowService:
             )
 
         normalized_execution_mode = (
-            str(execution_mode).strip().lower()
+            str(execution_mode)
+            .strip()
+            .lower()
         )
 
         if not normalized_execution_mode:
@@ -204,7 +249,9 @@ class WorkflowService:
                 conversation_id=conversation_id,
                 status=status,
                 execution_mode=normalized_execution_mode,
-                plan=dict(plan),
+                plan=self._json_safe(
+                    plan
+                ),
                 result=None,
                 error=None,
                 idempotency_key=(
@@ -227,8 +274,12 @@ class WorkflowService:
                         position=step["position"],
                         tool=step["tool"],
                         action=step["action"],
-                        data=step["data"],
-                        depends_on=step["depends_on"],
+                        data=self._json_safe(
+                            step["data"]
+                        ),
+                        depends_on=self._json_safe(
+                            step["depends_on"]
+                        ),
                         status="pending",
                         result=None,
                         error=None,
@@ -560,11 +611,11 @@ class WorkflowService:
                 )
                 .values(
                     status=status,
-                    result=(
-                        dict(result)
-                        if result is not None
-                        else None
-                    ),
+                    result=self._json_safe(
+                        result
+                    )
+                    if result is not None
+                    else None,
                     error=(
                         str(error)
                         if error is not None
@@ -648,11 +699,13 @@ class WorkflowService:
 
             if not steps:
                 new_status = "completed"
+
             elif all(
                 status == "completed"
                 for status in statuses
             ):
                 new_status = "completed"
+
             elif any(
                 status in {
                     "pending",
@@ -661,6 +714,7 @@ class WorkflowService:
                 for status in statuses
             ):
                 new_status = "running"
+
             elif any(
                 status == "completed"
                 for status in statuses
@@ -673,11 +727,13 @@ class WorkflowService:
                 for status in statuses
             ):
                 new_status = "partial"
+
             elif any(
                 status == "failed"
                 for status in statuses
             ):
                 new_status = "failed"
+
             else:
                 new_status = "blocked"
 
@@ -687,8 +743,10 @@ class WorkflowService:
                 ),
                 "status": new_status,
                 "steps": [
-                    self._step_to_dict(
-                        step
+                    self._json_safe(
+                        self._step_to_dict(
+                            step
+                        )
                     )
                     for step in steps
                 ],
@@ -706,13 +764,20 @@ class WorkflowService:
             }
 
             workflow.status = new_status
-            workflow.result = result_payload
+            workflow.result = (
+                self._json_safe(
+                    result_payload
+                )
+            )
             workflow.error = result_payload[
                 "error"
             ]
             workflow.updated_at = now
 
-            if new_status in self.TERMINAL_WORKFLOW_STATUSES:
+            if (
+                new_status
+                in self.TERMINAL_WORKFLOW_STATUSES
+            ):
                 workflow.completed_at = now
 
             session.commit()
@@ -736,8 +801,8 @@ class WorkflowService:
         Apply a guarded workflow state transition.
         """
 
-        if new_status not in (
-            set(self.WORKFLOW_TRANSITIONS)
+        if new_status not in set(
+            self.WORKFLOW_TRANSITIONS
         ):
             raise ValueError(
                 "Invalid workflow status."
@@ -797,21 +862,33 @@ class WorkflowService:
         *,
         position: int,
     ) -> dict[str, Any]:
-        if not isinstance(step, dict):
+        if not isinstance(
+            step,
+            dict,
+        ):
             raise ValueError(
                 "Every workflow step must be a dictionary."
             )
 
         step_id = str(
-            step.get("step_id", "")
+            step.get(
+                "step_id",
+                "",
+            )
         ).strip()
 
         tool = str(
-            step.get("tool", "")
+            step.get(
+                "tool",
+                "",
+            )
         ).strip().lower()
 
         action = str(
-            step.get("action", "")
+            step.get(
+                "action",
+                "",
+            )
         ).strip().lower()
 
         data = step.get(
@@ -839,9 +916,13 @@ class WorkflowService:
                 f"Workflow step '{step_id}' has no action."
             )
 
-        if not isinstance(data, dict):
+        if not isinstance(
+            data,
+            dict,
+        ):
             raise ValueError(
-                f"Workflow step '{step_id}' data must be a dictionary."
+                f"Workflow step '{step_id}' data "
+                "must be a dictionary."
             )
 
         if depends_on is None:
@@ -887,7 +968,10 @@ class WorkflowService:
                 step["depends_on"]
             )
 
-            if step["step_id"] in dependencies:
+            if (
+                step["step_id"]
+                in dependencies
+            ):
                 raise ValueError(
                     f"Workflow step '{step['step_id']}' "
                     "cannot depend on itself."
@@ -977,7 +1061,9 @@ class WorkflowService:
             "started_at": workflow.started_at,
             "completed_at": workflow.completed_at,
             "steps": [
-                self._step_to_dict(step)
+                self._step_to_dict(
+                    step
+                )
                 for step in steps
             ],
         }

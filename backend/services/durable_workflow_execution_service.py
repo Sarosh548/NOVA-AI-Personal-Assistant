@@ -10,19 +10,36 @@ class DurableWorkflowExecutionService:
     """
     Persistent workflow executor.
 
-    Unlike PlanExecutionService, this executor never treats
-    workflow state as temporary in-memory state.
+    Every execution call represents one execution attempt.
 
-    Every workflow claim, step claim, result, attempt, and
-    final status is persisted through WorkflowService.
+    Important runtime rule:
+
+        A step is processed at most once per execute() call.
+
+    Therefore a failed step is NOT immediately retried forever
+    inside the same execution call. A later execute() call is
+    responsible for retry/resume behavior.
 
     This provides the foundation for:
-    - resume after partial failure
-    - retry failed steps
+    - durable state
+    - resume after failure
+    - explicit retry
     - duplicate execution protection
-    - process restart recovery
     - future worker/queue execution
     """
+
+    EXECUTABLE_STATUSES = {
+        "pending",
+        "failed",
+        "blocked",
+        "skipped",
+    }
+
+    BLOCKING_DEPENDENCY_STATUSES = {
+        "failed",
+        "blocked",
+        "skipped",
+    }
 
     def __init__(
         self,
@@ -48,12 +65,16 @@ class DurableWorkflowExecutionService:
         workflow_id: int,
     ) -> dict[str, Any]:
         """
-        Claim and execute a durable workflow.
+        Claim and execute one durable workflow run.
 
-        Existing successful steps are never executed again.
+        Every step that is eligible at the beginning of this
+        invocation may be processed at most once.
 
-        Failed/skipped/blocked steps may execute again when
-        their dependencies are now satisfied.
+        Failed steps are persisted and are retried only when
+        execute() is called again.
+
+        Dependent steps are skipped when a dependency fails,
+        becomes blocked, or is skipped.
         """
 
         claimed_workflow = (
@@ -96,12 +117,48 @@ class DurableWorkflowExecutionService:
                 )
 
             return self._blocked_result(
-                "Workflow is already being executed by another worker.",
+                (
+                    "Workflow is already being executed "
+                    "by another worker."
+                ),
                 status=current["status"],
                 workflow=current,
             )
 
-        while True:
+        current = (
+            self.workflow_service.get_workflow(
+                user_id=user_id,
+                workflow_id=workflow_id,
+            )
+        )
+
+        if current is None:
+            return self._blocked_result(
+                "Workflow disappeared during execution."
+            )
+
+        # -------------------------------------------------
+        # Snapshot eligible steps for THIS execution run.
+        #
+        # A step introduced into an eligible state later in
+        # this same execution is not retried automatically.
+        # This prevents infinite retry loops.
+        # -------------------------------------------------
+
+        eligible_step_ids = {
+            step["step_id"]
+            for step in current["steps"]
+            if step["status"]
+            in self.EXECUTABLE_STATUSES
+        }
+
+        processed_step_ids: set[str] = set()
+
+        progress_made = True
+
+        while progress_made:
+            progress_made = False
+
             workflow = (
                 self.workflow_service.get_workflow(
                     user_id=user_id,
@@ -114,28 +171,25 @@ class DurableWorkflowExecutionService:
                     "Workflow disappeared during execution."
                 )
 
-            if workflow["status"] in {
-                "completed",
-                "failed",
-                "partial",
-                "blocked",
-                "cancelled",
-            }:
-                return self._result_from_workflow(
-                    workflow
-                )
-
-            progress_made = False
-
             step_by_id = {
                 step["step_id"]: step
                 for step in workflow["steps"]
             }
 
-            for step in workflow["steps"]:
-                step_status = step["status"]
+            for step_id in list(
+                eligible_step_ids
+            ):
+                if step_id in processed_step_ids:
+                    continue
 
-                if step_status == "completed":
+                step = step_by_id.get(
+                    step_id
+                )
+
+                if step is None:
+                    processed_step_ids.add(
+                        step_id
+                    )
                     continue
 
                 dependencies = set(
@@ -151,28 +205,33 @@ class DurableWorkflowExecutionService:
                     if dependency in step_by_id
                 ]
 
+                # -----------------------------------------
+                # Dependency failure/block/skip
+                # -----------------------------------------
+
                 if any(
-                    status in {
-                        "failed",
-                        "blocked",
-                    }
+                    status
+                    in self.BLOCKING_DEPENDENCY_STATUSES
                     for status in dependency_states
                 ):
-                    skipped = (
+                    claimed_step = (
                         self.workflow_service.claim_step(
                             user_id=user_id,
                             workflow_id=workflow_id,
-                            step_id=step["step_id"],
+                            step_id=step_id,
                         )
                     )
 
-                    if skipped is None:
+                    if claimed_step is None:
+                        processed_step_ids.add(
+                            step_id
+                        )
                         continue
 
                     self.workflow_service.finish_step(
                         user_id=user_id,
                         workflow_id=workflow_id,
-                        step_id=step["step_id"],
+                        step_id=step_id,
                         status="skipped",
                         result={},
                         error=(
@@ -182,39 +241,8 @@ class DurableWorkflowExecutionService:
                         ),
                     )
 
-                    self.workflow_service.recalculate_workflow(
-                        user_id=user_id,
-                        workflow_id=workflow_id,
-                    )
-
-                    progress_made = True
-                    break
-
-                if any(
-                    status == "skipped"
-                    for status in dependency_states
-                ):
-                    skipped = (
-                        self.workflow_service.claim_step(
-                            user_id=user_id,
-                            workflow_id=workflow_id,
-                            step_id=step["step_id"],
-                        )
-                    )
-
-                    if skipped is None:
-                        continue
-
-                    self.workflow_service.finish_step(
-                        user_id=user_id,
-                        workflow_id=workflow_id,
-                        step_id=step["step_id"],
-                        status="skipped",
-                        result={},
-                        error=(
-                            "Step was skipped because "
-                            "a dependency was skipped."
-                        ),
+                    processed_step_ids.add(
+                        step_id
                     )
 
                     self.workflow_service.recalculate_workflow(
@@ -223,7 +251,11 @@ class DurableWorkflowExecutionService:
                     )
 
                     progress_made = True
-                    break
+                    continue
+
+                # -----------------------------------------
+                # Wait until all dependencies complete.
+                # -----------------------------------------
 
                 if not all(
                     status == "completed"
@@ -231,31 +263,38 @@ class DurableWorkflowExecutionService:
                 ):
                     continue
 
+                # -----------------------------------------
+                # Claim step atomically.
+                # -----------------------------------------
+
                 claimed_step = (
                     self.workflow_service.claim_step(
                         user_id=user_id,
                         workflow_id=workflow_id,
-                        step_id=step["step_id"],
+                        step_id=step_id,
                     )
                 )
 
                 if claimed_step is None:
+                    processed_step_ids.add(
+                        step_id
+                    )
                     continue
 
-                tool_result = (
-                    self._execute_step(
-                        user_id=user_id,
-                        step=claimed_step,
-                    )
+                # -----------------------------------------
+                # Execute exactly once in this invocation.
+                # -----------------------------------------
+
+                tool_result = self._execute_step(
+                    user_id=user_id,
+                    step=claimed_step,
                 )
 
                 if tool_result["success"] is True:
                     self.workflow_service.finish_step(
                         user_id=user_id,
                         workflow_id=workflow_id,
-                        step_id=claimed_step[
-                            "step_id"
-                        ],
+                        step_id=step_id,
                         status="completed",
                         result=dict(
                             tool_result.get(
@@ -270,9 +309,7 @@ class DurableWorkflowExecutionService:
                     self.workflow_service.finish_step(
                         user_id=user_id,
                         workflow_id=workflow_id,
-                        step_id=claimed_step[
-                            "step_id"
-                        ],
+                        step_id=step_id,
                         status="failed",
                         result=dict(
                             tool_result.get(
@@ -288,46 +325,40 @@ class DurableWorkflowExecutionService:
                         ),
                     )
 
+                processed_step_ids.add(
+                    step_id
+                )
+
                 self.workflow_service.recalculate_workflow(
                     user_id=user_id,
                     workflow_id=workflow_id,
                 )
 
                 progress_made = True
-                break
 
-            if progress_made:
-                continue
+            # -------------------------------------------------
+            # Loop again only to allow dependencies whose
+            # prerequisites completed successfully to run.
+            #
+            # Already failed/skipped steps remain processed and
+            # cannot be retried during this execute() call.
+            # -------------------------------------------------
 
+        final_workflow = (
             self.workflow_service.recalculate_workflow(
                 user_id=user_id,
                 workflow_id=workflow_id,
             )
+        )
 
-            current = (
-                self.workflow_service.get_workflow(
-                    user_id=user_id,
-                    workflow_id=workflow_id,
-                )
+        if final_workflow is None:
+            return self._blocked_result(
+                "Workflow result is unavailable."
             )
 
-            if current is None:
-                return self._blocked_result(
-                    "Workflow disappeared during execution."
-                )
-
-            if current["status"] == "running":
-                self._mark_blocked(
-                    user_id=user_id,
-                    workflow_id=workflow_id,
-                )
-
-            return self._result_from_workflow(
-                self.workflow_service.get_workflow(
-                    user_id=user_id,
-                    workflow_id=workflow_id,
-                )
-            )
+        return self._result_from_workflow(
+            final_workflow
+        )
 
     def _execute_step(
         self,
@@ -374,21 +405,6 @@ class DurableWorkflowExecutionService:
             ),
         }
 
-    def _mark_blocked(
-        self,
-        *,
-        user_id: str,
-        workflow_id: int,
-    ) -> None:
-        self.workflow_service._transition(
-            user_id=user_id,
-            workflow_id=workflow_id,
-            new_status="blocked",
-            allowed_current_statuses={
-                "running",
-            },
-        )
-
     def _result_from_workflow(
         self,
         workflow: dict[str, Any] | None,
@@ -402,7 +418,10 @@ class DurableWorkflowExecutionService:
             "result"
         )
 
-        if isinstance(result, dict):
+        if isinstance(
+            result,
+            dict,
+        ):
             return result
 
         return {
@@ -437,7 +456,10 @@ class DurableWorkflowExecutionService:
                 else None
             ),
             "steps": (
-                workflow.get("steps", [])
+                workflow.get(
+                    "steps",
+                    [],
+                )
                 if workflow
                 else []
             ),
