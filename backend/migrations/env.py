@@ -18,6 +18,9 @@ from models.confirmation import Confirmation
 from models.workflow import Workflow
 from models.workflow_step import WorkflowStep
 from models.activity_event import ActivityEvent
+from models.activity_digest_delivery import (
+    ActivityDigestDelivery,
+)
 
 
 # Alembic Config object
