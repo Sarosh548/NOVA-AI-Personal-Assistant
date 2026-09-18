@@ -1,6 +1,9 @@
 from langgraph.graph import END, START, StateGraph
 
 from agent.state import NOVAState
+from services.activity_report_service import (
+    ActivityReportService,
+)
 from services.agent_planner_service import (
     AgentPlannerService,
 )
@@ -42,6 +45,7 @@ plan_permission_service = PlanPermissionService(
     permission_service=permission_service,
 )
 confirmation_service = ConfirmationService()
+activity_report_service = ActivityReportService()
 
 tool_router = ToolRouter()
 
@@ -79,6 +83,23 @@ DEFAULT_CONFIRMATION = {
 }
 
 
+DEFAULT_ACTIVITY_REPORT = {
+    "user_id": None,
+    "timezone": "Asia/Karachi",
+    "total_events": 0,
+    "status_counts": {},
+    "event_type_counts": {},
+    "successful_count": 0,
+    "pending_count": 0,
+    "partial_count": 0,
+    "failed_count": 0,
+    "blocked_count": 0,
+    "recent_events": [],
+    "report_text": None,
+    "error": None,
+}
+
+
 def _get_execution_context(
     state: NOVAState,
 ) -> ExecutionContext:
@@ -110,6 +131,76 @@ def _get_execution_context(
         return DEFAULT_INTERACTIVE_CONTEXT
 
     return DEFAULT_AUTONOMOUS_CONTEXT
+
+
+def _is_activity_report_request(
+    message: str,
+) -> bool:
+    """
+    Detect explicit daily activity/report requests
+    deterministically.
+
+    This keeps known report commands independent from
+    LLM intent classification.
+    """
+
+    normalized = " ".join(
+        message.strip().lower().split()
+    )
+
+    normalized = (
+        normalized
+        .replace("?", "")
+        .replace("!", "")
+        .replace(".", "")
+        .replace(",", "")
+    )
+
+    exact_phrases = {
+        "aaj kya updates hain",
+        "aaj ki updates",
+        "aaj ka update",
+        "aaj ke updates",
+        "aaj kya hua",
+        "aaj ki activity",
+        "aaj ki activity batao",
+        "aaj ki activity dikhao",
+        "aaj ki activity show karo",
+        "aaj ke updates batao",
+        "aaj ke updates dikhao",
+        "aaj ki updates batao",
+        "aaj ki updates dikhao",
+        "today updates",
+        "today's updates",
+        "today update",
+        "today's update",
+        "what happened today",
+        "what happened today",
+        "show today's activity",
+        "show my activity today",
+        "show today's updates",
+        "show my updates today",
+    }
+
+    if normalized in exact_phrases:
+        return True
+
+    starts_with_phrases = (
+        "aaj ki updates ",
+        "aaj ke updates ",
+        "aaj ki activity ",
+        "aaj kya updates ",
+        "today updates ",
+        "today's updates ",
+        "what happened today ",
+        "show today's activity ",
+        "show today's updates ",
+    )
+
+    return any(
+        normalized.startswith(prefix)
+        for prefix in starts_with_phrases
+    )
 
 
 def confirmation_node(
@@ -429,10 +520,42 @@ def understanding_node(state: NOVAState) -> NOVAState:
     """
     Analyze the current message using recent conversation
     history when follow-up context is required.
+
+    Explicit activity-report requests are resolved
+    deterministically before LLM intent classification.
     """
 
+    user_message = state[
+        "user_message"
+    ]
+
+    if _is_activity_report_request(
+        user_message
+    ):
+        return {
+            **state,
+            "understanding": {
+                "intent": "activity_report",
+                "task": None,
+                "task_reference": None,
+                "task_action": None,
+                "task_id": None,
+                "priority": None,
+                "reminder_action": None,
+                "reminder_reference": None,
+                "reminder_id": None,
+                "time": None,
+                "scheduled_at": None,
+                "emotion": "neutral",
+                "tone": "friendly",
+                "visual": "listening",
+                "action": None,
+                "requires_tool": False,
+            },
+        }
+
     understanding = intent_service.analyze(
-        message=state["user_message"],
+        message=user_message,
         history=state.get("history", []),
     )
 
@@ -440,6 +563,74 @@ def understanding_node(state: NOVAState) -> NOVAState:
         **state,
         "understanding": understanding,
     }
+
+
+def route_after_understanding_activity_report(
+    state: NOVAState,
+) -> str:
+    """
+    Route explicit activity-report requests directly to the
+    read-only activity reporting node.
+
+    All other messages continue through normal planning.
+    """
+
+    understanding = state.get(
+        "understanding",
+        {},
+    )
+
+    if (
+        understanding.get("intent")
+        == "activity_report"
+    ):
+        return "activity_report"
+
+    return "planner"
+
+
+def activity_report_node(
+    state: NOVAState,
+) -> NOVAState:
+    """
+    Build the current local-day activity report.
+
+    This node is read-only:
+    - no tool execution
+    - no permission request
+    - no state mutation outside graph state
+    """
+
+    user_id = state.get(
+        "user_id",
+        "user-001",
+    )
+
+    try:
+        report = (
+            activity_report_service
+            .get_daily_report(
+                user_id=user_id,
+            )
+        )
+
+        return {
+            **state,
+            "activity_report": report,
+        }
+
+    except Exception:
+        return {
+            **state,
+            "activity_report": {
+                **DEFAULT_ACTIVITY_REPORT,
+                "user_id": user_id,
+                "error": (
+                    "The activity report could not "
+                    "be generated."
+                ),
+            },
+        }
 
 
 def planner_node(state: NOVAState) -> NOVAState:
@@ -540,8 +731,8 @@ def route_after_understanding(
     """
     Backward-compatible routing helper.
 
-    The actual graph routes through confirmation and
-    permission nodes.
+    The actual graph routes explicit activity-report requests
+    before planning.
     """
 
     plan = state.get("plan")
@@ -1471,6 +1662,11 @@ def agent_node(state: NOVAState) -> NOVAState:
         dict(DEFAULT_WORKFLOW_RESULT),
     )
 
+    activity_report = state.get(
+        "activity_report",
+        {},
+    )
+
     history = state.get(
         "history",
         [],
@@ -1617,6 +1813,12 @@ Confirmation reason:
         else "No workflow result is available."
     )
 
+    activity_report_context = (
+        str(activity_report)
+        if activity_report
+        else "No activity report is available."
+    )
+
     prompt = f"""
 You are NOVA, a friendly personal AI companion.
 
@@ -1646,6 +1848,9 @@ Single-step tool result:
 
 Workflow result:
 {workflow_context}
+
+Daily activity report:
+{activity_report_context}
 
 Response rules:
 1. Respond naturally as NOVA.
@@ -1683,6 +1888,15 @@ Response rules:
 22. If a workflow result has status "scheduled", clearly state
     that the workflow has been scheduled for the provided time
     and do not claim its steps have already executed.
+23. If a daily activity report is available, use its actual
+    stored data as the source of truth.
+24. Do not invent activities, counts, statuses, or events that
+    are not present in the activity report.
+25. When the user asks for today's updates, summarize the
+    report naturally and mention the important recent events
+    when useful.
+26. If the activity report contains an error, do not pretend
+    that a report was successfully generated.
 """
 
     response = llm_service.generate_response(
@@ -1711,6 +1925,11 @@ def build_graph():
     graph.add_node(
         "understanding",
         understanding_node,
+    )
+
+    graph.add_node(
+        "activity_report",
+        activity_report_node,
     )
 
     graph.add_node(
@@ -1759,9 +1978,18 @@ def build_graph():
         "understanding",
     )
 
-    graph.add_edge(
+    graph.add_conditional_edges(
         "understanding",
-        "planner",
+        route_after_understanding_activity_report,
+        {
+            "activity_report": "activity_report",
+            "planner": "planner",
+        },
+    )
+
+    graph.add_edge(
+        "activity_report",
+        "agent",
     )
 
     graph.add_edge(

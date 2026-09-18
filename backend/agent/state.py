@@ -1,4 +1,4 @@
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from services.execution_context import ExecutionContext
 
@@ -18,3 +18,4 @@ class NOVAState(TypedDict):
     workflow_result: dict[str, Any]
     memory_context: str
     response: str
+    activity_report: NotRequired[dict[str, Any]]
