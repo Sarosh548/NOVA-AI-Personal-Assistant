@@ -21,6 +21,12 @@ from services.memory_service import MemoryService
 from services.notification_service import (
     NotificationService,
 )
+from services.proactive_activity_notification_service import (
+    ProactiveActivityNotificationService,
+)
+from services.proactive_activity_scheduler import (
+    ProactiveActivityScheduler,
+)
 from services.reminder_scheduler import (
     ReminderScheduler,
 )
@@ -59,8 +65,25 @@ autonomous_workflow_scheduler = (
     )
 )
 
+proactive_activity_notification_service = (
+    ProactiveActivityNotificationService(
+        notification_service=notification_service,
+    )
+)
+
+proactive_activity_scheduler = ProactiveActivityScheduler(
+    interval_seconds=5,
+    delivery_hour=21,
+    delivery_minute=0,
+    timezone_name="Asia/Karachi",
+    notification_service=proactive_activity_notification_service,
+)
+
 scheduler_task: asyncio.Task | None = None
 autonomous_workflow_scheduler_task: (
+    asyncio.Task | None
+) = None
+proactive_activity_scheduler_task: (
     asyncio.Task | None
 ) = None
 
@@ -78,6 +101,7 @@ class ChatRequest(BaseModel):
 async def startup_event():
     global scheduler_task
     global autonomous_workflow_scheduler_task
+    global proactive_activity_scheduler_task
 
     if (
         scheduler_task is None
@@ -97,6 +121,16 @@ async def startup_event():
             )
         )
 
+    if (
+        proactive_activity_scheduler_task is None
+        or proactive_activity_scheduler_task.done()
+    ):
+        proactive_activity_scheduler_task = (
+            asyncio.create_task(
+                proactive_activity_scheduler.run()
+            )
+        )
+
     print(
         "NOVA reminder scheduler started automatically."
     )
@@ -105,14 +139,20 @@ async def startup_event():
         "NOVA autonomous workflow scheduler started automatically."
     )
 
+    print(
+        "NOVA proactive activity scheduler started automatically."
+    )
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global scheduler_task
     global autonomous_workflow_scheduler_task
+    global proactive_activity_scheduler_task
 
     reminder_scheduler.stop()
     autonomous_workflow_scheduler.stop()
+    proactive_activity_scheduler.stop()
 
     if scheduler_task is not None:
         try:
@@ -130,12 +170,24 @@ async def shutdown_event():
 
         autonomous_workflow_scheduler_task = None
 
+    if proactive_activity_scheduler_task is not None:
+        try:
+            await proactive_activity_scheduler_task
+        except asyncio.CancelledError:
+            pass
+
+        proactive_activity_scheduler_task = None
+
     print(
         "NOVA reminder scheduler stopped."
     )
 
     print(
         "NOVA autonomous workflow scheduler stopped."
+    )
+
+    print(
+        "NOVA proactive activity scheduler stopped."
     )
 
 

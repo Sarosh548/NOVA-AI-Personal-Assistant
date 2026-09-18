@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
 from database.connection import engine as default_engine
@@ -17,6 +17,7 @@ class ActivityEventService:
     Responsibilities:
     - record structured NOVA activity
     - retrieve recent activity for a user
+    - discover users with recent activity
     - filter activity by type/source/time
     - preserve optional conversation/workflow linkage
 
@@ -318,6 +319,78 @@ class ActivityEventService:
                 )
                 for event in events
             ]
+
+    def list_users_with_activity_since(
+        self,
+        *,
+        since: datetime,
+        until: datetime | None = None,
+    ) -> list[str]:
+        """
+        Return distinct user IDs that have activity in the
+        requested UTC time range.
+
+        Results are deterministic and sorted by user ID.
+
+        This method is used by proactive background systems
+        to discover users who actually have activity worth
+        reporting.
+        """
+
+        normalized_since = (
+            self._normalize_datetime(
+                since
+            )
+        )
+
+        if normalized_since is None:
+            raise ValueError(
+                "Activity discovery 'since' cannot be None."
+            )
+
+        normalized_until = (
+            self._normalize_datetime(
+                until
+            )
+        )
+
+        if (
+            normalized_until is not None
+            and normalized_until
+            <= normalized_since
+        ):
+            raise ValueError(
+                "Activity discovery 'until' must be after 'since'."
+            )
+
+        statement = (
+            select(
+                distinct(
+                    ActivityEvent.user_id
+                )
+            )
+            .where(
+                ActivityEvent.created_at
+                >= normalized_since
+            )
+        )
+
+        if normalized_until is not None:
+            statement = statement.where(
+                ActivityEvent.created_at
+                < normalized_until
+            )
+
+        statement = statement.order_by(
+            ActivityEvent.user_id.asc()
+        )
+
+        with Session(self.engine) as session:
+            return list(
+                session.scalars(
+                    statement
+                ).all()
+            )
 
     @staticmethod
     def _event_to_dict(

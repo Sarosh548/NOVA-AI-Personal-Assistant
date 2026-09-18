@@ -13,6 +13,9 @@ from database.connection import engine as default_engine
 from models.activity_digest_delivery import (
     ActivityDigestDelivery,
 )
+from services.activity_event_service import (
+    ActivityEventService,
+)
 from services.activity_report_service import (
     ActivityReportService,
 )
@@ -69,17 +72,32 @@ class ProactiveActivityNotificationService:
             else default_engine
         )
 
-        self.activity_digest_service = (
-            activity_digest_service
-            if activity_digest_service is not None
-            else ProactiveActivityDigestService(
-                activity_report_service=(
-                    ActivityReportService(
-                        db_engine=self.engine
+        if activity_digest_service is not None:
+            self.activity_digest_service = (
+                activity_digest_service
+            )
+        else:
+            activity_event_service = (
+                ActivityEventService(
+                    db_engine=self.engine
+                )
+            )
+
+            activity_report_service = (
+                ActivityReportService(
+                    activity_event_service=(
+                        activity_event_service
                     )
                 )
             )
-        )
+
+            self.activity_digest_service = (
+                ProactiveActivityDigestService(
+                    activity_report_service=(
+                        activity_report_service
+                    )
+                )
+            )
 
         self.notification_service = (
             notification_service
@@ -127,14 +145,9 @@ class ProactiveActivityNotificationService:
             timezone_name
         )
 
-        aware_reference = (
-            reference_datetime
-        )
+        aware_reference = reference_datetime
 
-        if (
-            aware_reference.tzinfo
-            is None
-        ):
+        if aware_reference.tzinfo is None:
             aware_reference = (
                 aware_reference.replace(
                     tzinfo=timezone.utc
@@ -158,7 +171,9 @@ class ProactiveActivityNotificationService:
         )
 
         cleaned_type = (
-            str(digest_type).strip().lower()
+            str(
+                digest_type
+            ).strip().lower()
         )
 
         if not cleaned_user_id:
@@ -202,7 +217,9 @@ class ProactiveActivityNotificationService:
         )
 
         cleaned_type = (
-            str(digest_type).strip().lower()
+            str(
+                digest_type
+            ).strip().lower()
         )
 
         if not cleaned_user_id:
@@ -231,6 +248,7 @@ class ProactiveActivityNotificationService:
 
         for _ in range(2):
             claim_token = uuid4().hex
+
             lease_until = (
                 reference_now
                 + timedelta(
@@ -257,20 +275,40 @@ class ProactiveActivityNotificationService:
                 )
 
                 if delivery is None:
-                    delivery = ActivityDigestDelivery(
-                        user_id=cleaned_user_id,
-                        digest_date=digest_date,
-                        digest_type=cleaned_type,
-                        delivery_key=delivery_key,
-                        status="processing",
-                        attempt_count=1,
-                        claim_token=claim_token,
-                        lease_until=lease_until,
-                        last_attempt_at=reference_now,
-                        sent_at=None,
-                        last_error=None,
-                        created_at=reference_now,
-                        updated_at=reference_now,
+                    delivery = (
+                        ActivityDigestDelivery(
+                            user_id=(
+                                cleaned_user_id
+                            ),
+                            digest_date=(
+                                digest_date
+                            ),
+                            digest_type=(
+                                cleaned_type
+                            ),
+                            delivery_key=(
+                                delivery_key
+                            ),
+                            status="processing",
+                            attempt_count=1,
+                            claim_token=(
+                                claim_token
+                            ),
+                            lease_until=(
+                                lease_until
+                            ),
+                            last_attempt_at=(
+                                reference_now
+                            ),
+                            sent_at=None,
+                            last_error=None,
+                            created_at=(
+                                reference_now
+                            ),
+                            updated_at=(
+                                reference_now
+                            ),
+                        )
                     )
 
                     try:
@@ -286,15 +324,27 @@ class ProactiveActivityNotificationService:
                         return {
                             "claimed": True,
                             "reason": "claimed",
-                            "delivery_id": delivery.id,
-                            "delivery_key": delivery.delivery_key,
-                            "claim_token": claim_token,
-                            "status": delivery.status,
+                            "delivery_id": (
+                                delivery.id
+                            ),
+                            "delivery_key": (
+                                delivery.delivery_key
+                            ),
+                            "claim_token": (
+                                claim_token
+                            ),
+                            "status": (
+                                delivery.status
+                            ),
                             "attempt_count": (
                                 delivery.attempt_count
                             ),
-                            "digest_date": delivery.digest_date,
-                            "digest_type": delivery.digest_type,
+                            "digest_date": (
+                                delivery.digest_date
+                            ),
+                            "digest_type": (
+                                delivery.digest_type
+                            ),
                         }
 
                     except IntegrityError:
@@ -305,50 +355,88 @@ class ProactiveActivityNotificationService:
                     return {
                         "claimed": False,
                         "reason": "already_sent",
-                        "delivery_id": delivery.id,
-                        "delivery_key": delivery.delivery_key,
+                        "delivery_id": (
+                            delivery.id
+                        ),
+                        "delivery_key": (
+                            delivery.delivery_key
+                        ),
                         "claim_token": None,
-                        "status": delivery.status,
+                        "status": (
+                            delivery.status
+                        ),
                         "attempt_count": (
                             delivery.attempt_count
                         ),
-                        "digest_date": delivery.digest_date,
-                        "digest_type": delivery.digest_type,
+                        "digest_date": (
+                            delivery.digest_date
+                        ),
+                        "digest_type": (
+                            delivery.digest_type
+                        ),
                     }
 
                 if (
-                    delivery.status == "processing"
-                    and delivery.lease_until is not None
+                    delivery.status
+                    == "processing"
+                    and delivery.lease_until
+                    is not None
                     and delivery.lease_until
                     > reference_now
                 ):
                     return {
                         "claimed": False,
                         "reason": "in_progress",
-                        "delivery_id": delivery.id,
-                        "delivery_key": delivery.delivery_key,
+                        "delivery_id": (
+                            delivery.id
+                        ),
+                        "delivery_key": (
+                            delivery.delivery_key
+                        ),
                         "claim_token": None,
-                        "status": delivery.status,
+                        "status": (
+                            delivery.status
+                        ),
                         "attempt_count": (
                             delivery.attempt_count
                         ),
-                        "digest_date": delivery.digest_date,
-                        "digest_type": delivery.digest_type,
+                        "digest_date": (
+                            delivery.digest_date
+                        ),
+                        "digest_type": (
+                            delivery.digest_type
+                        ),
                     }
 
-                delivery.status = "processing"
+                previous_status = (
+                    delivery.status
+                )
+
+                delivery.status = (
+                    "processing"
+                )
+
                 delivery.attempt_count = (
                     int(
                         delivery.attempt_count
                     )
                     + 1
                 )
-                delivery.claim_token = claim_token
-                delivery.lease_until = lease_until
+
+                delivery.claim_token = (
+                    claim_token
+                )
+
+                delivery.lease_until = (
+                    lease_until
+                )
+
                 delivery.last_attempt_at = (
                     reference_now
                 )
+
                 delivery.last_error = None
+
                 delivery.updated_at = (
                     reference_now
                 )
@@ -357,19 +445,33 @@ class ProactiveActivityNotificationService:
 
                 return {
                     "claimed": True,
-                    "reason": "reclaimed"
-                    if delivery.status
-                    == "processing"
-                    else "retry_claimed",
-                    "delivery_id": delivery.id,
-                    "delivery_key": delivery.delivery_key,
-                    "claim_token": claim_token,
-                    "status": delivery.status,
+                    "reason": (
+                        "reclaimed"
+                        if previous_status
+                        == "processing"
+                        else "retry_claimed"
+                    ),
+                    "delivery_id": (
+                        delivery.id
+                    ),
+                    "delivery_key": (
+                        delivery.delivery_key
+                    ),
+                    "claim_token": (
+                        claim_token
+                    ),
+                    "status": (
+                        delivery.status
+                    ),
                     "attempt_count": (
                         delivery.attempt_count
                     ),
-                    "digest_date": delivery.digest_date,
-                    "digest_type": delivery.digest_type,
+                    "digest_date": (
+                        delivery.digest_date
+                    ),
+                    "digest_type": (
+                        delivery.digest_type
+                    ),
                 }
 
         raise RuntimeError(
@@ -465,9 +567,9 @@ class ProactiveActivityNotificationService:
                 .values(
                     status="failed",
                     lease_until=None,
-                    last_error=cleaned_error[
-                        :2000
-                    ],
+                    last_error=(
+                        cleaned_error[:2000]
+                    ),
                     updated_at=reference_time,
                 )
             )
@@ -549,11 +651,15 @@ class ProactiveActivityNotificationService:
                 "delivery": None,
             }
 
-        timezone_name = str(
+        metadata = dict(
             digest.get(
                 "metadata",
                 {},
-            ).get(
+            )
+        )
+
+        timezone_name = str(
+            metadata.get(
                 "timezone",
                 "Asia/Karachi",
             )
@@ -586,24 +692,17 @@ class ProactiveActivityNotificationService:
                 "delivery": claim,
             }
 
-        metadata = dict(
-            digest.get(
-                "metadata",
-                {},
-            )
-        )
-
         metadata.update(
             {
-                "delivery_key": claim[
-                    "delivery_key"
-                ],
+                "delivery_key": (
+                    claim["delivery_key"]
+                ),
                 "digest_date": (
                     digest_date.isoformat()
                 ),
-                "attempt_count": claim[
-                    "attempt_count"
-                ],
+                "attempt_count": (
+                    claim["attempt_count"]
+                ),
             }
         )
 
@@ -665,7 +764,9 @@ class ProactiveActivityNotificationService:
             return {
                 "delivered": False,
                 "skipped": False,
-                "reason": "notification_failed",
+                "reason": (
+                    "notification_failed"
+                ),
                 "digest": digest,
                 "delivery": {
                     **claim,
@@ -715,15 +816,33 @@ class ProactiveActivityNotificationService:
         return {
             "id": delivery.id,
             "user_id": delivery.user_id,
-            "digest_date": delivery.digest_date,
-            "digest_type": delivery.digest_type,
-            "delivery_key": delivery.delivery_key,
+            "digest_date": (
+                delivery.digest_date
+            ),
+            "digest_type": (
+                delivery.digest_type
+            ),
+            "delivery_key": (
+                delivery.delivery_key
+            ),
             "status": delivery.status,
-            "attempt_count": delivery.attempt_count,
-            "lease_until": delivery.lease_until,
-            "last_attempt_at": delivery.last_attempt_at,
+            "attempt_count": (
+                delivery.attempt_count
+            ),
+            "lease_until": (
+                delivery.lease_until
+            ),
+            "last_attempt_at": (
+                delivery.last_attempt_at
+            ),
             "sent_at": delivery.sent_at,
-            "last_error": delivery.last_error,
-            "created_at": delivery.created_at,
-            "updated_at": delivery.updated_at,
+            "last_error": (
+                delivery.last_error
+            ),
+            "created_at": (
+                delivery.created_at
+            ),
+            "updated_at": (
+                delivery.updated_at
+            ),
         }
