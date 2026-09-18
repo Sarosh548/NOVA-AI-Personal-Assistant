@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from database.connection import engine as default_engine
+from services.activity_event_service import (
+    ActivityEventService,
+)
 from services.workflow_service import WorkflowService
+
+
+logger = logging.getLogger(__name__)
 
 
 class AutonomousWorkflowService:
@@ -18,18 +25,25 @@ class AutonomousWorkflowService:
     - normalize scheduled datetime to naive UTC
     - reject scheduled times that are not in the future
     - persist an autonomous pending workflow
+    - record a durable workflow-scheduled activity event
 
     This service does NOT:
     - perform permission checks
     - create confirmations
     - execute tools
     - run schedulers
+
+    Activity event recording is best-effort and must never
+    break successful workflow creation.
     """
 
     def __init__(
         self,
         db_engine: Any | None = None,
         workflow_service: WorkflowService | None = None,
+        activity_event_service: (
+            ActivityEventService | None
+        ) = None,
     ):
         self.engine = (
             db_engine
@@ -42,6 +56,20 @@ class AutonomousWorkflowService:
             if workflow_service is not None
             else WorkflowService(
                 db_engine=self.engine
+            )
+        )
+
+        workflow_engine = getattr(
+            self.workflow_service,
+            "engine",
+            self.engine,
+        )
+
+        self.activity_event_service = (
+            activity_event_service
+            if activity_event_service is not None
+            else ActivityEventService(
+                db_engine=workflow_engine
             )
         )
 
@@ -86,7 +114,6 @@ class AutonomousWorkflowService:
                     "scheduled_at must be a datetime."
                 )
 
-            # Support the common UTC ISO 8601 "Z" suffix.
             if normalized_value.endswith(
                 "Z"
             ):
@@ -150,11 +177,6 @@ class AutonomousWorkflowService:
     ) -> datetime:
         """
         Validate a scheduled datetime and return normalized naive UTC.
-
-        Validation rules:
-        - input must be a datetime or ISO 8601 string
-        - timezone must be explicitly provided
-        - scheduled time must be in the future
 
         This method does not persist or execute anything.
         """
@@ -235,13 +257,51 @@ class AutonomousWorkflowService:
             )
         )
 
-        return self.workflow_service.create_workflow(
-            user_id=normalized_user_id,
-            conversation_id=conversation_id,
-            plan=plan,
-            steps=steps,
-            execution_mode="autonomous",
-            status="pending",
-            scheduled_at=normalized_scheduled_at,
-            idempotency_key=idempotency_key,
+        workflow = (
+            self.workflow_service.create_workflow(
+                user_id=normalized_user_id,
+                conversation_id=conversation_id,
+                plan=plan,
+                steps=steps,
+                execution_mode="autonomous",
+                status="pending",
+                scheduled_at=normalized_scheduled_at,
+                idempotency_key=idempotency_key,
+            )
         )
+
+        try:
+            self.activity_event_service.record_event(
+                user_id=normalized_user_id,
+                conversation_id=conversation_id,
+                workflow_id=workflow["id"],
+                event_type="workflow_scheduled",
+                source="autonomous_workflow",
+                status="pending",
+                title="Autonomous workflow scheduled",
+                summary=(
+                    "NOVA scheduled an autonomous workflow "
+                    "for future background execution."
+                ),
+                metadata={
+                    "workflow_id": workflow["id"],
+                    "execution_mode": (
+                        workflow["execution_mode"]
+                    ),
+                    "scheduled_at": (
+                        workflow["scheduled_at"]
+                    ),
+                    "idempotency_key": (
+                        workflow["idempotency_key"]
+                    ),
+                },
+                created_at=workflow["created_at"],
+            )
+        except Exception:
+            logger.exception(
+                "Could not record scheduled workflow "
+                "activity event for workflow %s.",
+                workflow["id"],
+            )
+
+        return workflow

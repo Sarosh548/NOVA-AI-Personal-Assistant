@@ -17,6 +17,7 @@ from models.permission import Permission
 from models.confirmation import Confirmation
 from models.workflow import Workflow
 from models.workflow_step import WorkflowStep
+from models.activity_event import ActivityEvent
 
 
 # Alembic Config object

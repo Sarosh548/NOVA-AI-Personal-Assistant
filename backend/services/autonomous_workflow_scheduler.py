@@ -4,11 +4,15 @@ import asyncio
 import logging
 from typing import Any
 
+from services.activity_event_service import (
+    ActivityEventService,
+)
 from services.durable_workflow_execution_service import (
     DurableWorkflowExecutionService,
 )
 from services.notification_service import NotificationService
 from services.workflow_service import WorkflowService
+
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +24,9 @@ class AutonomousWorkflowScheduler:
     Responsibilities:
     - poll for due autonomous workflows
     - delegate execution to the durable execution service
-    - notify the user when autonomous execution reaches a terminal state
+    - record durable terminal activity events
+    - notify the user when autonomous execution reaches
+      a terminal state
 
     Does not:
     - execute tools directly
@@ -31,26 +37,42 @@ class AutonomousWorkflowScheduler:
     The persistent workflow remains the source of truth.
     """
 
+    TERMINAL_STATUSES = {
+        "completed",
+        "partial",
+        "failed",
+        "blocked",
+    }
+
     def __init__(
         self,
         interval_seconds: int = 5,
         workflow_service: WorkflowService | None = None,
         execution_service: DurableWorkflowExecutionService | None = None,
         notification_service: NotificationService | None = None,
+        activity_event_service: (
+            ActivityEventService | None
+        ) = None,
         batch_size: int = 20,
     ):
         if interval_seconds < 1:
-            raise ValueError("interval_seconds must be at least 1")
+            raise ValueError(
+                "interval_seconds must be at least 1"
+            )
 
         if batch_size < 1:
-            raise ValueError("batch_size must be at least 1")
+            raise ValueError(
+                "batch_size must be at least 1"
+            )
 
         self.interval_seconds = interval_seconds
+
         self.workflow_service = (
             workflow_service
             if workflow_service is not None
             else WorkflowService()
         )
+
         self.execution_service = (
             execution_service
             if execution_service is not None
@@ -58,17 +80,36 @@ class AutonomousWorkflowScheduler:
                 workflow_service=self.workflow_service
             )
         )
+
         self.notification_service = (
             notification_service
             if notification_service is not None
             else NotificationService()
         )
+
+        workflow_engine = getattr(
+            self.workflow_service,
+            "engine",
+            None,
+        )
+
+        self.activity_event_service = (
+            activity_event_service
+            if activity_event_service is not None
+            else ActivityEventService(
+                db_engine=workflow_engine
+            )
+        )
+
         self.batch_size = batch_size
         self._running = False
 
     async def process_due_workflows(self) -> None:
-        workflows = self.workflow_service.list_due_autonomous_workflows(
-            limit=self.batch_size
+        workflows = (
+            self.workflow_service
+            .list_due_autonomous_workflows(
+                limit=self.batch_size
+            )
         )
 
         for workflow in workflows:
@@ -76,9 +117,16 @@ class AutonomousWorkflowScheduler:
             user_id = workflow["user_id"]
 
             try:
-                result = self.execution_service.execute(
-                    user_id=user_id,
-                    workflow_id=workflow_id,
+                result = (
+                    self.execution_service.execute(
+                        user_id=user_id,
+                        workflow_id=workflow_id,
+                    )
+                )
+
+                self._record_terminal_event(
+                    workflow=workflow,
+                    result=result,
                 )
 
                 self._notify_terminal_result(
@@ -88,9 +136,109 @@ class AutonomousWorkflowScheduler:
 
             except Exception:
                 logger.exception(
-                    "Autonomous workflow %s failed outside normal execution handling.",
+                    "Autonomous workflow %s failed outside "
+                    "normal execution handling.",
                     workflow_id,
                 )
+
+    def _record_terminal_event(
+        self,
+        *,
+        workflow: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        status = result.get(
+            "status"
+        )
+
+        if status not in self.TERMINAL_STATUSES:
+            return
+
+        event_status = {
+            "completed": "success",
+            "partial": "partial",
+            "failed": "failed",
+            "blocked": "blocked",
+        }[status]
+
+        event_type = (
+            f"workflow_{status}"
+        )
+
+        title = {
+            "completed": (
+                "Autonomous workflow completed"
+            ),
+            "partial": (
+                "Autonomous workflow partially completed"
+            ),
+            "failed": (
+                "Autonomous workflow failed"
+            ),
+            "blocked": (
+                "Autonomous workflow blocked"
+            ),
+        }[status]
+
+        summary = {
+            "completed": (
+                "NOVA completed an autonomous background workflow."
+            ),
+            "partial": (
+                "NOVA completed an autonomous workflow with "
+                "some unsuccessful steps."
+            ),
+            "failed": (
+                "NOVA attempted an autonomous workflow, "
+                "but execution failed."
+            ),
+            "blocked": (
+                "NOVA blocked an autonomous workflow because "
+                "it was not permitted to execute."
+            ),
+        }[status]
+
+        workflow_id = (
+            result.get("workflow_id")
+            or workflow.get("id")
+        )
+
+        try:
+            self.activity_event_service.record_event(
+                user_id=workflow["user_id"],
+                conversation_id=workflow.get(
+                    "conversation_id"
+                ),
+                workflow_id=workflow_id,
+                event_type=event_type,
+                source="autonomous_workflow",
+                status=event_status,
+                title=title,
+                summary=summary,
+                metadata={
+                    "workflow_id": workflow_id,
+                    "status": status,
+                    "execution_mode": (
+                        workflow.get(
+                            "execution_mode"
+                        )
+                    ),
+                    "scheduled_at": (
+                        workflow.get(
+                            "scheduled_at"
+                        )
+                    ),
+                    "error": result.get(
+                        "error"
+                    ),
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Could not record terminal activity event "
+                "for autonomous workflow %s.",
+                workflow_id,
+            )
 
     def _notify_terminal_result(
         self,
@@ -100,15 +248,13 @@ class AutonomousWorkflowScheduler:
     ) -> None:
         status = result.get("status")
 
-        if status not in {
-            "completed",
-            "failed",
-            "partial",
-            "blocked",
-        }:
+        if status not in self.TERMINAL_STATUSES:
             return
 
-        workflow_id = result.get("workflow_id") or workflow.get("id")
+        workflow_id = (
+            result.get("workflow_id")
+            or workflow.get("id")
+        )
 
         if status == "completed":
             title = "NOVA completed a background task"
@@ -126,11 +272,15 @@ class AutonomousWorkflowScheduler:
 
         elif status == "failed":
             title = "NOVA background task failed"
-            body = f"Autonomous workflow #{workflow_id} failed."
+            body = (
+                f"Autonomous workflow #{workflow_id} failed."
+            )
 
         else:
             title = "NOVA background task was blocked"
-            body = f"Autonomous workflow #{workflow_id} was blocked."
+            body = (
+                f"Autonomous workflow #{workflow_id} was blocked."
+            )
 
         try:
             self.notification_service.notify(
@@ -146,7 +296,8 @@ class AutonomousWorkflowScheduler:
 
         except Exception:
             logger.exception(
-                "Could not notify user about autonomous workflow %s.",
+                "Could not notify user about autonomous "
+                "workflow %s.",
                 workflow_id,
             )
 
@@ -166,7 +317,9 @@ class AutonomousWorkflowScheduler:
         try:
             while self._running:
                 await self.process_due_workflows()
-                await asyncio.sleep(self.interval_seconds)
+                await asyncio.sleep(
+                    self.interval_seconds
+                )
 
         finally:
             self._running = False
