@@ -1,6 +1,9 @@
 from datetime import datetime
 from typing import Any
 
+from services.activity_event_service import (
+    ActivityEventService,
+)
 from services.reminder_service import ReminderService
 from services.task_service import TaskService
 from services.tool_registry import ToolRegistry
@@ -13,8 +16,12 @@ class ToolRouter:
     The router maps a high-level intent to a registered tool.
     Individual tools remain responsible for their own actions.
 
-    The registry keeps tool discovery, registration, metadata,
-    and execution separate from the routing layer.
+    The registry keeps tool discovery, registration,
+    metadata, and execution separate from the routing layer.
+
+    Activity events are recorded after meaningful task/reminder
+    state-changing operations. Activity recording is best-effort
+    and never changes the success/failure of the underlying tool.
 
     Future tools such as:
     - calendar
@@ -28,11 +35,23 @@ class ToolRouter:
     hard-coded routing layer.
     """
 
+    ACTIVITY_ACTIONS = {
+        "create",
+        "update",
+        "start",
+        "complete",
+        "cancel",
+        "delete",
+    }
+
     def __init__(
         self,
         reminder_service: ReminderService | None = None,
         task_service: TaskService | None = None,
         registry: ToolRegistry | None = None,
+        activity_event_service: (
+            ActivityEventService | None
+        ) = None,
     ):
         self.reminder_service = (
             reminder_service
@@ -45,6 +64,12 @@ class ToolRouter:
         )
 
         self.registry = registry or ToolRegistry()
+
+        self.activity_event_service = (
+            activity_event_service
+            if activity_event_service is not None
+            else ActivityEventService()
+        )
 
         self._register_default_tools()
 
@@ -123,10 +148,268 @@ class ToolRouter:
         tool_name = str(intent).strip()
         payload = data or {}
 
-        return self.registry.execute(
+        result = self.registry.execute(
             name=tool_name,
             user_id=user_id,
             data=payload,
+        )
+
+        self._record_tool_activity(
+            user_id=user_id,
+            tool_name=tool_name,
+            payload=payload,
+            result=result,
+        )
+
+        return result
+
+    # =====================================================
+    # ACTIVITY EVENT INSTRUMENTATION
+    # =====================================================
+
+    def _record_tool_activity(
+        self,
+        *,
+        user_id: str,
+        tool_name: str,
+        payload: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        """
+        Record meaningful task/reminder state changes.
+
+        Activity persistence is intentionally best-effort.
+        A logging failure must never change the tool result.
+        """
+
+        normalized_tool = (
+            str(tool_name)
+            .strip()
+            .lower()
+        )
+
+        if normalized_tool not in {
+            "task",
+            "reminder",
+        }:
+            return
+
+        action = (
+            result.get("action")
+            or payload.get(
+                "task_action"
+                if normalized_tool == "task"
+                else "reminder_action"
+            )
+        )
+
+        if action is None:
+            return
+
+        normalized_action = (
+            str(action)
+            .strip()
+            .lower()
+        )
+
+        if normalized_action not in self.ACTIVITY_ACTIONS:
+            return
+
+        success = (
+            result.get("success")
+            is True
+        )
+
+        event_type = (
+            f"{normalized_tool}_{normalized_action}"
+            if success
+            else (
+                f"{normalized_tool}_"
+                f"{normalized_action}_failed"
+            )
+        )
+
+        event_status = (
+            "success"
+            if success
+            else "failed"
+        )
+
+        result_data = result.get(
+            "result"
+        )
+
+        if not isinstance(
+            result_data,
+            dict,
+        ):
+            result_data = {}
+
+        entity_id = (
+            result_data.get(
+                "task_id"
+            )
+            if normalized_tool == "task"
+            else result_data.get(
+                "reminder_id"
+            )
+        )
+
+        title = result_data.get(
+            "title"
+        )
+
+        event_title = (
+            self._build_activity_title(
+                tool=normalized_tool,
+                action=normalized_action,
+                success=success,
+                entity_id=entity_id,
+                title=title,
+            )
+        )
+
+        summary = (
+            self._build_activity_summary(
+                tool=normalized_tool,
+                action=normalized_action,
+                success=success,
+                entity_id=entity_id,
+                title=title,
+                error=result.get(
+                    "error"
+                ),
+            )
+        )
+
+        metadata: dict[str, Any] = {
+            "tool": normalized_tool,
+            "action": normalized_action,
+        }
+
+        if entity_id is not None:
+            metadata["entity_id"] = entity_id
+
+        if title is not None:
+            metadata["title"] = str(title)
+
+        returned_status = result_data.get(
+            "status"
+        )
+
+        if returned_status is not None:
+            metadata["result_status"] = (
+                str(returned_status)
+            )
+
+        try:
+            self.activity_event_service.record_event(
+                user_id=user_id,
+                event_type=event_type,
+                source="tool_router",
+                status=event_status,
+                title=event_title,
+                summary=summary,
+                metadata=metadata,
+            )
+
+        except Exception:
+            # Activity logging must never break the real tool.
+            # The underlying action has already produced its result.
+            return
+
+    @staticmethod
+    def _build_activity_title(
+        *,
+        tool: str,
+        action: str,
+        success: bool,
+        entity_id: Any,
+        title: Any,
+    ) -> str:
+        noun = (
+            "Task"
+            if tool == "task"
+            else "Reminder"
+        )
+
+        verb_map = {
+            "create": "created",
+            "update": "updated",
+            "start": "started",
+            "complete": "completed",
+            "cancel": "cancelled",
+            "delete": "deleted",
+        }
+
+        verb = verb_map.get(
+            action,
+            action,
+        )
+
+        if not success:
+            verb = f"{verb} failed"
+
+        if title:
+            return (
+                f"{noun} {verb}: "
+                f"{str(title)[:150]}"
+            )
+
+        if entity_id is not None:
+            return (
+                f"{noun} {verb} "
+                f"(ID {entity_id})"
+            )
+
+        return (
+            f"{noun} {verb}"
+        )
+
+    @staticmethod
+    def _build_activity_summary(
+        *,
+        tool: str,
+        action: str,
+        success: bool,
+        entity_id: Any,
+        title: Any,
+        error: Any,
+    ) -> str:
+        noun = (
+            "task"
+            if tool == "task"
+            else "reminder"
+        )
+
+        if not success:
+            error_text = (
+                str(error).strip()
+                if error
+                else "The operation failed."
+            )
+
+            return (
+                f"{noun.capitalize()} action "
+                f"'{action}' failed: "
+                f"{error_text}"
+            )
+
+        if title:
+            identity = (
+                f"'{str(title)[:200]}'"
+            )
+        elif entity_id is not None:
+            identity = (
+                f"ID {entity_id}"
+            )
+        else:
+            identity = "the requested item"
+
+        return (
+            f"{noun.capitalize()} action "
+            f"'{action}' succeeded for "
+            f"{identity}."
         )
 
     # =====================================================
