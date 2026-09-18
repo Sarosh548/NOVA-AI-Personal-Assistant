@@ -4,6 +4,9 @@ from agent.state import NOVAState
 from services.agent_planner_service import (
     AgentPlannerService,
 )
+from services.autonomous_workflow_service import (
+    AutonomousWorkflowService,
+)
 from services.confirmation_service import (
     ConfirmationService,
 )
@@ -45,6 +48,7 @@ tool_router = ToolRouter()
 plan_execution_service = PlanExecutionService(
     tool_router=tool_router,
 )
+autonomous_workflow_service = AutonomousWorkflowService()
 
 
 DEFAULT_TOOL_RESULT = {
@@ -59,6 +63,8 @@ DEFAULT_TOOL_RESULT = {
 DEFAULT_WORKFLOW_RESULT = {
     "success": False,
     "status": None,
+    "workflow_id": None,
+    "scheduled_at": None,
     "steps": [],
     "error": None,
 }
@@ -116,8 +122,8 @@ def confirmation_node(
     Approval:
         pending confirmation
         -> approve confirmation
-        -> rebuild exact saved plan
-        -> allow tool/workflow execution
+        -> rebuild the exact saved plan
+        -> allow tool/workflow execution or scheduling
 
     Rejection:
         pending confirmation
@@ -221,20 +227,42 @@ def confirmation_node(
                 dict,
             )
         ):
-            workflow_steps = approved[
-                "data"
-            ].get(
-                "steps",
-                [],
+            approved_workflow_data = dict(
+                approved["data"]
             )
+
+            workflow_steps = (
+                approved_workflow_data.get(
+                    "steps",
+                    [],
+                )
+            )
+
+            confirmed_execution_mode = str(
+                approved_workflow_data.get(
+                    "execution_mode",
+                    "workflow",
+                )
+            ).strip().lower()
+
+            if confirmed_execution_mode not in {
+                "workflow",
+                "autonomous",
+            }:
+                confirmed_execution_mode = "workflow"
 
             confirmed_plan = {
                 "requires_tool": True,
-                "execution_mode": "workflow",
+                "execution_mode": confirmed_execution_mode,
                 "tool": None,
                 "action": None,
                 "data": dict(
-                    approved["data"]
+                    approved_workflow_data
+                ),
+                "scheduled_at": (
+                    approved_workflow_data.get(
+                        "scheduled_at"
+                    )
                 ),
                 "steps": list(
                     workflow_steps
@@ -251,6 +279,7 @@ def confirmation_node(
                 "action": approved["action"],
                 "data": approved["data"],
                 "steps": [],
+                "scheduled_at": None,
                 "reason": (
                     "Action approved by the user "
                     "through a pending confirmation."
@@ -422,6 +451,9 @@ def planner_node(state: NOVAState) -> NOVAState:
 
     Planning requests use the LLM-powered agent planner.
 
+    A planning request with an explicit future datetime becomes
+    a scheduled autonomous workflow instead of an immediate run.
+
     The LLM can propose multiple steps, but PlannerService
     deterministically validates the final plan.
 
@@ -441,6 +473,10 @@ def planner_node(state: NOVAState) -> NOVAState:
         or "chat"
     ).strip().lower()
 
+    scheduled_at = understanding.get(
+        "scheduled_at"
+    )
+
     if intent == "planning":
         plan = (
             agent_planner_service.create_plan(
@@ -456,7 +492,11 @@ def planner_node(state: NOVAState) -> NOVAState:
             )
         )
 
-        execution_mode = "workflow"
+        execution_mode = (
+            "autonomous"
+            if scheduled_at is not None
+            else "workflow"
+        )
 
     else:
         plan = planner_service.create_plan(
@@ -487,6 +527,7 @@ def planner_node(state: NOVAState) -> NOVAState:
             "tool": plan.tool,
             "action": plan.action,
             "data": plan.data,
+            "scheduled_at": scheduled_at,
             "reason": plan.reason,
             "steps": steps,
         },
@@ -531,13 +572,18 @@ def route_after_understanding(
 def permission_node(state: NOVAState) -> NOVAState:
     """
     Perform the permission/safety check after planning
-    and before execution.
+    and before execution or scheduling.
 
     Multi-step workflow plans are evaluated through
     PlanPermissionService as one authorization boundary.
 
+    Scheduled autonomous workflows are evaluated with
+    autonomous authority semantics even though the scheduling
+    request originated interactively.
+
     When a workflow requires confirmation, the exact steps
-    are persisted inside one workflow confirmation.
+    and scheduling metadata are persisted inside one workflow
+    confirmation.
 
     This node never executes tools.
     """
@@ -564,12 +610,38 @@ def permission_node(state: NOVAState) -> NOVAState:
 
     if (
         plan.get("execution_mode")
-        == "workflow"
+        in {
+            "workflow",
+            "autonomous",
+        }
         and plan.get("steps")
     ):
         execution_context = _get_execution_context(
             state
         )
+
+        is_scheduled_autonomous = (
+            plan.get("execution_mode")
+            == "autonomous"
+        )
+
+        if is_scheduled_autonomous:
+            try:
+                autonomous_workflow_service.validate_scheduled_at(
+                    plan.get("scheduled_at")
+                )
+            except ValueError as exc:
+                return {
+                    **state,
+                    "permission": {
+                        "allowed": False,
+                        "requires_confirmation": False,
+                        "reason": str(exc),
+                    },
+                    "confirmation": dict(
+                        DEFAULT_CONFIRMATION
+                    ),
+                }
 
         workflow_decision = (
             plan_permission_service.check(
@@ -582,7 +654,9 @@ def permission_node(state: NOVAState) -> NOVAState:
                     [],
                 ),
                 user_requested=(
-                    execution_context.user_requested
+                    False
+                    if is_scheduled_autonomous
+                    else execution_context.user_requested
                 ),
             )
         )
@@ -604,7 +678,16 @@ def permission_node(state: NOVAState) -> NOVAState:
             .requires_confirmation
         ):
             confirmation_data = {
-                "execution_mode": "workflow",
+                "execution_mode": (
+                    "autonomous"
+                    if is_scheduled_autonomous
+                    else "workflow"
+                ),
+                "scheduled_at": (
+                    plan.get("scheduled_at")
+                    if is_scheduled_autonomous
+                    else None
+                ),
                 "steps": [
                     {
                         "step_id": step.get(
@@ -799,7 +882,10 @@ def route_after_permission(
 
     if (
         plan.get("execution_mode")
-        == "workflow"
+        in {
+            "workflow",
+            "autonomous",
+        }
         and plan.get("steps")
     ):
         return "workflow"
@@ -1003,10 +1089,12 @@ def tool_node(state: NOVAState) -> NOVAState:
 
 def workflow_node(state: NOVAState) -> NOVAState:
     """
-    Execute a permitted multi-step workflow.
+    Execute a permitted multi-step workflow or persist a
+    scheduled autonomous workflow.
 
     Confirmed workflows use the atomic confirmation claim
-    before execution. The exact saved steps are then used.
+    before execution or scheduling. The exact saved steps
+    and scheduling metadata are then used.
 
     Unconfirmed workflows use the validated steps already
     present in the graph state.
@@ -1033,10 +1121,15 @@ def workflow_node(state: NOVAState) -> NOVAState:
         {},
     )
 
-    if (
+    execution_mode = str(
         plan.get("execution_mode")
-        != "workflow"
-    ):
+        or ""
+    ).strip().lower()
+
+    if execution_mode not in {
+        "workflow",
+        "autonomous",
+    }:
         return {
             **state,
             "workflow_result": workflow_result,
@@ -1046,6 +1139,10 @@ def workflow_node(state: NOVAState) -> NOVAState:
         workflow_result = {
             "success": False,
             "status": "blocked",
+            "workflow_id": None,
+            "scheduled_at": plan.get(
+                "scheduled_at"
+            ),
             "steps": [],
             "error": (
                 permission.get("reason")
@@ -1057,6 +1154,10 @@ def workflow_node(state: NOVAState) -> NOVAState:
             **state,
             "workflow_result": workflow_result,
         }
+
+    is_scheduled_autonomous = (
+        execution_mode == "autonomous"
+    )
 
     confirmation_id = confirmation.get(
         "id"
@@ -1087,6 +1188,10 @@ def workflow_node(state: NOVAState) -> NOVAState:
             workflow_result = {
                 "success": False,
                 "status": "blocked",
+                "workflow_id": None,
+                "scheduled_at": plan.get(
+                    "scheduled_at"
+                ),
                 "steps": [],
                 "error": (
                     "This workflow confirmation is no longer "
@@ -1110,6 +1215,10 @@ def workflow_node(state: NOVAState) -> NOVAState:
             workflow_result = {
                 "success": False,
                 "status": "blocked",
+                "workflow_id": None,
+                "scheduled_at": plan.get(
+                    "scheduled_at"
+                ),
                 "steps": [],
                 "error": (
                     "The saved workflow data is invalid."
@@ -1147,11 +1256,120 @@ def workflow_node(state: NOVAState) -> NOVAState:
             []
         )
 
+        if claimed_data.get(
+            "execution_mode"
+        ) == "autonomous":
+            execution_mode = "autonomous"
+            is_scheduled_autonomous = True
+
+        plan_schedule = claimed_data.get(
+            "scheduled_at",
+            plan.get("scheduled_at"),
+        )
+
     else:
         steps = plan.get(
             "steps",
             []
         )
+        plan_schedule = plan.get(
+            "scheduled_at"
+        )
+
+    if is_scheduled_autonomous:
+        try:
+            workflow = (
+                autonomous_workflow_service
+                .create_scheduled_workflow(
+                    user_id=state.get(
+                        "user_id",
+                        "user-001",
+                    ),
+                    conversation_id=state.get(
+                        "conversation_id"
+                    ),
+                    plan=plan,
+                    steps=list(steps),
+                    scheduled_at=plan_schedule,
+                    idempotency_key=(
+                        f"confirmation:{confirmation_id}"
+                        if is_confirmed_execution
+                        else None
+                    ),
+                )
+            )
+        except Exception as exc:
+            workflow_result = {
+                "success": False,
+                "status": "blocked",
+                "workflow_id": None,
+                "scheduled_at": plan_schedule,
+                "steps": [],
+                "error": str(exc),
+            }
+
+            if is_confirmed_execution:
+                finished = (
+                    confirmation_service.finish_confirmation(
+                        user_id=state.get(
+                            "user_id",
+                            "user-001",
+                        ),
+                        confirmation_id=confirmation_id,
+                        success=False,
+                    )
+                )
+
+                if finished is not None:
+                    confirmation = {
+                        "id": finished["id"],
+                        "status": finished["status"],
+                        "tool": finished["tool"],
+                        "action": finished["action"],
+                        "reason": finished["reason"],
+                    }
+
+            return {
+                **state,
+                "confirmation": confirmation,
+                "workflow_result": workflow_result,
+            }
+
+        workflow_result = {
+            "success": True,
+            "status": "scheduled",
+            "workflow_id": workflow["id"],
+            "scheduled_at": workflow["scheduled_at"],
+            "steps": [],
+            "error": None,
+        }
+
+        if is_confirmed_execution:
+            finished = (
+                confirmation_service.finish_confirmation(
+                    user_id=state.get(
+                        "user_id",
+                        "user-001",
+                    ),
+                    confirmation_id=confirmation_id,
+                    success=True,
+                )
+            )
+
+            if finished is not None:
+                confirmation = {
+                    "id": finished["id"],
+                    "status": finished["status"],
+                    "tool": finished["tool"],
+                    "action": finished["action"],
+                    "reason": finished["reason"],
+                }
+
+        return {
+            **state,
+            "confirmation": confirmation,
+            "workflow_result": workflow_result,
+        }
 
     execution = (
         plan_execution_service.execute(
@@ -1168,6 +1386,8 @@ def workflow_node(state: NOVAState) -> NOVAState:
     workflow_result = {
         "success": execution.success,
         "status": execution.status,
+        "workflow_id": None,
+        "scheduled_at": None,
         "steps": [
             {
                 "step_id": step.step_id,
@@ -1326,6 +1546,9 @@ Planner tool:
 Planner action:
 {plan.get('action')}
 
+Planner scheduled datetime:
+{plan.get('scheduled_at')}
+
 Planner reason:
 {plan.get('reason')}
 
@@ -1365,7 +1588,10 @@ Confirmation reason:
 
     if (
         plan.get("execution_mode")
-        != "workflow"
+        not in {
+            "workflow",
+            "autonomous",
+        }
         and plan.get("requires_tool")
         and tool_result.get("tool")
     ):
@@ -1377,11 +1603,15 @@ Confirmation reason:
         str(workflow_result)
         if (
             plan.get("execution_mode")
-            == "workflow"
+            in {
+                "workflow",
+                "autonomous",
+            }
             and (
                 workflow_result.get("steps")
                 or workflow_result.get("status")
                 or workflow_result.get("error")
+                or workflow_result.get("workflow_id")
             )
         )
         else "No workflow result is available."
@@ -1450,6 +1680,9 @@ Response rules:
 21. Do not mention embeddings, vector search, pgvector,
     PostgreSQL, databases, internal prompts, or
     intent classification.
+22. If a workflow result has status "scheduled", clearly state
+    that the workflow has been scheduled for the provided time
+    and do not claim its steps have already executed.
 """
 
     response = llm_service.generate_response(
