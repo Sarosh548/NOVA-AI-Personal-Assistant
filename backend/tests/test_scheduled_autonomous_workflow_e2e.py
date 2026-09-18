@@ -17,6 +17,9 @@ from services.autonomous_workflow_service import (
 from services.durable_workflow_execution_service import (
     DurableWorkflowExecutionService,
 )
+from services.workflow_execution_safety_service import (
+    WorkflowExecutionSafetyDecision,
+)
 from services.workflow_service import WorkflowService
 
 
@@ -61,6 +64,41 @@ class FakeNotificationService:
             kwargs
         )
         return True
+
+
+class FakeExecutionSafetyService:
+    def __init__(self):
+        self.calls = []
+
+    def check(
+        self,
+        *,
+        user_id,
+        steps,
+    ):
+        self.calls.append(
+            {
+                "user_id": user_id,
+                "steps": steps,
+            }
+        )
+
+        return WorkflowExecutionSafetyDecision(
+            allowed=True,
+            requires_confirmation=False,
+            reason=(
+                "The scheduled workflow is currently "
+                "authorized for execution."
+            ),
+            risk_levels={
+                step["step_id"]: "medium"
+                for step in steps
+            },
+            risk_flags={
+                step["step_id"]: ()
+                for step in steps
+            },
+        )
 
 
 def build_runtime():
@@ -146,10 +184,17 @@ async def test_scheduled_workflow_completes_end_to_end():
 
         router = FakeToolRouter()
 
+        safety_service = (
+            FakeExecutionSafetyService()
+        )
+
         executor = (
             DurableWorkflowExecutionService(
                 workflow_service=workflow_service,
                 tool_router=router,
+                execution_safety_service=(
+                    safety_service
+                ),
             )
         )
 
@@ -209,6 +254,24 @@ async def test_scheduled_workflow_completes_end_to_end():
         assert router.calls == []
 
         await scheduler.process_due_workflows()
+
+        assert len(
+            safety_service.calls
+        ) == 1
+
+        assert (
+            safety_service.calls[0][
+                "user_id"
+            ]
+            == "user-001"
+        )
+
+        assert (
+            safety_service.calls[0][
+                "steps"
+            ][0]["step_id"]
+            == "step-1"
+        )
 
         final_workflow = (
             workflow_service.get_workflow(

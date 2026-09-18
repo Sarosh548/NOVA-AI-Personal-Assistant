@@ -489,6 +489,87 @@ class WorkflowService:
             },
         )
 
+    def block_workflow(
+        self,
+        *,
+        user_id: str,
+        workflow_id: int,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        """
+        Permanently pause a workflow in the blocked state
+        because current safety/permission policy no longer
+        permits execution.
+
+        A blocked workflow remains durable and can be explicitly
+        resumed later through the normal workflow lifecycle.
+
+        This method does not execute tools.
+        """
+
+        cleaned_reason = str(
+            reason
+        ).strip()
+
+        if not cleaned_reason:
+            raise ValueError(
+                "Workflow block reason is missing."
+            )
+
+        now = self._utc_now_naive()
+
+        with Session(self.engine) as session:
+            workflow = session.scalar(
+                select(Workflow).where(
+                    Workflow.id == workflow_id,
+                    Workflow.user_id == user_id,
+                )
+            )
+
+            if workflow is None:
+                return None
+
+            if workflow.status not in {
+                "pending",
+                "running",
+            }:
+                return None
+
+            allowed_transitions = (
+                self.WORKFLOW_TRANSITIONS.get(
+                    workflow.status,
+                    set(),
+                )
+            )
+
+            if "blocked" not in allowed_transitions:
+                return None
+
+            workflow.status = "blocked"
+            workflow.error = cleaned_reason
+            workflow.result = self._json_safe(
+                {
+                    "success": False,
+                    "status": "blocked",
+                    "workflow_id": workflow.id,
+                    "steps": [],
+                    "error": cleaned_reason,
+                    "safety_blocked": True,
+                }
+            )
+            workflow.updated_at = now
+            workflow.completed_at = now
+
+            session.commit()
+            session.refresh(
+                workflow
+            )
+
+            return self._workflow_to_dict(
+                session=session,
+                workflow=workflow,
+            )
+
     def claim_workflow(
         self,
         *,

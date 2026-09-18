@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from services.tool_router import ToolRouter
+from services.workflow_execution_safety_service import (
+    WorkflowExecutionSafetyService,
+)
 from services.workflow_service import WorkflowService
 
 
@@ -12,19 +15,22 @@ class DurableWorkflowExecutionService:
 
     Every execution call represents one execution attempt.
 
-    Important runtime rule:
+    Important runtime rules:
 
         A step is processed at most once per execute() call.
 
-    Therefore a failed step is NOT immediately retried forever
-    inside the same execution call. A later execute() call is
-    responsible for retry/resume behavior.
+        Autonomous workflows are re-checked against the current
+        permission/risk policy before any tool execution begins.
 
-    This provides the foundation for:
+    Therefore a scheduled workflow cannot execute under stale
+    authorization.
+
+    This service provides the foundation for:
     - durable state
     - resume after failure
     - explicit retry
     - duplicate execution protection
+    - runtime safety re-check
     - future worker/queue execution
     """
 
@@ -45,6 +51,9 @@ class DurableWorkflowExecutionService:
         self,
         workflow_service: WorkflowService | None = None,
         tool_router: ToolRouter | None = None,
+        execution_safety_service: (
+            WorkflowExecutionSafetyService | None
+        ) = None,
     ):
         self.workflow_service = (
             workflow_service
@@ -58,6 +67,12 @@ class DurableWorkflowExecutionService:
             else ToolRouter()
         )
 
+        self.execution_safety_service = (
+            execution_safety_service
+            if execution_safety_service is not None
+            else WorkflowExecutionSafetyService()
+        )
+
     def execute(
         self,
         *,
@@ -66,6 +81,13 @@ class DurableWorkflowExecutionService:
     ) -> dict[str, Any]:
         """
         Claim and execute one durable workflow run.
+
+        Autonomous workflows receive a fresh permission/risk
+        evaluation before the workflow is claimed for execution.
+
+        If current policy denies the workflow or requires new
+        confirmation, no tool is executed and the workflow is
+        durably moved to "blocked".
 
         Every step that is eligible at the beginning of this
         invocation may be processed at most once.
@@ -76,6 +98,89 @@ class DurableWorkflowExecutionService:
         Dependent steps are skipped when a dependency fails,
         becomes blocked, or is skipped.
         """
+
+        initial_workflow = (
+            self.workflow_service.get_workflow(
+                user_id=user_id,
+                workflow_id=workflow_id,
+            )
+        )
+
+        if initial_workflow is None:
+            return self._blocked_result(
+                "Workflow was not found."
+            )
+
+        # -------------------------------------------------
+        # Defense-in-depth safety boundary.
+        #
+        # Only autonomous/background workflows need this
+        # re-check because interactive workflows are already
+        # authorized by their interactive execution path.
+        #
+        # The persisted steps are the source of truth.
+        # -------------------------------------------------
+
+        if (
+            initial_workflow.get(
+                "execution_mode"
+            )
+            == "autonomous"
+        ):
+            safety_decision = (
+                self.execution_safety_service.check(
+                    user_id=user_id,
+                    steps=list(
+                        initial_workflow.get(
+                            "steps",
+                            [],
+                        )
+                    ),
+                )
+            )
+
+            if (
+                safety_decision.allowed
+                is not True
+            ):
+                blocked = (
+                    self.workflow_service.block_workflow(
+                        user_id=user_id,
+                        workflow_id=workflow_id,
+                        reason=(
+                            "Autonomous workflow was blocked "
+                            "by the current execution-time "
+                            f"safety policy: "
+                            f"{safety_decision.reason}"
+                        ),
+                    )
+                )
+
+                if blocked is not None:
+                    return self._result_from_workflow(
+                        blocked
+                    )
+
+                current = (
+                    self.workflow_service.get_workflow(
+                        user_id=user_id,
+                        workflow_id=workflow_id,
+                    )
+                )
+
+                return self._blocked_result(
+                    (
+                        "Autonomous workflow could not be "
+                        "approved by the current execution-time "
+                        "safety policy."
+                    ),
+                    status=(
+                        current["status"]
+                        if current is not None
+                        else "blocked"
+                    ),
+                    workflow=current,
+                )
 
         claimed_workflow = (
             self.workflow_service.claim_workflow(
@@ -114,6 +219,11 @@ class DurableWorkflowExecutionService:
                     "Workflow has been cancelled.",
                     status="cancelled",
                     workflow=current,
+                )
+
+            if current["status"] == "blocked":
+                return self._result_from_workflow(
+                    current
                 )
 
             return self._blocked_result(
