@@ -63,9 +63,17 @@ class ActivityReportService:
             else ActivityEventService()
         )
 
+        self.timezone = self._resolve_timezone(
+            timezone_name
+        )
+
+    @staticmethod
+    def _resolve_timezone(
+        timezone_name: str,
+    ) -> ZoneInfo:
         try:
-            self.timezone = ZoneInfo(
-                timezone_name
+            return ZoneInfo(
+                str(timezone_name).strip()
             )
         except Exception as exc:
             raise ValueError(
@@ -76,17 +84,24 @@ class ActivityReportService:
         self,
         *,
         now: datetime | None = None,
+        timezone_name: str | None = None,
     ) -> tuple[datetime, datetime]:
         """
         Return today's local-day window as naive UTC datetimes.
 
-        Database timestamps are stored as naive UTC, so the returned
-        window is:
+        Database timestamps are stored as naive UTC.
 
-            local midnight -> next local midnight
-
-        converted to naive UTC.
+        When `timezone_name` is supplied, it overrides the service's
+        default timezone for this calculation.
         """
+
+        report_timezone = (
+            self.timezone
+            if timezone_name is None
+            else self._resolve_timezone(
+                timezone_name
+            )
+        )
 
         if now is None:
             now = datetime.now(
@@ -99,13 +114,13 @@ class ActivityReportService:
             )
 
         local_now = now.astimezone(
-            self.timezone
+            report_timezone
         )
 
         local_start = datetime.combine(
             local_now.date(),
             time.min,
-            tzinfo=self.timezone,
+            tzinfo=report_timezone,
         )
 
         local_end = local_start + timedelta(
@@ -136,21 +151,29 @@ class ActivityReportService:
         now: datetime | None = None,
         recent_limit: int = 10,
         highlight_limit: int = HIGHLIGHT_LIMIT,
+        timezone_name: str | None = None,
     ) -> dict[str, Any]:
         """
         Build a deterministic daily activity report.
 
         The report covers the user's current local calendar day.
 
-        `recent_events` preserves chronological recency.
-
-        `important_events` contains de-duplicated highlights selected
-        deterministically from the stored events.
+        `timezone_name` allows the caller to use a durable per-user
+        timezone without creating a new report service instance.
         """
+
+        report_timezone = (
+            self.timezone
+            if timezone_name is None
+            else self._resolve_timezone(
+                timezone_name
+            )
+        )
 
         utc_start, utc_end = (
             self.get_local_day_window(
-                now=now
+                now=now,
+                timezone_name=report_timezone.key,
             )
         )
 
@@ -245,7 +268,7 @@ class ActivityReportService:
 
         return {
             "user_id": user_id,
-            "timezone": self.timezone.key,
+            "timezone": report_timezone.key,
             "window_start_utc": utc_start,
             "window_end_utc": utc_end,
             "total_events": len(

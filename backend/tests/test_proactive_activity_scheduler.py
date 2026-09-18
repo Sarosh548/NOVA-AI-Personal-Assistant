@@ -40,6 +40,48 @@ class FakeProactiveNotificationService:
         }
 
 
+class FakePreferences:
+    def __init__(
+        self,
+        *,
+        timezone="Asia/Karachi",
+        enabled=True,
+        delivery_hour=21,
+        delivery_minute=0,
+    ):
+        self.timezone = timezone
+        self.daily_activity_digest_enabled = (
+            enabled
+        )
+        self.delivery_hour = delivery_hour
+        self.delivery_minute = delivery_minute
+
+
+class FakePreferencesService:
+    def __init__(
+        self,
+        preferences_by_user,
+    ):
+        self.preferences_by_user = (
+            preferences_by_user
+        )
+        self.calls = []
+
+    def get_or_create(
+        self,
+        *,
+        user_id,
+    ):
+        self.calls.append(
+            user_id
+        )
+
+        return self.preferences_by_user.get(
+            user_id,
+            FakePreferences(),
+        )
+
+
 def build_runtime():
     db_engine = create_engine(
         "sqlite://",
@@ -92,21 +134,40 @@ def create_event(
     )
 
 
-def test_scheduler_is_due_after_configured_local_time():
-    scheduler = ProactiveActivityScheduler(
-        delivery_hour=21,
-        delivery_minute=0,
-        timezone_name="Asia/Karachi",
-        notification_service=(
-            FakeProactiveNotificationService()
+def build_scheduler(
+    *,
+    activity_event_service,
+    notification_service,
+    preferences_by_user,
+):
+    return ProactiveActivityScheduler(
+        interval_seconds=5,
+        activity_event_service=(
+            activity_event_service
         ),
+        notification_service=(
+            notification_service
+        ),
+        preferences_service=(
+            FakePreferencesService(
+                preferences_by_user
+            )
+        ),
+    )
+
+
+def test_scheduler_is_due_for_user_local_time():
+    preferences = FakePreferences(
+        timezone="America/New_York",
+        delivery_hour=11,
+        delivery_minute=0,
     )
 
     before = datetime(
         2026,
         9,
         18,
-        15,
+        14,
         59,
         tzinfo=timezone.utc,
     )
@@ -115,21 +176,68 @@ def test_scheduler_is_due_after_configured_local_time():
         2026,
         9,
         18,
-        16,
+        15,
         0,
         tzinfo=timezone.utc,
     )
 
-    assert scheduler.is_due(
-        now=before
-    ) is False
+    assert (
+        ProactiveActivityScheduler.is_due(
+            preferences=preferences,
+            now=before,
+        )
+        is False
+    )
 
-    assert scheduler.is_due(
-        now=after
-    ) is True
+    assert (
+        ProactiveActivityScheduler.is_due(
+            preferences=preferences,
+            now=after,
+        )
+        is True
+    )
 
 
-def test_scheduler_rejects_invalid_configuration():
+def test_scheduler_supports_different_global_users():
+    ny_preferences = FakePreferences(
+        timezone="America/New_York",
+        delivery_hour=11,
+        delivery_minute=0,
+    )
+
+    tokyo_preferences = FakePreferences(
+        timezone="Asia/Tokyo",
+        delivery_hour=2,
+        delivery_minute=0,
+    )
+
+    now = datetime(
+        2026,
+        9,
+        18,
+        15,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    assert (
+        ProactiveActivityScheduler.is_due(
+            preferences=ny_preferences,
+            now=now,
+        )
+        is True
+    )
+
+    assert (
+        ProactiveActivityScheduler.is_due(
+            preferences=tokyo_preferences,
+            now=now,
+        )
+        is False
+    )
+
+
+def test_scheduler_rejects_invalid_interval():
     with pytest.raises(
         ValueError,
         match="interval_seconds must be at least 1",
@@ -139,116 +247,27 @@ def test_scheduler_rejects_invalid_configuration():
             notification_service=(
                 FakeProactiveNotificationService()
             ),
-        )
-
-    with pytest.raises(
-        ValueError,
-        match="delivery_hour",
-    ):
-        ProactiveActivityScheduler(
-            delivery_hour=24,
-            notification_service=(
-                FakeProactiveNotificationService()
-            ),
-        )
-
-    with pytest.raises(
-        ValueError,
-        match="delivery_minute",
-    ):
-        ProactiveActivityScheduler(
-            delivery_minute=60,
-            notification_service=(
-                FakeProactiveNotificationService()
-            ),
-        )
-
-    with pytest.raises(
-        ValueError,
-        match="Invalid scheduler timezone",
-    ):
-        ProactiveActivityScheduler(
-            timezone_name="Invalid/Timezone",
-            notification_service=(
-                FakeProactiveNotificationService()
+            preferences_service=(
+                FakePreferencesService({})
             ),
         )
 
 
-def test_scheduler_discovers_only_current_local_day_users():
-    db_engine, activity_event_service = (
-        build_runtime()
-    )
+def test_scheduler_uses_current_local_day_for_each_user():
+    (
+        db_engine,
+        activity_event_service,
+    ) = build_runtime()
 
     try:
         create_event(
             activity_event_service,
-            user_id="user-today",
+            user_id="user-ny",
             created_at=datetime(
                 2026,
                 9,
                 18,
-                17,
-                0,
-            ),
-        )
-
-        create_event(
-            activity_event_service,
-            user_id="user-yesterday",
-            created_at=datetime(
-                2026,
-                9,
-                17,
-                17,
-                0,
-            ),
-        )
-
-        discovered = (
-            activity_event_service
-            .list_users_with_activity_since(
-                since=datetime(
-                    2026,
-                    9,
-                    18,
-                    0,
-                    0,
-                ),
-                until=datetime(
-                    2026,
-                    9,
-                    19,
-                    0,
-                    0,
-                ),
-            )
-        )
-
-        assert discovered == [
-            "user-today"
-        ]
-
-    finally:
-        teardown_runtime(
-            db_engine
-        )
-
-
-def test_scheduler_does_not_process_before_delivery_time():
-    db_engine, activity_event_service = (
-        build_runtime()
-    )
-
-    try:
-        create_event(
-            activity_event_service,
-            user_id="user-001",
-            created_at=datetime(
-                2026,
-                9,
-                18,
-                10,
+                8,
                 0,
             ),
         )
@@ -257,13 +276,20 @@ def test_scheduler_does_not_process_before_delivery_time():
             FakeProactiveNotificationService()
         )
 
-        scheduler = ProactiveActivityScheduler(
+        scheduler = build_scheduler(
             activity_event_service=(
                 activity_event_service
             ),
             notification_service=(
                 notification_service
             ),
+            preferences_by_user={
+                "user-ny": FakePreferences(
+                    timezone="America/New_York",
+                    delivery_hour=11,
+                    delivery_minute=0,
+                ),
+            },
         )
 
         results = asyncio.run(
@@ -273,13 +299,94 @@ def test_scheduler_does_not_process_before_delivery_time():
                     9,
                     18,
                     15,
-                    59,
+                    0,
                     tzinfo=timezone.utc,
                 )
             )
         )
 
-        assert results == []
+        assert [
+            item["user_id"]
+            for item in results
+        ] == [
+            "user-ny"
+        ]
+
+        assert [
+            call["user_id"]
+            for call in notification_service.calls
+        ] == [
+            "user-ny"
+        ]
+
+    finally:
+        teardown_runtime(
+            db_engine
+        )
+
+
+def test_scheduler_discovers_event_created_at_exact_now():
+    (
+        db_engine,
+        activity_event_service,
+    ) = build_runtime()
+
+    try:
+        now = datetime(
+            2026,
+            9,
+            18,
+            15,
+            0,
+            tzinfo=timezone.utc,
+        )
+
+        create_event(
+            activity_event_service,
+            user_id="user-tokyo",
+            created_at=datetime(
+                2026,
+                9,
+                18,
+                15,
+                0,
+            ),
+        )
+
+        notification_service = (
+            FakeProactiveNotificationService()
+        )
+
+        scheduler = build_scheduler(
+            activity_event_service=(
+                activity_event_service
+            ),
+            notification_service=(
+                notification_service
+            ),
+            preferences_by_user={
+                "user-tokyo": FakePreferences(
+                    timezone="Asia/Tokyo",
+                    delivery_hour=2,
+                    delivery_minute=0,
+                ),
+            },
+        )
+
+        results = asyncio.run(
+            scheduler.process_daily_activity_digests(
+                now=now
+            )
+        )
+
+        assert results[0]["user_id"] == (
+            "user-tokyo"
+        )
+
+        assert (
+            results[0]["result"]["reason"]
+            == "not_due"
+        )
 
         assert (
             notification_service.calls
@@ -292,56 +399,21 @@ def test_scheduler_does_not_process_before_delivery_time():
         )
 
 
-def test_scheduler_processes_current_day_activity_users():
-    db_engine, activity_event_service = (
-        build_runtime()
-    )
+def test_scheduler_skips_disabled_user():
+    (
+        db_engine,
+        activity_event_service,
+    ) = build_runtime()
 
     try:
         create_event(
             activity_event_service,
-            user_id="user-001",
+            user_id="user-disabled",
             created_at=datetime(
                 2026,
                 9,
                 18,
-                17,
-                0,
-            ),
-        )
-
-        create_event(
-            activity_event_service,
-            user_id="user-001",
-            created_at=datetime(
-                2026,
-                9,
-                18,
-                17,
-                30,
-            ),
-        )
-
-        create_event(
-            activity_event_service,
-            user_id="user-002",
-            created_at=datetime(
-                2026,
-                9,
-                18,
-                16,
-                0,
-            ),
-        )
-
-        create_event(
-            activity_event_service,
-            user_id="user-old",
-            created_at=datetime(
-                2026,
-                9,
-                17,
-                18,
+                15,
                 0,
             ),
         )
@@ -350,13 +422,21 @@ def test_scheduler_processes_current_day_activity_users():
             FakeProactiveNotificationService()
         )
 
-        scheduler = ProactiveActivityScheduler(
+        scheduler = build_scheduler(
             activity_event_service=(
                 activity_event_service
             ),
             notification_service=(
                 notification_service
             ),
+            preferences_by_user={
+                "user-disabled": FakePreferences(
+                    enabled=False,
+                    timezone="Asia/Karachi",
+                    delivery_hour=1,
+                    delivery_minute=0,
+                ),
+            },
         )
 
         results = asyncio.run(
@@ -372,36 +452,243 @@ def test_scheduler_processes_current_day_activity_users():
             )
         )
 
-        assert [
-            item["user_id"]
-            for item in results
-        ] == [
-            "user-001",
-            "user-002",
-        ]
+        assert (
+            results[0]["result"]["reason"]
+            == "digest_disabled"
+        )
 
-        assert [
-            call["user_id"]
-            for call in notification_service.calls
-        ] == [
-            "user-001",
-            "user-002",
-        ]
-
-        assert all(
-            call["now"]
-            == datetime(
-                2026,
-                9,
-                18,
-                18,
-                0,
-                tzinfo=timezone.utc,
-            )
-            for call in notification_service.calls
+        assert (
+            notification_service.calls
+            == []
         )
 
     finally:
         teardown_runtime(
             db_engine
         )
+
+
+def test_scheduler_handles_multiple_users_independently():
+    (
+        db_engine,
+        activity_event_service,
+    ) = build_runtime()
+
+    try:
+        create_event(
+            activity_event_service,
+            user_id="user-ny",
+            created_at=datetime(
+                2026,
+                9,
+                18,
+                10,
+                0,
+            ),
+        )
+
+        create_event(
+            activity_event_service,
+            user_id="user-karachi",
+            created_at=datetime(
+                2026,
+                9,
+                18,
+                10,
+                30,
+            ),
+        )
+
+        notification_service = (
+            FakeProactiveNotificationService()
+        )
+
+        scheduler = build_scheduler(
+            activity_event_service=(
+                activity_event_service
+            ),
+            notification_service=(
+                notification_service
+            ),
+            preferences_by_user={
+                "user-ny": FakePreferences(
+                    timezone="America/New_York",
+                    delivery_hour=11,
+                    delivery_minute=0,
+                ),
+                "user-karachi": FakePreferences(
+                    timezone="Asia/Karachi",
+                    delivery_hour=22,
+                    delivery_minute=0,
+                ),
+            },
+        )
+
+        results = asyncio.run(
+            scheduler.process_daily_activity_digests(
+                now=datetime(
+                    2026,
+                    9,
+                    18,
+                    16,
+                    0,
+                    tzinfo=timezone.utc,
+                )
+            )
+        )
+
+        delivered_users = [
+            call["user_id"]
+            for call in notification_service.calls
+        ]
+
+        assert delivered_users == [
+            "user-ny"
+        ]
+
+        reasons = {
+            item["user_id"]: item["result"]["reason"]
+            for item in results
+        }
+
+        assert (
+            reasons["user-ny"]
+            == "delivered"
+        )
+
+        assert (
+            reasons["user-karachi"]
+            == "not_due"
+        )
+
+    finally:
+        teardown_runtime(
+            db_engine
+        )
+
+
+def test_scheduler_rejects_invalid_timezone_from_user_preferences():
+    (
+        db_engine,
+        activity_event_service,
+    ) = build_runtime()
+
+    try:
+        create_event(
+            activity_event_service,
+            user_id="user-invalid-timezone",
+            created_at=datetime(
+                2026,
+                9,
+                18,
+                15,
+                0,
+            ),
+        )
+
+        notification_service = (
+            FakeProactiveNotificationService()
+        )
+
+        scheduler = build_scheduler(
+            activity_event_service=(
+                activity_event_service
+            ),
+            notification_service=(
+                notification_service
+            ),
+            preferences_by_user={
+                "user-invalid-timezone": FakePreferences(
+                    timezone="Invalid/Timezone",
+                    delivery_hour=21,
+                    delivery_minute=0,
+                ),
+            },
+        )
+
+        results = asyncio.run(
+            scheduler.process_daily_activity_digests(
+                now=datetime(
+                    2026,
+                    9,
+                    18,
+                    18,
+                    0,
+                    tzinfo=timezone.utc,
+                )
+            )
+        )
+
+        assert (
+            results[0]["result"]["reason"]
+            == "scheduler_exception"
+        )
+
+        assert (
+            notification_service.calls
+            == []
+        )
+
+    finally:
+        teardown_runtime(
+            db_engine
+        )
+
+
+def test_scheduler_supports_dst_timezone():
+    preferences = FakePreferences(
+        timezone="America/New_York",
+        delivery_hour=1,
+        delivery_minute=30,
+    )
+
+    before_first_occurrence = datetime(
+        2026,
+        11,
+        1,
+        5,
+        29,
+        tzinfo=timezone.utc,
+    )
+
+    first_occurrence = datetime(
+        2026,
+        11,
+        1,
+        5,
+        30,
+        tzinfo=timezone.utc,
+    )
+
+    second_occurrence = datetime(
+        2026,
+        11,
+        1,
+        6,
+        30,
+        tzinfo=timezone.utc,
+    )
+
+    assert (
+        ProactiveActivityScheduler.is_due(
+            preferences=preferences,
+            now=before_first_occurrence,
+        )
+        is False
+    )
+
+    assert (
+        ProactiveActivityScheduler.is_due(
+            preferences=preferences,
+            now=first_occurrence,
+        )
+        is True
+    )
+
+    assert (
+        ProactiveActivityScheduler.is_due(
+            preferences=preferences,
+            now=second_occurrence,
+        )
+        is True
+    )

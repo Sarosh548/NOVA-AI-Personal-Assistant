@@ -73,10 +73,9 @@ proactive_activity_notification_service = (
 
 proactive_activity_scheduler = ProactiveActivityScheduler(
     interval_seconds=5,
-    delivery_hour=21,
-    delivery_minute=0,
-    timezone_name="Asia/Karachi",
-    notification_service=proactive_activity_notification_service,
+    notification_service=(
+        proactive_activity_notification_service
+    ),
 )
 
 scheduler_task: asyncio.Task | None = None

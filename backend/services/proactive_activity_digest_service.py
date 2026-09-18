@@ -6,6 +6,9 @@ from typing import Any
 from services.activity_report_service import (
     ActivityReportService,
 )
+from services.user_notification_preferences_service import (
+    UserNotificationPreferencesService,
+)
 
 
 class ProactiveActivityDigestService:
@@ -13,11 +16,9 @@ class ProactiveActivityDigestService:
     Build deterministic notification payloads from NOVA's
     daily activity report.
 
-    Responsibilities:
-    - request the deterministic daily activity report
-    - decide whether a proactive digest is useful
-    - build the notification title/body/metadata
-    - preserve the activity report as the source of truth
+    User notification preferences determine:
+    - whether the digest is enabled
+    - which timezone defines the user's local day
 
     This service does NOT:
     - schedule background execution
@@ -34,6 +35,9 @@ class ProactiveActivityDigestService:
             ActivityReportService | None
         ) = None,
         highlight_limit: int = 5,
+        user_notification_preferences_service: (
+            UserNotificationPreferencesService | None
+        ) = None,
     ):
         if highlight_limit < 1:
             raise ValueError(
@@ -48,6 +52,12 @@ class ProactiveActivityDigestService:
 
         self.highlight_limit = highlight_limit
 
+        self.user_notification_preferences_service = (
+            user_notification_preferences_service
+            if user_notification_preferences_service is not None
+            else UserNotificationPreferencesService()
+        )
+
     def build_daily_digest(
         self,
         *,
@@ -57,11 +67,38 @@ class ProactiveActivityDigestService:
         """
         Build one deterministic proactive activity digest.
 
-        Returns a stable payload that a future scheduler can pass
-        to NotificationService.
-
-        No notification is delivered by this method.
+        Preferences are resolved first so the report uses the same
+        timezone the user configured.
         """
+
+        preferences = (
+            self.user_notification_preferences_service
+            .get_or_create(
+                user_id=user_id
+            )
+        )
+
+        timezone_name = (
+            preferences.timezone
+        )
+
+        if not preferences.daily_activity_digest_enabled:
+            return {
+                "should_notify": False,
+                "reason": "digest_disabled",
+                "user_id": user_id,
+                "notification_type": (
+                    self.NOTIFICATION_TYPE
+                ),
+                "title": None,
+                "body": None,
+                "metadata": {
+                    "timezone": timezone_name,
+                    "total_events": 0,
+                    "important_event_count": 0,
+                },
+                "report": None,
+            }
 
         report = (
             self.activity_report_service
@@ -69,6 +106,7 @@ class ProactiveActivityDigestService:
                 user_id=user_id,
                 now=now,
                 highlight_limit=self.highlight_limit,
+                timezone_name=timezone_name,
             )
         )
 
@@ -83,10 +121,7 @@ class ProactiveActivityDigestService:
                 "title": None,
                 "body": None,
                 "metadata": {
-                    "timezone": report.get(
-                        "timezone",
-                        "Asia/Karachi",
-                    ),
+                    "timezone": timezone_name,
                     "total_events": report.get(
                         "total_events",
                         0,
@@ -117,10 +152,7 @@ class ProactiveActivityDigestService:
                 "title": None,
                 "body": None,
                 "metadata": {
-                    "timezone": report.get(
-                        "timezone",
-                        "Asia/Karachi",
-                    ),
+                    "timezone": timezone_name,
                     "total_events": 0,
                     "important_event_count": 0,
                 },
@@ -136,10 +168,7 @@ class ProactiveActivityDigestService:
         )
 
         metadata = {
-            "timezone": report.get(
-                "timezone",
-                "Asia/Karachi",
-            ),
+            "timezone": timezone_name,
             "total_events": total_events,
             "important_event_count": int(
                 report.get(

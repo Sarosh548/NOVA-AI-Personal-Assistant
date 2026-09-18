@@ -836,3 +836,131 @@ def test_highlight_limit_is_respected():
         teardown_runtime(
             db_engine
         )
+
+
+def test_daily_report_supports_per_user_timezone_override():
+    (
+        db_engine,
+        event_service,
+        report_service,
+    ) = build_runtime()
+
+    try:
+        now = datetime(
+            2026,
+            9,
+            18,
+            12,
+            0,
+            0,
+            tzinfo=timezone.utc,
+        )
+
+        # 08:00 UTC = 04:00 New York on Sep 18.
+        event_service.record_event(
+            user_id="user-ny",
+            event_type="task_created",
+            source="tool_router",
+            title="New York task",
+            summary="Task created.",
+            status="success",
+            created_at=datetime(
+                2026,
+                9,
+                18,
+                8,
+                0,
+                0,
+            ),
+        )
+
+        report = report_service.get_daily_report(
+            user_id="user-ny",
+            now=now,
+            timezone_name="America/New_York",
+        )
+
+        assert (
+            report["timezone"]
+            == "America/New_York"
+        )
+
+        assert (
+            report["window_start_utc"]
+            == datetime(
+                2026,
+                9,
+                18,
+                4,
+                0,
+                0,
+            )
+        )
+
+        assert (
+            report["window_end_utc"]
+            == datetime(
+                2026,
+                9,
+                19,
+                4,
+                0,
+                0,
+            )
+        )
+
+        assert report["total_events"] == 1
+
+    finally:
+        teardown_runtime(
+            db_engine
+        )
+
+
+def test_daily_report_handles_dst_transition():
+    (
+        db_engine,
+        event_service,
+        report_service,
+    ) = build_runtime()
+
+    try:
+        now = datetime(
+            2026,
+            11,
+            1,
+            12,
+            0,
+            0,
+            tzinfo=timezone.utc,
+        )
+
+        start, end = (
+            report_service.get_local_day_window(
+                now=now,
+                timezone_name="America/New_York",
+            )
+        )
+
+        assert start == datetime(
+            2026,
+            11,
+            1,
+            4,
+            0,
+            0,
+        )
+
+        assert end == datetime(
+            2026,
+            11,
+            2,
+            5,
+            0,
+            0,
+        )
+
+    finally:
+        teardown_runtime(
+            db_engine
+        )

@@ -11,6 +11,9 @@ from models.confirmation import Confirmation
 from models.workflow import Workflow
 from models.workflow_step import WorkflowStep
 from models.activity_event import ActivityEvent
+from models.user_notification_preferences import (
+    UserNotificationPreferences,
+)
 
 
 def initialize_database() -> None:

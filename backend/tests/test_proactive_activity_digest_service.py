@@ -21,6 +21,7 @@ class FakeActivityReportService:
         user_id,
         now,
         highlight_limit,
+        timezone_name,
     ):
         self.calls.append(
             {
@@ -29,15 +30,58 @@ class FakeActivityReportService:
                 "highlight_limit": (
                     highlight_limit
                 ),
+                "timezone_name": timezone_name,
             }
         )
 
-        return dict(
-            self.report
+        return {
+            **self.report,
+            "timezone": timezone_name,
+        }
+
+
+class FakePreferences:
+    def __init__(
+        self,
+        *,
+        timezone="Asia/Karachi",
+        enabled=True,
+        delivery_hour=21,
+        delivery_minute=0,
+    ):
+        self.timezone = timezone
+        self.daily_activity_digest_enabled = (
+            enabled
+        )
+        self.delivery_hour = delivery_hour
+        self.delivery_minute = delivery_minute
+
+
+class FakePreferencesService:
+    def __init__(
+        self,
+        preferences=None,
+    ):
+        self.preferences = (
+            preferences
+            if preferences is not None
+            else FakePreferences()
+        )
+        self.calls = []
+
+    def get_or_create(
+        self,
+        *,
+        user_id,
+    ):
+        self.calls.append(
+            user_id
         )
 
+        return self.preferences
 
-def base_report(
+
+def build_report(
     *,
     total_events=3,
     error=None,
@@ -90,17 +134,47 @@ def base_report(
     }
 
 
-def test_build_daily_digest_creates_notification_payload():
+def build_service(
+    *,
+    report=None,
+    preferences=None,
+    highlight_limit=5,
+):
     report_service = (
         FakeActivityReportService(
-            base_report()
+            report
+            if report is not None
+            else build_report()
+        )
+    )
+
+    preferences_service = (
+        FakePreferencesService(
+            preferences
         )
     )
 
     service = ProactiveActivityDigestService(
         activity_report_service=report_service,
-        highlight_limit=5,
+        highlight_limit=highlight_limit,
+        user_notification_preferences_service=(
+            preferences_service
+        ),
     )
+
+    return (
+        service,
+        report_service,
+        preferences_service,
+    )
+
+
+def test_build_daily_digest_creates_notification_payload():
+    (
+        service,
+        report_service,
+        preferences_service,
+    ) = build_service()
 
     now = datetime(
         2026,
@@ -159,26 +233,93 @@ def test_build_daily_digest_creates_notification_payload():
         "blocked_count": 0,
     }
 
+    assert preferences_service.calls == [
+        "user-001"
+    ]
+
     assert report_service.calls == [
         {
             "user_id": "user-001",
             "now": now,
             "highlight_limit": 5,
+            "timezone_name": "Asia/Karachi",
         }
     ]
 
 
-def test_build_daily_digest_does_not_notify_when_no_activity():
-    report_service = (
-        FakeActivityReportService(
-            base_report(
-                total_events=0,
-            )
-        )
+def test_digest_uses_user_timezone():
+    preferences = FakePreferences(
+        timezone="America/New_York"
     )
 
-    service = ProactiveActivityDigestService(
-        activity_report_service=report_service,
+    (
+        service,
+        report_service,
+        _,
+    ) = build_service(
+        preferences=preferences
+    )
+
+    service.build_daily_digest(
+        user_id="user-ny",
+        now=datetime(
+            2026,
+            9,
+            18,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    assert (
+        report_service.calls[0]
+        ["timezone_name"]
+        == "America/New_York"
+    )
+
+
+def test_build_daily_digest_does_not_notify_when_disabled():
+    preferences = FakePreferences(
+        enabled=False
+    )
+
+    (
+        service,
+        report_service,
+        _,
+    ) = build_service(
+        preferences=preferences
+    )
+
+    digest = service.build_daily_digest(
+        user_id="user-disabled",
+    )
+
+    assert digest["should_notify"] is False
+    assert (
+        digest["reason"]
+        == "digest_disabled"
+    )
+    assert digest["title"] is None
+    assert digest["body"] is None
+    assert (
+        digest["metadata"]["timezone"]
+        == "Asia/Karachi"
+    )
+
+    assert report_service.calls == []
+
+
+def test_build_daily_digest_does_not_notify_when_no_activity():
+    (
+        service,
+        _,
+        _,
+    ) = build_service(
+        report=build_report(
+            total_events=0
+        )
     )
 
     digest = service.build_daily_digest(
@@ -199,19 +340,17 @@ def test_build_daily_digest_does_not_notify_when_no_activity():
 
 
 def test_build_daily_digest_does_not_notify_when_report_fails():
-    report_service = (
-        FakeActivityReportService(
-            base_report(
-                error=(
-                    "The activity report could not "
-                    "be generated."
-                )
+    (
+        service,
+        _,
+        _,
+    ) = build_service(
+        report=build_report(
+            error=(
+                "The activity report could not "
+                "be generated."
             )
         )
-    )
-
-    service = ProactiveActivityDigestService(
-        activity_report_service=report_service,
     )
 
     digest = service.build_daily_digest(
@@ -235,15 +374,12 @@ def test_build_daily_digest_does_not_notify_when_report_fails():
 
 
 def test_digest_uses_custom_highlight_limit():
-    report_service = (
-        FakeActivityReportService(
-            base_report()
-        )
-    )
-
-    service = ProactiveActivityDigestService(
-        activity_report_service=report_service,
-        highlight_limit=2,
+    (
+        service,
+        report_service,
+        _,
+    ) = build_service(
+        highlight_limit=2
     )
 
     service.build_daily_digest(
@@ -258,15 +394,11 @@ def test_digest_uses_custom_highlight_limit():
 
 
 def test_digest_is_user_scoped():
-    report_service = (
-        FakeActivityReportService(
-            base_report()
-        )
-    )
-
-    service = ProactiveActivityDigestService(
-        activity_report_service=report_service,
-    )
+    (
+        service,
+        report_service,
+        _,
+    ) = build_service()
 
     digest = service.build_daily_digest(
         user_id="another-user",

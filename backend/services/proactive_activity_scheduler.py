@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,9 @@ from services.activity_event_service import (
 )
 from services.proactive_activity_notification_service import (
     ProactiveActivityNotificationService,
+)
+from services.user_notification_preferences_service import (
+    UserNotificationPreferencesService,
 )
 
 
@@ -21,34 +24,43 @@ class ProactiveActivityScheduler:
     """
     Background scheduler for proactive daily activity digests.
 
-    Responsibilities:
-    - poll on a lightweight interval
-    - detect when the configured local delivery time has arrived
-    - discover users with activity during the current local day
-    - delegate durable notification delivery
-    - allow failed deliveries to retry on later polling cycles
+    Each user is evaluated using that user's durable notification
+    preferences:
 
-    Does not:
-    - build report contents itself
+    - timezone
+    - daily digest enabled/disabled
+    - local delivery hour
+    - local delivery minute
+
+    The scheduler discovers recent activity broadly enough to cover
+    users across global timezones, then checks each user's own local
+    calendar day before delegating durable notification delivery.
+
+    This service does NOT:
+    - build report contents
     - send notifications directly
     - call the LLM
     - bypass durable delivery protection
     """
 
     DEFAULT_TIMEZONE = "Asia/Karachi"
+    DEFAULT_DELIVERY_HOUR = 21
+    DEFAULT_DELIVERY_MINUTE = 0
+
+    ACTIVITY_DISCOVERY_LOOKBACK_HOURS = 36
 
     def __init__(
         self,
         *,
         interval_seconds: int = 5,
-        delivery_hour: int = 21,
-        delivery_minute: int = 0,
-        timezone_name: str = DEFAULT_TIMEZONE,
         activity_event_service: (
             ActivityEventService | None
         ) = None,
         notification_service: (
             ProactiveActivityNotificationService | None
+        ) = None,
+        preferences_service: (
+            UserNotificationPreferencesService | None
         ) = None,
     ):
         if interval_seconds < 1:
@@ -56,30 +68,7 @@ class ProactiveActivityScheduler:
                 "interval_seconds must be at least 1"
             )
 
-        if not 0 <= delivery_hour <= 23:
-            raise ValueError(
-                "delivery_hour must be between 0 and 23"
-            )
-
-        if not 0 <= delivery_minute <= 59:
-            raise ValueError(
-                "delivery_minute must be between 0 and 59"
-            )
-
-        try:
-            self.timezone = ZoneInfo(
-                timezone_name
-            )
-        except Exception as exc:
-            raise ValueError(
-                f"Invalid scheduler timezone '{timezone_name}'."
-            ) from exc
-
         self.interval_seconds = interval_seconds
-        self.delivery_time = time(
-            delivery_hour,
-            delivery_minute,
-        )
 
         self.activity_event_service = (
             activity_event_service
@@ -93,69 +82,68 @@ class ProactiveActivityScheduler:
             else ProactiveActivityNotificationService()
         )
 
+        self.preferences_service = (
+            preferences_service
+            if preferences_service is not None
+            else UserNotificationPreferencesService()
+        )
+
         self._running = False
 
-    def is_due(
-        self,
-        *,
-        now: datetime | None = None,
-    ) -> bool:
-        """
-        Return whether today's local digest delivery time has arrived.
-        """
-
+    @staticmethod
+    def _normalize_now(
+        now: datetime | None,
+    ) -> datetime:
         if now is None:
-            now = datetime.now(
+            return datetime.now(
                 timezone.utc
             )
 
         if now.tzinfo is None:
-            now = now.replace(
+            return now.replace(
                 tzinfo=timezone.utc
             )
 
-        local_now = now.astimezone(
-            self.timezone
+        return now.astimezone(
+            timezone.utc
         )
 
-        return (
-            local_now.time()
-            >= self.delivery_time
-        )
+    @staticmethod
+    def _resolve_timezone(
+        timezone_name: str,
+    ) -> ZoneInfo:
+        try:
+            return ZoneInfo(
+                str(timezone_name).strip()
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid user timezone '{timezone_name}'."
+            ) from exc
 
-    def get_current_local_day_window(
-        self,
+    @classmethod
+    def _local_day_window(
+        cls,
         *,
-        now: datetime | None = None,
+        timezone_name: str,
+        now: datetime,
     ) -> tuple[datetime, datetime]:
-        """
-        Return today's local calendar day as naive UTC datetimes.
-        """
-
-        if now is None:
-            now = datetime.now(
-                timezone.utc
-            )
-
-        if now.tzinfo is None:
-            now = now.replace(
-                tzinfo=timezone.utc
-            )
+        user_timezone = cls._resolve_timezone(
+            timezone_name
+        )
 
         local_now = now.astimezone(
-            self.timezone
+            user_timezone
         )
 
         local_start = datetime.combine(
             local_now.date(),
             time.min,
-            tzinfo=self.timezone,
+            tzinfo=user_timezone,
         )
 
-        local_end = datetime.combine(
-            local_now.date(),
-            time.max,
-            tzinfo=self.timezone,
+        local_end = local_start + timedelta(
+            days=1
         )
 
         utc_start = local_start.astimezone(
@@ -164,17 +152,81 @@ class ProactiveActivityScheduler:
             tzinfo=None
         )
 
-        utc_end = (
-            local_end.astimezone(
-                timezone.utc
-            ).replace(
-                tzinfo=None
-            )
+        utc_end = local_end.astimezone(
+            timezone.utc
+        ).replace(
+            tzinfo=None
         )
 
         return (
             utc_start,
             utc_end,
+        )
+
+    @classmethod
+    def is_due(
+        cls,
+        *,
+        preferences: Any,
+        now: datetime | None = None,
+    ) -> bool:
+        """
+        Return whether the user's local delivery time has arrived.
+        """
+
+        reference_now = cls._normalize_now(
+            now
+        )
+
+        user_timezone = cls._resolve_timezone(
+            preferences.timezone
+        )
+
+        local_now = reference_now.astimezone(
+            user_timezone
+        )
+
+        delivery_time = time(
+            int(
+                preferences.delivery_hour
+            ),
+            int(
+                preferences.delivery_minute
+            ),
+        )
+
+        return (
+            local_now.time()
+            >= delivery_time
+        )
+
+    def _has_current_local_day_activity(
+        self,
+        *,
+        user_id: str,
+        preferences: Any,
+        now: datetime,
+    ) -> bool:
+        utc_start, utc_end = (
+            self._local_day_window(
+                timezone_name=preferences.timezone,
+                now=now,
+            )
+        )
+
+        events = (
+            self.activity_event_service
+            .list_events(
+                user_id=user_id,
+                since=utc_start,
+                limit=1,
+            )
+        )
+
+        return any(
+            event["created_at"]
+            < utc_end
+            for event in events
         )
 
     async def process_daily_activity_digests(
@@ -183,42 +235,114 @@ class ProactiveActivityScheduler:
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Process today's proactive activity digests.
+        Process due daily activity digests for all users who have
+        recent activity.
 
-        Users are discovered from today's activity events.
-        Durable delivery state decides whether a user should
-        actually receive a notification.
+        Recent activity discovery spans enough UTC time to cover the
+        current local day for users across the global timezone range.
+
+        The upper discovery bound includes events created exactly at
+        the scheduler reference time.
         """
 
-        reference_now = (
-            self._normalize_now(
-                now
-            )
+        reference_now = self._normalize_now(
+            now
         )
 
-        if not self.is_due(
-            now=reference_now
-        ):
-            return []
+        discovery_start = (
+            reference_now
+            - timedelta(
+                hours=(
+                    self.ACTIVITY_DISCOVERY_LOOKBACK_HOURS
+                )
+            )
+        ).replace(
+            tzinfo=None
+        )
 
-        utc_start, utc_end = (
-            self.get_current_local_day_window(
-                now=reference_now
+        discovery_end = (
+            reference_now.replace(
+                tzinfo=None
+            )
+            + timedelta(
+                microseconds=1
             )
         )
 
         user_ids = (
             self.activity_event_service
             .list_users_with_activity_since(
-                since=utc_start,
-                until=utc_end,
+                since=discovery_start,
+                until=discovery_end,
             )
         )
 
-        results = []
+        results: list[dict[str, Any]] = []
 
         for user_id in user_ids:
             try:
+                preferences = (
+                    self.preferences_service
+                    .get_or_create(
+                        user_id=user_id
+                    )
+                )
+
+                if (
+                    not preferences
+                    .daily_activity_digest_enabled
+                ):
+                    results.append(
+                        {
+                            "user_id": user_id,
+                            "result": {
+                                "delivered": False,
+                                "skipped": True,
+                                "reason": (
+                                    "digest_disabled"
+                                ),
+                            },
+                        }
+                    )
+                    continue
+
+                if not self.is_due(
+                    preferences=preferences,
+                    now=reference_now,
+                ):
+                    results.append(
+                        {
+                            "user_id": user_id,
+                            "result": {
+                                "delivered": False,
+                                "skipped": True,
+                                "reason": (
+                                    "not_due"
+                                ),
+                            },
+                        }
+                    )
+                    continue
+
+                if not self._has_current_local_day_activity(
+                    user_id=user_id,
+                    preferences=preferences,
+                    now=reference_now,
+                ):
+                    results.append(
+                        {
+                            "user_id": user_id,
+                            "result": {
+                                "delivered": False,
+                                "skipped": True,
+                                "reason": (
+                                    "no_activity"
+                                ),
+                            },
+                        }
+                    )
+                    continue
+
                 result = (
                     self.notification_service
                     .deliver_daily_activity_digest(
@@ -256,24 +380,6 @@ class ProactiveActivityScheduler:
 
         return results
 
-    @staticmethod
-    def _normalize_now(
-        now: datetime | None,
-    ) -> datetime:
-        if now is None:
-            return datetime.now(
-                timezone.utc
-            )
-
-        if now.tzinfo is None:
-            return now.replace(
-                tzinfo=timezone.utc
-            )
-
-        return now.astimezone(
-            timezone.utc
-        )
-
     async def run(self) -> None:
         if self._running:
             return
@@ -282,12 +388,9 @@ class ProactiveActivityScheduler:
 
         logger.info(
             "NOVA proactive activity scheduler started "
-            "(interval=%ss, delivery=%s, timezone=%s)",
+            "(interval=%ss, discovery_lookback=%sh)",
             self.interval_seconds,
-            self.delivery_time.strftime(
-                "%H:%M"
-            ),
-            self.timezone.key,
+            self.ACTIVITY_DISCOVERY_LOOKBACK_HOURS,
         )
 
         try:
