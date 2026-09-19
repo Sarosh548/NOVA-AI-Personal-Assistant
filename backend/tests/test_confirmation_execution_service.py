@@ -12,7 +12,28 @@ class FakeConfirmationService:
         self.claimed = claimed
         self.finished = finished
         self.claim_calls = []
+        self.approve_and_claim_calls = []
         self.finish_calls = []
+
+    def approve_and_claim_confirmation(
+        self,
+        *,
+        user_id,
+        confirmation_id,
+    ):
+        self.approve_and_claim_calls.append(
+            {
+                "user_id": user_id,
+                "confirmation_id": confirmation_id,
+            }
+        )
+
+        if self.claimed is None:
+            return None
+
+        return dict(
+            self.claimed
+        )
 
     def claim_confirmation(
         self,
@@ -675,3 +696,71 @@ def test_confirmation_execution_uses_authenticated_user_id():
     assert tool_router.calls[0][
         "user_id"
     ] == "authenticated-user"
+
+def test_approve_and_execute_uses_atomic_confirmation_boundary():
+    tool_router = FakeToolRouter()
+
+    service, confirmation_service = _build_service(
+        claimed=_confirmed_tool(),
+        finished={
+            **_confirmed_tool(),
+            "status": "consumed",
+        },
+        tool_router=tool_router,
+    )
+
+    result = (
+        service.approve_and_execute_confirmation(
+            user_id="user-001",
+            confirmation_id=101,
+        )
+    )
+
+    assert result.success is True
+    assert result.status == "completed"
+    assert result.confirmation["status"] == "consumed"
+
+    assert confirmation_service.approve_and_claim_calls == [
+        {
+            "user_id": "user-001",
+            "confirmation_id": 101,
+        }
+    ]
+
+    assert confirmation_service.claim_calls == []
+
+    assert tool_router.calls == [
+        {
+            "intent": "task",
+            "user_id": "user-001",
+            "data": {
+                "task": "Practice NOVA",
+            },
+        }
+    ]
+
+
+def test_approve_and_execute_does_not_execute_unavailable_confirmation():
+    service, confirmation_service = _build_service(
+        claimed=None
+    )
+
+    result = (
+        service.approve_and_execute_confirmation(
+            user_id="user-001",
+            confirmation_id=999,
+        )
+    )
+
+    assert result.success is False
+    assert result.status == "unavailable"
+    assert result.confirmation is None
+
+    assert confirmation_service.approve_and_claim_calls == [
+        {
+            "user_id": "user-001",
+            "confirmation_id": 999,
+        }
+    ]
+
+    assert confirmation_service.finish_calls == []

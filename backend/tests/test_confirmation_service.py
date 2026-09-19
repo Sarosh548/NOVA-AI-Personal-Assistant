@@ -528,3 +528,161 @@ def test_create_confirmation_validates_expiry(
 
     finally:
         test_engine.dispose()
+
+def test_approve_and_claim_confirmation_success(
+    monkeypatch,
+):
+    test_engine = _prepare_confirmation_database(
+        monkeypatch
+    )
+
+    try:
+        service = ConfirmationService()
+
+        confirmation_id = (
+            service.create_confirmation(
+                user_id="test-user",
+                conversation_id=10,
+                tool="email",
+                action="send",
+                data={
+                    "to": "test@example.com",
+                },
+                reason="Send this email?",
+            )
+        )
+
+        result = (
+            service.approve_and_claim_confirmation(
+                user_id="test-user",
+                confirmation_id=confirmation_id,
+            )
+        )
+
+        assert result is not None
+        assert result["id"] == confirmation_id
+        assert result["status"] == "processing"
+        assert result["tool"] == "email"
+        assert result["action"] == "send"
+        assert result["data"] == {
+            "to": "test@example.com",
+        }
+        assert result["resolved_at"] is not None
+
+    finally:
+        test_engine.dispose()
+
+
+def test_approve_and_claim_confirmation_cannot_be_replayed(
+    monkeypatch,
+):
+    test_engine = _prepare_confirmation_database(
+        monkeypatch
+    )
+
+    try:
+        service = ConfirmationService()
+
+        confirmation_id = (
+            service.create_confirmation(
+                user_id="test-user",
+                conversation_id=None,
+                tool="task",
+                action="delete",
+                data={
+                    "task_id": 25,
+                },
+                reason="Delete task?",
+            )
+        )
+
+        first = (
+            service.approve_and_claim_confirmation(
+                user_id="test-user",
+                confirmation_id=confirmation_id,
+            )
+        )
+
+        second = (
+            service.approve_and_claim_confirmation(
+                user_id="test-user",
+                confirmation_id=confirmation_id,
+            )
+        )
+
+        assert first is not None
+        assert first["status"] == "processing"
+        assert second is None
+
+        stored = service.get_confirmation(
+            user_id="test-user",
+            confirmation_id=confirmation_id,
+        )
+
+        assert stored is not None
+        assert stored["status"] == "processing"
+
+    finally:
+        test_engine.dispose()
+
+
+def test_approve_and_claim_expired_confirmation_marks_it_expired(
+    monkeypatch,
+):
+    test_engine = _prepare_confirmation_database(
+        monkeypatch
+    )
+
+    try:
+        service = ConfirmationService()
+
+        now = service._utc_now_naive()
+
+        confirmation = Confirmation(
+            user_id="test-user",
+            conversation_id=None,
+            tool="email",
+            action="send",
+            data={
+                "to": "test@example.com",
+            },
+            reason="Send this email?",
+            status="pending",
+            created_at=now - timedelta(
+                minutes=10
+            ),
+            expires_at=now - timedelta(
+                minutes=1
+            ),
+            resolved_at=None,
+        )
+
+        with confirmation_service_module.Session(
+            test_engine
+        ) as session:
+            session.add(confirmation)
+            session.commit()
+            session.refresh(confirmation)
+
+            confirmation_id = confirmation.id
+
+        result = (
+            service.approve_and_claim_confirmation(
+                user_id="test-user",
+                confirmation_id=confirmation_id,
+            )
+        )
+
+        assert result is None
+
+        stored = service.get_confirmation(
+            user_id="test-user",
+            confirmation_id=confirmation_id,
+        )
+
+        assert stored is not None
+        assert stored["status"] == "expired"
+        assert stored["resolved_at"] is not None
+
+    finally:
+        test_engine.dispose()

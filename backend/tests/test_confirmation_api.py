@@ -140,6 +140,7 @@ class FakeConfirmationExecutionService:
         )
 
         self.calls = []
+        self.approve_and_execute_calls = []
 
     def execute_approved_confirmation(
         self,
@@ -148,6 +149,21 @@ class FakeConfirmationExecutionService:
         confirmation_id,
     ):
         self.calls.append(
+            {
+                "user_id": user_id,
+                "confirmation_id": confirmation_id,
+            }
+        )
+
+        return self.result
+
+    def approve_and_execute_confirmation(
+        self,
+        *,
+        user_id,
+        confirmation_id,
+    ):
+        self.approve_and_execute_calls.append(
             {
                 "user_id": user_id,
                 "confirmation_id": confirmation_id,
@@ -579,14 +595,11 @@ def test_approve_and_execute_confirmation_uses_authenticated_identity(
 
     assert payload["tool_result"]["success"] is True
 
-    assert service.approve_calls == [
-        {
-            "user_id": "user-001",
-            "confirmation_id": 101,
-        }
-    ]
+    assert service.approve_calls == []
 
-    assert execution_service.calls == [
+    assert execution_service.calls == []
+
+    assert execution_service.approve_and_execute_calls == [
         {
             "user_id": "user-001",
             "confirmation_id": 101,

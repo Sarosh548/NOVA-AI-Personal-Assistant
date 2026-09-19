@@ -176,31 +176,9 @@ def approve_and_execute_confirmation(
             ),
         )
 
-    approved = (
-        confirmation_service.approve_confirmation(
-            user_id=current_user_id,
-            confirmation_id=confirmation_id,
-        )
-    )
-
-    if approved is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Confirmation not found.",
-        )
-
-    if approved["status"] != "approved":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Confirmation could not be approved "
-                "in its current state."
-            ),
-        )
-
     execution = (
         confirmation_execution_service
-        .execute_approved_confirmation(
+        .approve_and_execute_confirmation(
             user_id=current_user_id,
             confirmation_id=confirmation_id,
         )

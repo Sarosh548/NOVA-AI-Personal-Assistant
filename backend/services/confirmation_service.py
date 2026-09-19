@@ -355,6 +355,81 @@ class ConfirmationService:
                 if confirmation.status == "pending"
             ]
 
+    def approve_and_claim_confirmation(
+        self,
+        user_id: str,
+        confirmation_id: int,
+    ) -> dict | None:
+        """
+        Atomically approve and claim a pending confirmation.
+
+        The database transition is:
+
+            pending -> processing
+
+        Only an unexpired pending confirmation can make this
+        transition. A second caller cannot claim the same
+        confirmation because the SQL WHERE clause requires the
+        current status to still be pending.
+        """
+
+        with Session(engine) as session:
+            now = self._utc_now_naive()
+
+            statement = (
+                update(Confirmation)
+                .where(
+                    Confirmation.id == confirmation_id,
+                    Confirmation.user_id == user_id,
+                    Confirmation.status == "pending",
+                    Confirmation.expires_at > now,
+                )
+                .values(
+                    status="processing",
+                    resolved_at=now,
+                )
+            )
+
+            result = session.execute(
+                statement
+            )
+
+            if result.rowcount != 1:
+                confirmation = session.scalar(
+                    select(Confirmation).where(
+                        Confirmation.id == confirmation_id,
+                        Confirmation.user_id == user_id,
+                    )
+                )
+
+                if (
+                    confirmation is not None
+                    and confirmation.status == "pending"
+                    and confirmation.expires_at <= now
+                ):
+                    confirmation.status = "expired"
+                    confirmation.resolved_at = now
+                    session.commit()
+
+                return None
+
+            session.commit()
+
+            confirmation = session.scalar(
+                select(Confirmation).where(
+                    Confirmation.id == confirmation_id,
+                    Confirmation.user_id == user_id,
+                )
+            )
+
+            if confirmation is None:
+                return None
+
+            return self._to_dict(
+                confirmation
+            )
+
+
     def approve_confirmation(
         self,
         user_id: str,

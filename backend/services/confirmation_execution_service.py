@@ -130,22 +130,75 @@ class ConfirmationExecutionService:
         )
 
         if claimed is None:
-            return ConfirmationExecutionResult(
-                success=False,
-                status="unavailable",
-                confirmation=None,
-                tool_result=dict(
-                    self.DEFAULT_TOOL_RESULT
-                ),
-                workflow_result=dict(
-                    self.DEFAULT_WORKFLOW_RESULT
-                ),
-                error=(
-                    "This confirmation is no longer "
-                    "available for execution."
-                ),
-            )
+            return self._unavailable_result()
 
+        return self._execute_claimed_confirmation(
+            user_id=user_id,
+            confirmation_id=confirmation_id,
+            claimed=claimed,
+        )
+
+    def approve_and_execute_confirmation(
+        self,
+        *,
+        user_id: str,
+        confirmation_id: int,
+    ) -> ConfirmationExecutionResult:
+        """
+        Atomically approve and execute one pending confirmation.
+
+        The confirmation service performs the database transition:
+
+            pending -> processing
+
+        before any external/tool execution begins.
+
+        Repeated calls cannot replay the same confirmation.
+        """
+
+        claimed = (
+            self.confirmation_service
+            .approve_and_claim_confirmation(
+                user_id=user_id,
+                confirmation_id=confirmation_id,
+            )
+        )
+
+        if claimed is None:
+            return self._unavailable_result()
+
+        return self._execute_claimed_confirmation(
+            user_id=user_id,
+            confirmation_id=confirmation_id,
+            claimed=claimed,
+        )
+
+    def _unavailable_result(
+        self,
+    ) -> ConfirmationExecutionResult:
+        return ConfirmationExecutionResult(
+            success=False,
+            status="unavailable",
+            confirmation=None,
+            tool_result=dict(
+                self.DEFAULT_TOOL_RESULT
+            ),
+            workflow_result=dict(
+                self.DEFAULT_WORKFLOW_RESULT
+            ),
+            error=(
+                "This confirmation is no longer "
+                "available for execution."
+            ),
+        )
+
+    def _execute_claimed_confirmation(
+        self,
+        *,
+        user_id: str,
+        confirmation_id: int,
+        claimed: dict[str, Any],
+    ) -> ConfirmationExecutionResult:
         data = claimed.get(
             "data"
         )
@@ -183,6 +236,7 @@ class ConfirmationExecutionService:
             claimed=claimed,
             data=data,
         )
+
 
     def _execute_tool(
         self,
