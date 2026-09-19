@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from agent.graph import build_graph
+from api.auth import router as auth_router
 from services.autonomous_workflow_scheduler import (
     AutonomousWorkflowScheduler,
 )
@@ -40,6 +41,8 @@ from services.user_notification_preferences_service import (
 
 
 app = FastAPI()
+
+app.include_router(auth_router)
 
 llm_service = LLMService()
 memory_service = MemoryService(
