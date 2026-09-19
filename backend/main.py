@@ -1,6 +1,7 @@
 import asyncio
+from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from agent.graph import build_graph
@@ -32,6 +33,9 @@ from services.reminder_scheduler import (
 )
 from services.reminder_service import (
     ReminderService,
+)
+from services.user_notification_preferences_service import (
+    UserNotificationPreferencesService,
 )
 
 
@@ -78,6 +82,10 @@ proactive_activity_scheduler = ProactiveActivityScheduler(
     ),
 )
 
+user_notification_preferences_service = (
+    UserNotificationPreferencesService()
+)
+
 scheduler_task: asyncio.Task | None = None
 autonomous_workflow_scheduler_task: (
     asyncio.Task | None
@@ -94,6 +102,41 @@ class ChatRequest(BaseModel):
     message: str
     user_id: str = "user-001"
     conversation_id: int | None = None
+
+
+class NotificationPreferencesUpdateRequest(BaseModel):
+    timezone: str | None = None
+    daily_activity_digest_enabled: bool | None = None
+    delivery_hour: int | None = None
+    delivery_minute: int | None = None
+
+
+class NotificationPreferencesResponse(BaseModel):
+    id: int
+    user_id: str
+    timezone: str
+    daily_activity_digest_enabled: bool
+    delivery_hour: int
+    delivery_minute: int
+    created_at: datetime
+    updated_at: datetime
+
+
+def _notification_preferences_payload(
+    preferences,
+) -> dict:
+    return {
+        "id": preferences.id,
+        "user_id": preferences.user_id,
+        "timezone": preferences.timezone,
+        "daily_activity_digest_enabled": (
+            preferences.daily_activity_digest_enabled
+        ),
+        "delivery_hour": preferences.delivery_hour,
+        "delivery_minute": preferences.delivery_minute,
+        "created_at": preferences.created_at,
+        "updated_at": preferences.updated_at,
+    }
 
 
 @app.on_event("startup")
@@ -195,6 +238,65 @@ def home():
     return {
         "message": "NOVA backend is running!"
     }
+
+
+@app.get(
+    "/users/{user_id}/notification-preferences",
+    response_model=NotificationPreferencesResponse,
+)
+def get_notification_preferences(
+    user_id: str,
+):
+    try:
+        preferences = (
+            user_notification_preferences_service
+            .get_or_create(
+                user_id=user_id
+            )
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return _notification_preferences_payload(
+        preferences
+    )
+
+
+@app.put(
+    "/users/{user_id}/notification-preferences",
+    response_model=NotificationPreferencesResponse,
+)
+def update_notification_preferences(
+    user_id: str,
+    request: NotificationPreferencesUpdateRequest,
+):
+    try:
+        preferences = (
+            user_notification_preferences_service
+            .update(
+                user_id=user_id,
+                timezone_name=request.timezone,
+                daily_activity_digest_enabled=(
+                    request.daily_activity_digest_enabled
+                ),
+                delivery_hour=request.delivery_hour,
+                delivery_minute=request.delivery_minute,
+            )
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return _notification_preferences_payload(
+        preferences
+    )
 
 
 @app.post("/chat")
