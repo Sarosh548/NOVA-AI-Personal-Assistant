@@ -5,6 +5,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from agent.graph import build_graph
+from api.activity import (
+    router as activity_router,
+)
 from api.auth import router as auth_router
 from api.conversations import (
     router as conversations_router,
@@ -59,6 +62,7 @@ app.include_router(auth_router)
 app.include_router(conversations_router)
 app.include_router(tasks_router)
 app.include_router(reminders_router)
+app.include_router(activity_router)
 
 llm_service = LLMService()
 memory_service = MemoryService(
