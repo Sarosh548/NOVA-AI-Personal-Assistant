@@ -10,6 +10,9 @@ from services.agent_planner_service import (
 from services.autonomous_workflow_service import (
     AutonomousWorkflowService,
 )
+from services.confirmation_execution_service import (
+    ConfirmationExecutionService,
+)
 from services.confirmation_service import (
     ConfirmationService,
 )
@@ -53,6 +56,13 @@ plan_execution_service = PlanExecutionService(
     tool_router=tool_router,
 )
 autonomous_workflow_service = AutonomousWorkflowService()
+
+confirmation_execution_service = ConfirmationExecutionService(
+    confirmation_service=confirmation_service,
+    tool_router=tool_router,
+    plan_execution_service=plan_execution_service,
+    autonomous_workflow_service=autonomous_workflow_service,
+)
 
 
 DEFAULT_TOOL_RESULT = {
@@ -1088,12 +1098,11 @@ def tool_node(state: NOVAState) -> NOVAState:
     """
     Execute a permitted single-step tool.
 
-    Confirmed actions use an atomic database claim before
-    execution. The exact tool/action/data are loaded from
-    the claimed confirmation record rather than trusting
-    the current graph state.
+    Approved confirmations are delegated to the canonical
+    ConfirmationExecutionService.
 
-    This makes an approved confirmation one-time executable.
+    Unconfirmed executions continue through the existing
+    validated plan path.
     """
 
     tool_result = dict(
@@ -1169,8 +1178,9 @@ def tool_node(state: NOVAState) -> NOVAState:
     )
 
     if is_confirmed_execution:
-        claimed = (
-            confirmation_service.claim_confirmation(
+        execution = (
+            confirmation_execution_service
+            .execute_approved_confirmation(
                 user_id=state.get(
                     "user_id",
                     "user-001",
@@ -1179,52 +1189,66 @@ def tool_node(state: NOVAState) -> NOVAState:
             )
         )
 
-        if claimed is None:
-            tool_result = {
-                "success": False,
-                "tool": confirmation.get(
-                    "tool"
-                ),
-                "action": confirmation.get(
-                    "action"
-                ),
-                "result": None,
-                "error": (
-                    "This confirmation is no longer "
-                    "available for execution."
-                ),
+        if execution.confirmation is not None:
+            finished = execution.confirmation
+
+            confirmation = {
+                "id": finished["id"],
+                "status": finished["status"],
+                "tool": finished["tool"],
+                "action": finished["action"],
+                "reason": finished["reason"],
             }
 
-            return {
-                **state,
-                "tool_result": tool_result,
-            }
+        tool_result = dict(
+            execution.tool_result
+        )
 
-        tool_name = claimed["tool"]
-        action = claimed["action"]
-        plan_data = claimed["data"]
+        if (
+            not execution.success
+            and not tool_result.get("error")
+        ):
+            tool_result["error"] = (
+                execution.error
+                or "This confirmation could not be executed."
+            )
 
-    else:
-        tool_name = plan.get("tool")
+        if tool_result.get("tool") is None:
+            tool_result["tool"] = confirmation.get(
+                "tool"
+            )
 
-        if not tool_name:
-            tool_result = {
-                "success": False,
-                "tool": None,
-                "action": plan.get("action"),
-                "result": None,
-                "error": (
-                    "Planner did not select a tool."
-                ),
-            }
+        if tool_result.get("action") is None:
+            tool_result["action"] = confirmation.get(
+                "action"
+            )
 
-            return {
-                **state,
-                "tool_result": tool_result,
-            }
+        return {
+            **state,
+            "confirmation": confirmation,
+            "tool_result": tool_result,
+        }
 
-        action = plan.get("action")
-        plan_data = plan.get("data") or {}
+    tool_name = plan.get("tool")
+
+    if not tool_name:
+        tool_result = {
+            "success": False,
+            "tool": None,
+            "action": plan.get("action"),
+            "result": None,
+            "error": (
+                "Planner did not select a tool."
+            ),
+        }
+
+        return {
+            **state,
+            "tool_result": tool_result,
+        }
+
+    action = plan.get("action")
+    plan_data = plan.get("data") or {}
 
     try:
         tool_result = tool_router.execute(
@@ -1247,30 +1271,6 @@ def tool_node(state: NOVAState) -> NOVAState:
             ),
         }
 
-    if is_confirmed_execution:
-        finished = (
-            confirmation_service.finish_confirmation(
-                user_id=state.get(
-                    "user_id",
-                    "user-001",
-                ),
-                confirmation_id=confirmation_id,
-                success=(
-                    tool_result.get("success")
-                    is True
-                ),
-            )
-        )
-
-        if finished is not None:
-            confirmation = {
-                "id": finished["id"],
-                "status": finished["status"],
-                "tool": finished["tool"],
-                "action": finished["action"],
-                "reason": finished["reason"],
-            }
-
     return {
         **state,
         "confirmation": confirmation,
@@ -1283,12 +1283,11 @@ def workflow_node(state: NOVAState) -> NOVAState:
     Execute a permitted multi-step workflow or persist a
     scheduled autonomous workflow.
 
-    Confirmed workflows use the atomic confirmation claim
-    before execution or scheduling. The exact saved steps
-    and scheduling metadata are then used.
+    Approved confirmations are delegated to the canonical
+    ConfirmationExecutionService.
 
-    Unconfirmed workflows use the validated steps already
-    present in the graph state.
+    Unconfirmed workflows continue through the existing
+    validated plan path.
 
     This node never performs permission checks itself.
     """
@@ -1312,20 +1311,6 @@ def workflow_node(state: NOVAState) -> NOVAState:
         {},
     )
 
-    execution_mode = str(
-        plan.get("execution_mode")
-        or ""
-    ).strip().lower()
-
-    if execution_mode not in {
-        "workflow",
-        "autonomous",
-    }:
-        return {
-            **state,
-            "workflow_result": workflow_result,
-        }
-
     if permission.get("allowed") is not True:
         workflow_result = {
             "success": False,
@@ -1346,10 +1331,6 @@ def workflow_node(state: NOVAState) -> NOVAState:
             "workflow_result": workflow_result,
         }
 
-    is_scheduled_autonomous = (
-        execution_mode == "autonomous"
-    )
-
     confirmation_id = confirmation.get(
         "id"
     )
@@ -1365,8 +1346,9 @@ def workflow_node(state: NOVAState) -> NOVAState:
     )
 
     if is_confirmed_execution:
-        claimed = (
-            confirmation_service.claim_confirmation(
+        execution = (
+            confirmation_execution_service
+            .execute_approved_confirmation(
                 user_id=state.get(
                     "user_id",
                     "user-001",
@@ -1375,97 +1357,69 @@ def workflow_node(state: NOVAState) -> NOVAState:
             )
         )
 
-        if claimed is None:
-            workflow_result = {
-                "success": False,
-                "status": "blocked",
-                "workflow_id": None,
-                "scheduled_at": plan.get(
-                    "scheduled_at"
-                ),
-                "steps": [],
-                "error": (
-                    "This workflow confirmation is no longer "
-                    "available for execution."
-                ),
+        if execution.confirmation is not None:
+            finished = execution.confirmation
+
+            confirmation = {
+                "id": finished["id"],
+                "status": finished["status"],
+                "tool": finished["tool"],
+                "action": finished["action"],
+                "reason": finished["reason"],
             }
 
-            return {
-                **state,
-                "workflow_result": workflow_result,
-            }
-
-        claimed_data = claimed.get(
-            "data"
+        workflow_result = dict(
+            execution.workflow_result
         )
 
-        if not isinstance(
-            claimed_data,
-            dict,
-        ):
-            workflow_result = {
-                "success": False,
-                "status": "blocked",
-                "workflow_id": None,
-                "scheduled_at": plan.get(
-                    "scheduled_at"
-                ),
-                "steps": [],
-                "error": (
-                    "The saved workflow data is invalid."
-                ),
-            }
-
-            finished = (
-                confirmation_service.finish_confirmation(
-                    user_id=state.get(
-                        "user_id",
-                        "user-001",
-                    ),
-                    confirmation_id=confirmation_id,
-                    success=False,
-                )
+        if execution.status == "unavailable":
+            workflow_result["status"] = "blocked"
+            workflow_result["scheduled_at"] = plan.get(
+                "scheduled_at"
             )
+            workflow_result["error"] = (
+                execution.error
+                or "This workflow confirmation is no longer "
+                "available for execution."
+            )
+        elif (
+            not workflow_result.get("error")
+            and execution.error
+        ):
+            workflow_result["error"] = execution.error
 
-            if finished is not None:
-                confirmation = {
-                    "id": finished["id"],
-                    "status": finished["status"],
-                    "tool": finished["tool"],
-                    "action": finished["action"],
-                    "reason": finished["reason"],
-                }
+        return {
+            **state,
+            "confirmation": confirmation,
+            "workflow_result": workflow_result,
+        }
 
-            return {
-                **state,
-                "confirmation": confirmation,
-                "workflow_result": workflow_result,
-            }
+    execution_mode = str(
+        plan.get("execution_mode")
+        or ""
+    ).strip().lower()
 
-        steps = claimed_data.get(
-            "steps",
-            []
-        )
+    if execution_mode not in {
+        "workflow",
+        "autonomous",
+    }:
+        return {
+            **state,
+            "workflow_result": workflow_result,
+        }
 
-        if claimed_data.get(
-            "execution_mode"
-        ) == "autonomous":
-            execution_mode = "autonomous"
-            is_scheduled_autonomous = True
+    is_scheduled_autonomous = (
+        execution_mode == "autonomous"
+    )
 
-        plan_schedule = claimed_data.get(
-            "scheduled_at",
-            plan.get("scheduled_at"),
-        )
+    steps = plan.get(
+        "steps",
+        []
+    )
 
-    else:
-        steps = plan.get(
-            "steps",
-            []
-        )
-        plan_schedule = plan.get(
-            "scheduled_at"
-        )
+    plan_schedule = plan.get(
+        "scheduled_at"
+    )
 
     if is_scheduled_autonomous:
         try:
@@ -1482,11 +1436,7 @@ def workflow_node(state: NOVAState) -> NOVAState:
                     plan=plan,
                     steps=list(steps),
                     scheduled_at=plan_schedule,
-                    idempotency_key=(
-                        f"confirmation:{confirmation_id}"
-                        if is_confirmed_execution
-                        else None
-                    ),
+                    idempotency_key=None,
                 )
             )
         except Exception as exc:
@@ -1498,27 +1448,6 @@ def workflow_node(state: NOVAState) -> NOVAState:
                 "steps": [],
                 "error": str(exc),
             }
-
-            if is_confirmed_execution:
-                finished = (
-                    confirmation_service.finish_confirmation(
-                        user_id=state.get(
-                            "user_id",
-                            "user-001",
-                        ),
-                        confirmation_id=confirmation_id,
-                        success=False,
-                    )
-                )
-
-                if finished is not None:
-                    confirmation = {
-                        "id": finished["id"],
-                        "status": finished["status"],
-                        "tool": finished["tool"],
-                        "action": finished["action"],
-                        "reason": finished["reason"],
-                    }
 
             return {
                 **state,
@@ -1535,27 +1464,6 @@ def workflow_node(state: NOVAState) -> NOVAState:
             "error": None,
         }
 
-        if is_confirmed_execution:
-            finished = (
-                confirmation_service.finish_confirmation(
-                    user_id=state.get(
-                        "user_id",
-                        "user-001",
-                    ),
-                    confirmation_id=confirmation_id,
-                    success=True,
-                )
-            )
-
-            if finished is not None:
-                confirmation = {
-                    "id": finished["id"],
-                    "status": finished["status"],
-                    "tool": finished["tool"],
-                    "action": finished["action"],
-                    "reason": finished["reason"],
-                }
-
         return {
             **state,
             "confirmation": confirmation,
@@ -1568,9 +1476,7 @@ def workflow_node(state: NOVAState) -> NOVAState:
                 "user_id",
                 "user-001",
             ),
-            steps=list(
-                steps
-            ),
+            steps=list(steps),
         )
     )
 
@@ -1594,27 +1500,6 @@ def workflow_node(state: NOVAState) -> NOVAState:
         ],
         "error": execution.error,
     }
-
-    if is_confirmed_execution:
-        finished = (
-            confirmation_service.finish_confirmation(
-                user_id=state.get(
-                    "user_id",
-                    "user-001",
-                ),
-                confirmation_id=confirmation_id,
-                success=execution.success,
-            )
-        )
-
-        if finished is not None:
-            confirmation = {
-                "id": finished["id"],
-                "status": finished["status"],
-                "tool": finished["tool"],
-                "action": finished["action"],
-                "reason": finished["reason"],
-            }
 
     return {
         **state,
