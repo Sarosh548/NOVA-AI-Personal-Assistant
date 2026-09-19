@@ -13,6 +13,9 @@ from api.dependencies import (
     CurrentUserId,
     authorize_user_scope,
 )
+from api.tasks import (
+    router as tasks_router,
+)
 from services.autonomous_workflow_scheduler import (
     AutonomousWorkflowScheduler,
 )
@@ -51,6 +54,7 @@ app = FastAPI()
 
 app.include_router(auth_router)
 app.include_router(conversations_router)
+app.include_router(tasks_router)
 
 llm_service = LLMService()
 memory_service = MemoryService(
