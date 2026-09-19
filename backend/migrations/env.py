@@ -21,6 +21,7 @@ from models.activity_event import ActivityEvent
 from models.activity_digest_delivery import (
     ActivityDigestDelivery,
 )
+from models.user import User
 from models.user_notification_preferences import (
     UserNotificationPreferences,
 )
