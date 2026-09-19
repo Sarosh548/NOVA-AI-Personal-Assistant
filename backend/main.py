@@ -57,6 +57,9 @@ from services.reminder_service import (
 from services.user_notification_preferences_service import (
     UserNotificationPreferencesService,
 )
+from api.confirmations import (
+    router as confirmations_router,
+)
 
 
 app = FastAPI()
@@ -67,7 +70,7 @@ app.include_router(tasks_router)
 app.include_router(reminders_router)
 app.include_router(activity_router)
 app.include_router(workflows_router)
-
+app.include_router(confirmations_router)
 llm_service = LLMService()
 memory_service = MemoryService(
     llm_service
