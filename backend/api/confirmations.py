@@ -29,6 +29,14 @@ def get_confirmation_service() -> ConfirmationService:
     return ConfirmationService()
 
 
+def _confirmation_response(
+    confirmation: dict,
+) -> ConfirmationResponse:
+    return ConfirmationResponse.model_validate(
+        confirmation
+    )
+
+
 @router.get(
     "",
     response_model=list[ConfirmationResponse],
@@ -52,11 +60,133 @@ def get_pending_confirmations(
     )
 
     return [
-        ConfirmationResponse.model_validate(
+        _confirmation_response(
             confirmation
         )
         for confirmation in confirmations
     ]
+
+
+@router.post(
+    "/{confirmation_id}/approve",
+    response_model=ConfirmationResponse,
+)
+def approve_confirmation(
+    confirmation_id: int,
+    current_user_id: CurrentUserId,
+    confirmation_service: Annotated[
+        ConfirmationService,
+        Depends(get_confirmation_service),
+    ],
+) -> ConfirmationResponse:
+    existing = (
+        confirmation_service.get_confirmation(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+        )
+    )
+
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Confirmation not found.",
+        )
+
+    if existing["status"] != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Confirmation cannot be approved "
+                "in its current state."
+            ),
+        )
+
+    approved = (
+        confirmation_service.approve_confirmation(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+        )
+    )
+
+    if approved is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Confirmation not found.",
+        )
+
+    if approved["status"] != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Confirmation could not be approved "
+                "in its current state."
+            ),
+        )
+
+    return _confirmation_response(
+        approved
+    )
+
+
+@router.post(
+    "/{confirmation_id}/reject",
+    response_model=ConfirmationResponse,
+)
+def reject_confirmation(
+    confirmation_id: int,
+    current_user_id: CurrentUserId,
+    confirmation_service: Annotated[
+        ConfirmationService,
+        Depends(get_confirmation_service),
+    ],
+) -> ConfirmationResponse:
+    existing = (
+        confirmation_service.get_confirmation(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+        )
+    )
+
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Confirmation not found.",
+        )
+
+    if existing["status"] != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Confirmation cannot be rejected "
+                "in its current state."
+            ),
+        )
+
+    rejected = (
+        confirmation_service.reject_confirmation(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+        )
+    )
+
+    if rejected is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Confirmation not found.",
+        )
+
+    if rejected["status"] != "rejected":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Confirmation could not be rejected "
+                "in its current state."
+            ),
+        )
+
+    return _confirmation_response(
+        rejected
+    )
 
 
 @router.get(
@@ -84,6 +214,6 @@ def get_confirmation(
             detail="Confirmation not found.",
         )
 
-    return ConfirmationResponse.model_validate(
+    return _confirmation_response(
         confirmation
     )

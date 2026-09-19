@@ -15,6 +15,8 @@ class FakeConfirmationService:
         self,
         confirmations=None,
         confirmation=None,
+        approved=None,
+        rejected=None,
     ):
         self.confirmations = (
             confirmations
@@ -24,8 +26,22 @@ class FakeConfirmationService:
 
         self.confirmation = confirmation
 
+        self.approved = (
+            approved
+            if approved is not None
+            else confirmation
+        )
+
+        self.rejected = (
+            rejected
+            if rejected is not None
+            else confirmation
+        )
+
         self.list_calls = []
         self.get_calls = []
+        self.approve_calls = []
+        self.reject_calls = []
 
     def list_pending_confirmations(
         self,
@@ -67,6 +83,46 @@ class FakeConfirmationService:
             self.confirmation
         )
 
+    def approve_confirmation(
+        self,
+        *,
+        user_id,
+        confirmation_id,
+    ):
+        self.approve_calls.append(
+            {
+                "user_id": user_id,
+                "confirmation_id": confirmation_id,
+            }
+        )
+
+        if self.approved is None:
+            return None
+
+        return dict(
+            self.approved
+        )
+
+    def reject_confirmation(
+        self,
+        *,
+        user_id,
+        confirmation_id,
+    ):
+        self.reject_calls.append(
+            {
+                "user_id": user_id,
+                "confirmation_id": confirmation_id,
+            }
+        )
+
+        if self.rejected is None:
+            return None
+
+        return dict(
+            self.rejected
+        )
+
 
 def _authenticated_context():
     from types import SimpleNamespace
@@ -83,6 +139,7 @@ def _sample_confirmation(
     confirmation_id=101,
     status="pending",
     conversation_id=7,
+    resolved_at=None,
 ):
     return {
         "id": confirmation_id,
@@ -112,25 +169,51 @@ def _sample_confirmation(
             9,
             5,
         ),
-        "resolved_at": None,
+        "resolved_at": resolved_at,
     }
 
 
 @pytest.fixture
 def authenticated_api():
+    pending = _sample_confirmation(
+        confirmation_id=101
+    )
+
+    approved = _sample_confirmation(
+        confirmation_id=101,
+        status="approved",
+        resolved_at=datetime(
+            2026,
+            9,
+            19,
+            9,
+            2,
+        ),
+    )
+
+    rejected = _sample_confirmation(
+        confirmation_id=101,
+        status="rejected",
+        resolved_at=datetime(
+            2026,
+            9,
+            19,
+            9,
+            3,
+        ),
+    )
+
     service = FakeConfirmationService(
         confirmations=[
-            _sample_confirmation(
-                confirmation_id=101
-            ),
+            pending,
             _sample_confirmation(
                 confirmation_id=100,
                 conversation_id=6,
             ),
         ],
-        confirmation=_sample_confirmation(
-            confirmation_id=101
-        ),
+        confirmation=pending,
+        approved=approved,
+        rejected=rejected,
     )
 
     main.app.dependency_overrides[
@@ -254,6 +337,7 @@ def test_get_confirmation_uses_authenticated_identity(
     assert payload["tool"] == "email"
     assert payload["action"] == "send"
     assert payload["status"] == "pending"
+
     assert payload["data"] == {
         "to": "test@example.com",
         "subject": "Test",
@@ -291,14 +375,13 @@ def test_get_confirmation_preserves_resolved_status(
     service.confirmation = _sample_confirmation(
         confirmation_id=101,
         status="consumed",
-    )
-
-    service.confirmation["resolved_at"] = datetime(
-        2026,
-        9,
-        19,
-        9,
-        3,
+        resolved_at=datetime(
+            2026,
+            9,
+            19,
+            9,
+            3,
+        ),
     )
 
     response = client.get(
@@ -315,20 +398,195 @@ def test_get_confirmation_preserves_resolved_status(
     )
 
 
-def test_confirmation_list_returns_only_service_results(
+def test_approve_confirmation_uses_authenticated_identity(
     authenticated_api,
 ):
     client, service = authenticated_api
 
-    service.confirmations = [
-        _sample_confirmation(
-            confirmation_id=55
-        )
-    ]
-
-    response = client.get(
-        "/confirmations"
+    response = client.post(
+        "/confirmations/101/approve"
     )
 
     assert response.status_code == 200
-    assert response.json()[0]["id"] == 55
+
+    payload = response.json()
+
+    assert payload["id"] == 101
+    assert payload["status"] == "approved"
+    assert payload["resolved_at"] == (
+        "2026-09-19T09:02:00"
+    )
+
+    assert service.approve_calls == [
+        {
+            "user_id": "user-001",
+            "confirmation_id": 101,
+        }
+    ]
+
+
+def test_reject_confirmation_uses_authenticated_identity(
+    authenticated_api,
+):
+    client, service = authenticated_api
+
+    response = client.post(
+        "/confirmations/101/reject"
+    )
+
+    assert response.status_code == 200
+
+    payload = response.json()
+
+    assert payload["id"] == 101
+    assert payload["status"] == "rejected"
+    assert payload["resolved_at"] == (
+        "2026-09-19T09:03:00"
+    )
+
+    assert service.reject_calls == [
+        {
+            "user_id": "user-001",
+            "confirmation_id": 101,
+        }
+    ]
+
+
+def test_approve_confirmation_returns_not_found(
+    authenticated_api,
+):
+    client, service = authenticated_api
+
+    service.confirmation = None
+
+    response = client.post(
+        "/confirmations/999/approve"
+    )
+
+    assert response.status_code == 404
+
+    assert response.json() == {
+        "detail": "Confirmation not found."
+    }
+
+    assert service.approve_calls == []
+
+
+def test_reject_confirmation_returns_not_found(
+    authenticated_api,
+):
+    client, service = authenticated_api
+
+    service.confirmation = None
+
+    response = client.post(
+        "/confirmations/999/reject"
+    )
+
+    assert response.status_code == 404
+
+    assert response.json() == {
+        "detail": "Confirmation not found."
+    }
+
+    assert service.reject_calls == []
+
+
+def test_approve_confirmation_rejects_non_pending_state(
+    authenticated_api,
+):
+    client, service = authenticated_api
+
+    service.confirmation = _sample_confirmation(
+        confirmation_id=101,
+        status="consumed",
+    )
+
+    response = client.post(
+        "/confirmations/101/approve"
+    )
+
+    assert response.status_code == 409
+
+    assert response.json() == {
+        "detail": (
+            "Confirmation cannot be approved "
+            "in its current state."
+        )
+    }
+
+    assert service.approve_calls == []
+
+
+def test_reject_confirmation_rejects_non_pending_state(
+    authenticated_api,
+):
+    client, service = authenticated_api
+
+    service.confirmation = _sample_confirmation(
+        confirmation_id=101,
+        status="approved",
+    )
+
+    response = client.post(
+        "/confirmations/101/reject"
+    )
+
+    assert response.status_code == 409
+
+    assert response.json() == {
+        "detail": (
+            "Confirmation cannot be rejected "
+            "in its current state."
+        )
+    }
+
+    assert service.reject_calls == []
+
+
+def test_approve_confirmation_handles_service_conflict(
+    authenticated_api,
+):
+    client, service = authenticated_api
+
+    service.approved = _sample_confirmation(
+        confirmation_id=101,
+        status="pending",
+    )
+
+    response = client.post(
+        "/confirmations/101/approve"
+    )
+
+    assert response.status_code == 409
+
+    assert response.json() == {
+        "detail": (
+            "Confirmation could not be approved "
+            "in its current state."
+        )
+    }
+
+
+def test_reject_confirmation_handles_service_conflict(
+    authenticated_api,
+):
+    client, service = authenticated_api
+
+    service.rejected = _sample_confirmation(
+        confirmation_id=101,
+        status="pending",
+    )
+
+    response = client.post(
+        "/confirmations/101/reject"
+    )
+
+    assert response.status_code == 409
+
+    assert response.json() == {
+        "detail": (
+            "Confirmation could not be rejected "
+            "in its current state."
+        )
+    }
