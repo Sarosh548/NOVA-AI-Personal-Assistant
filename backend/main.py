@@ -22,6 +22,9 @@ from api.reminders import (
 from api.tasks import (
     router as tasks_router,
 )
+from api.workflows import (
+    router as workflows_router,
+)
 from services.autonomous_workflow_scheduler import (
     AutonomousWorkflowScheduler,
 )
@@ -63,6 +66,7 @@ app.include_router(conversations_router)
 app.include_router(tasks_router)
 app.include_router(reminders_router)
 app.include_router(activity_router)
+app.include_router(workflows_router)
 
 llm_service = LLMService()
 memory_service = MemoryService(
