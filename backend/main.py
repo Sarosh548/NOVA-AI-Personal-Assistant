@@ -13,6 +13,9 @@ from api.dependencies import (
     CurrentUserId,
     authorize_user_scope,
 )
+from api.reminders import (
+    router as reminders_router,
+)
 from api.tasks import (
     router as tasks_router,
 )
@@ -55,6 +58,7 @@ app = FastAPI()
 app.include_router(auth_router)
 app.include_router(conversations_router)
 app.include_router(tasks_router)
+app.include_router(reminders_router)
 
 llm_service = LLMService()
 memory_service = MemoryService(
