@@ -1,8 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 import main
+
+from api.auth import get_current_auth_context
+from api.auth import AuthenticatedContext
+from models.user import User
+from models.user_session import UserSession
 
 
 class FakePreferences:
@@ -126,9 +132,46 @@ class FakePreferencesService:
         return existing
 
 
-def test_get_notification_preferences_returns_defaults(
-    monkeypatch,
-):
+def _authenticated_context(
+    user_id: str,
+) -> AuthenticatedContext:
+    now = datetime.now(
+        timezone.utc
+    ).replace(
+        tzinfo=None
+    )
+
+    user = User(
+        id=user_id,
+        display_name="Notification Test User",
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+
+    session = UserSession(
+        id="notification-test-session",
+        user_id=user_id,
+        refresh_token_hash="b" * 64,
+        expires_at=(
+            now.replace(
+                year=now.year + 1
+            )
+        ),
+        last_used_at=now,
+        revoked_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    return AuthenticatedContext(
+        user=user,
+        session=session,
+    )
+
+
+@pytest.fixture
+def authenticated_client(monkeypatch):
     service = FakePreferencesService()
 
     monkeypatch.setattr(
@@ -137,9 +180,29 @@ def test_get_notification_preferences_returns_defaults(
         service,
     )
 
+    main.app.dependency_overrides[
+        get_current_auth_context
+    ] = lambda: _authenticated_context(
+        "user-001"
+    )
+
     client = TestClient(
         main.app
     )
+
+    try:
+        yield client, service
+    finally:
+        main.app.dependency_overrides.pop(
+            get_current_auth_context,
+            None,
+        )
+
+
+def test_get_notification_preferences_returns_defaults(
+    authenticated_client,
+):
+    client, service = authenticated_client
 
     response = client.get(
         "/users/user-001/notification-preferences"
@@ -164,46 +227,30 @@ def test_get_notification_preferences_returns_defaults(
     ]
 
 
-def test_get_notification_preferences_is_user_scoped(
-    monkeypatch,
+def test_get_notification_preferences_rejects_other_user(
+    authenticated_client,
 ):
-    service = FakePreferencesService()
-
-    monkeypatch.setattr(
-        main,
-        "user_notification_preferences_service",
-        service,
-    )
-
-    client = TestClient(
-        main.app
-    )
+    client, service = authenticated_client
 
     response = client.get(
         "/users/user-abc/notification-preferences"
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 403
 
-    payload = response.json()
+    assert response.json() == {
+        "detail": (
+            "You cannot access another user's resources."
+        )
+    }
 
-    assert payload["user_id"] == "user-abc"
+    assert service.get_calls == []
 
 
 def test_put_notification_preferences_updates_all_fields(
-    monkeypatch,
+    authenticated_client,
 ):
-    service = FakePreferencesService()
-
-    monkeypatch.setattr(
-        main,
-        "user_notification_preferences_service",
-        service,
-    )
-
-    client = TestClient(
-        main.app
-    )
+    client, service = authenticated_client
 
     response = client.put(
         "/users/user-001/notification-preferences",
@@ -242,20 +289,33 @@ def test_put_notification_preferences_updates_all_fields(
     ]
 
 
-def test_put_notification_preferences_supports_partial_updates(
-    monkeypatch,
+def test_put_notification_preferences_rejects_other_user(
+    authenticated_client,
 ):
-    service = FakePreferencesService()
+    client, service = authenticated_client
 
-    monkeypatch.setattr(
-        main,
-        "user_notification_preferences_service",
-        service,
+    response = client.put(
+        "/users/user-abc/notification-preferences",
+        json={
+            "timezone": "Europe/London",
+        },
     )
 
-    client = TestClient(
-        main.app
-    )
+    assert response.status_code == 403
+
+    assert response.json() == {
+        "detail": (
+            "You cannot access another user's resources."
+        )
+    }
+
+    assert service.update_calls == []
+
+
+def test_put_notification_preferences_supports_partial_updates(
+    authenticated_client,
+):
+    client, _service = authenticated_client
 
     first = client.put(
         "/users/user-001/notification-preferences",
@@ -281,8 +341,10 @@ def test_put_notification_preferences_supports_partial_updates(
 
 
 def test_put_notification_preferences_rejects_service_validation_error(
-    monkeypatch,
+    authenticated_client,
 ):
+    client, _service = authenticated_client
+
     class RejectingPreferencesService(
         FakePreferencesService
     ):
@@ -312,35 +374,43 @@ def test_put_notification_preferences_rejects_service_validation_error(
 
     service = RejectingPreferencesService()
 
-    monkeypatch.setattr(
-        main,
-        "user_notification_preferences_service",
-        service,
+    main.app.dependency_overrides[
+        get_current_auth_context
+    ] = lambda: _authenticated_context(
+        "user-001"
     )
 
-    client = TestClient(
-        main.app
+    main.user_notification_preferences_service = (
+        service
     )
 
-    response = client.put(
-        "/users/user-001/notification-preferences",
-        json={
-            "timezone": "Invalid/Timezone",
-        },
-    )
-
-    assert response.status_code == 400
-
-    assert response.json() == {
-        "detail": (
-            "Invalid timezone: Invalid/Timezone"
+    try:
+        response = client.put(
+            "/users/user-001/notification-preferences",
+            json={
+                "timezone": "Invalid/Timezone",
+            },
         )
-    }
+
+        assert response.status_code == 400
+
+        assert response.json() == {
+            "detail": (
+                "Invalid timezone: Invalid/Timezone"
+            )
+        }
+    finally:
+        main.app.dependency_overrides.pop(
+            get_current_auth_context,
+            None,
+        )
 
 
 def test_put_notification_preferences_rejects_invalid_hour_via_service(
-    monkeypatch,
+    authenticated_client,
 ):
+    client, _service = authenticated_client
+
     class RejectingPreferencesService(
         FakePreferencesService
     ):
@@ -370,27 +440,51 @@ def test_put_notification_preferences_rejects_invalid_hour_via_service(
 
     service = RejectingPreferencesService()
 
-    monkeypatch.setattr(
-        main,
-        "user_notification_preferences_service",
-        service,
+    main.app.dependency_overrides[
+        get_current_auth_context
+    ] = lambda: _authenticated_context(
+        "user-001"
+    )
+
+    main.user_notification_preferences_service = (
+        service
+    )
+
+    try:
+        response = client.put(
+            "/users/user-001/notification-preferences",
+            json={
+                "delivery_hour": 24,
+            },
+        )
+
+        assert response.status_code == 400
+
+        assert response.json() == {
+            "detail": (
+                "delivery_hour must be between 0 and 23."
+            )
+        }
+    finally:
+        main.app.dependency_overrides.pop(
+            get_current_auth_context,
+            None,
+        )
+
+
+def test_notification_preferences_require_authentication(
+):
+    main.app.dependency_overrides.pop(
+        get_current_auth_context,
+        None,
     )
 
     client = TestClient(
         main.app
     )
 
-    response = client.put(
-        "/users/user-001/notification-preferences",
-        json={
-            "delivery_hour": 24,
-        },
+    response = client.get(
+        "/users/user-001/notification-preferences"
     )
 
-    assert response.status_code == 400
-
-    assert response.json() == {
-        "detail": (
-            "delivery_hour must be between 0 and 23."
-        )
-    }
+    assert response.status_code == 401

@@ -6,6 +6,10 @@ from pydantic import BaseModel
 
 from agent.graph import build_graph
 from api.auth import router as auth_router
+from api.dependencies import (
+    CurrentUserId,
+    authorize_user_scope,
+)
 from services.autonomous_workflow_scheduler import (
     AutonomousWorkflowScheduler,
 )
@@ -249,12 +253,18 @@ def home():
 )
 def get_notification_preferences(
     user_id: str,
+    current_user_id: CurrentUserId,
 ):
+    authorize_user_scope(
+        requested_user_id=user_id,
+        current_user_id=current_user_id,
+    )
+
     try:
         preferences = (
             user_notification_preferences_service
             .get_or_create(
-                user_id=user_id
+                user_id=current_user_id
             )
         )
 
@@ -276,12 +286,18 @@ def get_notification_preferences(
 def update_notification_preferences(
     user_id: str,
     request: NotificationPreferencesUpdateRequest,
+    current_user_id: CurrentUserId,
 ):
+    authorize_user_scope(
+        requested_user_id=user_id,
+        current_user_id=current_user_id,
+    )
+
     try:
         preferences = (
             user_notification_preferences_service
             .update(
-                user_id=user_id,
+                user_id=current_user_id,
                 timezone_name=request.timezone,
                 daily_activity_digest_enabled=(
                     request.daily_activity_digest_enabled
