@@ -107,7 +107,6 @@ CONTEXT_MAX_CHARACTERS = 12000
 
 class ChatRequest(BaseModel):
     message: str
-    user_id: str = "user-001"
     conversation_id: int | None = None
 
 
@@ -321,6 +320,7 @@ def update_notification_preferences(
 @app.post("/chat")
 def chat(
     request: ChatRequest,
+    current_user_id: CurrentUserId,
 ):
     user_message = request.message.strip()
 
@@ -331,14 +331,14 @@ def chat(
 
     conversation_id = (
         conversation_service.get_or_create_conversation(
-            user_id=request.user_id,
+            user_id=current_user_id,
             conversation_id=request.conversation_id,
         )
     )
 
     history = (
         conversation_service.get_context_history(
-            user_id=request.user_id,
+            user_id=current_user_id,
             conversation_id=conversation_id,
             max_messages=CONTEXT_MAX_MESSAGES,
             max_characters=CONTEXT_MAX_CHARACTERS,
@@ -354,7 +354,7 @@ def chat(
 
         conversation_service.update_conversation_title(
             conversation_id=conversation_id,
-            user_id=request.user_id,
+            user_id=current_user_id,
             title=title,
         )
 
@@ -363,7 +363,7 @@ def chat(
     )
 
     result = execution_service.execute(
-        user_id=request.user_id,
+        user_id=current_user_id,
         conversation_id=conversation_id,
         user_message=user_message,
         history=history,
@@ -400,14 +400,14 @@ def chat(
     )
 
     conversation_service.save_message(
-        user_id=request.user_id,
+        user_id=current_user_id,
         conversation_id=conversation_id,
         role="user",
         content=user_message,
     )
 
     conversation_service.save_message(
-        user_id=request.user_id,
+        user_id=current_user_id,
         conversation_id=conversation_id,
         role="assistant",
         content=response,
@@ -424,7 +424,7 @@ def chat(
     if new_memory:
         memory_action = (
             memory_service.add_memory(
-                user_id=request.user_id,
+                user_id=current_user_id,
                 memory_text=new_memory[
                     "memory_text"
                 ],

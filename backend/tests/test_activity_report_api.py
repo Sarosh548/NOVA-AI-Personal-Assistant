@@ -1,11 +1,37 @@
+from types import SimpleNamespace
+
+import pytest
 from fastapi.testclient import TestClient
 
 from agent import graph
 import main
+from api.auth import get_current_auth_context
+
+
+@pytest.fixture
+def authenticated_client():
+    main.app.dependency_overrides[
+        get_current_auth_context
+    ] = lambda: SimpleNamespace(
+        user=SimpleNamespace(
+            id="user-001",
+        )
+    )
+
+    client = TestClient(main.app)
+
+    try:
+        yield client
+    finally:
+        main.app.dependency_overrides.pop(
+            get_current_auth_context,
+            None,
+        )
 
 
 def test_chat_endpoint_executes_daily_activity_report_end_to_end(
     monkeypatch,
+    authenticated_client,
 ):
     saved_messages = []
     captured_prompt = []
@@ -289,13 +315,12 @@ def test_chat_endpoint_executes_daily_activity_report_end_to_end(
         FakeGraphLLMService(),
     )
 
-    client = TestClient(main.app)
+    client = authenticated_client
 
     response = client.post(
         "/chat",
         json={
             "message": "Aaj kya updates hain?",
-            "user_id": "user-001",
         },
     )
 
