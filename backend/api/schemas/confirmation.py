@@ -17,3 +17,12 @@ class ConfirmationResponse(BaseModel):
     created_at: datetime
     expires_at: datetime
     resolved_at: datetime | None
+
+
+class ConfirmationExecutionResponse(BaseModel):
+    confirmation: ConfirmationResponse
+    success: bool
+    status: str
+    tool_result: dict[str, Any]
+    workflow_result: dict[str, Any]
+    error: str | None

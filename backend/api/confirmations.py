@@ -12,7 +12,11 @@ from fastapi import (
 
 from api.dependencies import CurrentUserId
 from api.schemas.confirmation import (
+    ConfirmationExecutionResponse,
     ConfirmationResponse,
+)
+from services.confirmation_execution_service import (
+    ConfirmationExecutionService,
 )
 from services.confirmation_service import (
     ConfirmationService,
@@ -27,6 +31,12 @@ router = APIRouter(
 
 def get_confirmation_service() -> ConfirmationService:
     return ConfirmationService()
+
+
+def get_confirmation_execution_service() -> (
+    ConfirmationExecutionService
+):
+    return ConfirmationExecutionService()
 
 
 def _confirmation_response(
@@ -125,6 +135,110 @@ def approve_confirmation(
 
     return _confirmation_response(
         approved
+    )
+
+
+@router.post(
+    "/{confirmation_id}/approve-and-execute",
+    response_model=ConfirmationExecutionResponse,
+)
+def approve_and_execute_confirmation(
+    confirmation_id: int,
+    current_user_id: CurrentUserId,
+    confirmation_service: Annotated[
+        ConfirmationService,
+        Depends(get_confirmation_service),
+    ],
+    confirmation_execution_service: Annotated[
+        ConfirmationExecutionService,
+        Depends(get_confirmation_execution_service),
+    ],
+) -> ConfirmationExecutionResponse:
+    existing = (
+        confirmation_service.get_confirmation(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+        )
+    )
+
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Confirmation not found.",
+        )
+
+    if existing["status"] != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Confirmation cannot be approved "
+                "in its current state."
+            ),
+        )
+
+    approved = (
+        confirmation_service.approve_confirmation(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+        )
+    )
+
+    if approved is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Confirmation not found.",
+        )
+
+    if approved["status"] != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Confirmation could not be approved "
+                "in its current state."
+            ),
+        )
+
+    execution = (
+        confirmation_execution_service
+        .execute_approved_confirmation(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+        )
+    )
+
+    if execution.status == "unavailable":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                execution.error
+                or (
+                    "Confirmation is no longer "
+                    "available for execution."
+                )
+            ),
+        )
+
+    if execution.confirmation is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                execution.error
+                or (
+                    "Confirmation execution could "
+                    "not be completed."
+                )
+            ),
+        )
+
+    return ConfirmationExecutionResponse(
+        confirmation=_confirmation_response(
+            execution.confirmation
+        ),
+        success=execution.success,
+        status=execution.status,
+        tool_result=execution.tool_result,
+        workflow_result=execution.workflow_result,
+        error=execution.error,
     )
 
 
