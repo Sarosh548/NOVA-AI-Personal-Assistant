@@ -22,6 +22,9 @@ from api.dependencies import (
     CurrentUserId,
     authorize_user_scope,
 )
+from api.knowledge import (
+    router as knowledge_router,
+)
 from api.notification_destinations import (
     router as notification_destinations_router,
 )
@@ -91,6 +94,7 @@ app.include_router(reminders_router)
 app.include_router(activity_router)
 app.include_router(workflows_router)
 app.include_router(confirmations_router)
+app.include_router(knowledge_router)
 app.include_router(
     notification_destinations_router
 )
