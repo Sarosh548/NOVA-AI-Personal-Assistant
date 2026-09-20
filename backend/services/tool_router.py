@@ -43,6 +43,7 @@ class ToolRouter:
         "complete",
         "cancel",
         "delete",
+        "send",
     }
 
     def __init__(
@@ -123,8 +124,6 @@ class ToolRouter:
                 handler=self._execute_task,
             )
 
-    # =====================================================
-
         if not self.registry.has("email"):
             self.registry.register(
                 name="email",
@@ -136,6 +135,7 @@ class ToolRouter:
                 handler=self._execute_email,
             )
 
+    # =====================================================
     # TOOL DISCOVERY
     # =====================================================
 
@@ -271,13 +271,19 @@ class ToolRouter:
                 "task_id"
             )
             if normalized_tool == "task"
-            else result_data.get(
-                "reminder_id"
+            else (
+                result_data.get(
+                    "reminder_id"
+                )
+                if normalized_tool == "reminder"
+                else None
             )
         )
 
-        title = result_data.get(
-            "title"
+        title = (
+            result_data.get("subject")
+            if normalized_tool == "email"
+            else result_data.get("title")
         )
 
         event_title = (
@@ -322,6 +328,55 @@ class ToolRouter:
             metadata["result_status"] = (
                 str(returned_status)
             )
+
+        if normalized_tool == "email":
+            email_subject = result_data.get(
+                "subject"
+            )
+
+            if email_subject is not None:
+                metadata["subject"] = str(
+                    email_subject
+                )[:200]
+
+            recipient_count = 0
+
+            for recipient_field in (
+                "to",
+                "cc",
+                "bcc",
+            ):
+                recipients = result_data.get(
+                    recipient_field
+                )
+
+                if isinstance(
+                    recipients,
+                    str,
+                ):
+                    recipient_count += len(
+                        [
+                            item
+                            for item in recipients.split(",")
+                            if item.strip()
+                        ]
+                    )
+                elif isinstance(
+                    recipients,
+                    (list, tuple),
+                ):
+                    recipient_count += len(
+                        [
+                            item
+                            for item in recipients
+                            if str(item).strip()
+                        ]
+                    )
+
+            if recipient_count > 0:
+                metadata["recipient_count"] = (
+                    recipient_count
+                )
 
         try:
             self.activity_event_service.record_event(
