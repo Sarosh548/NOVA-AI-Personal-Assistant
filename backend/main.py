@@ -16,6 +16,9 @@ from api.dependencies import (
     CurrentUserId,
     authorize_user_scope,
 )
+from api.notification_destinations import (
+    router as notification_destinations_router,
+)
 from api.reminders import (
     router as reminders_router,
 )
@@ -24,6 +27,9 @@ from api.tasks import (
 )
 from api.workflows import (
     router as workflows_router,
+)
+from api.confirmations import (
+    router as confirmations_router,
 )
 from services.autonomous_workflow_scheduler import (
     AutonomousWorkflowScheduler,
@@ -39,6 +45,12 @@ from services.execution_service import (
 )
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
+from services.notification_destination_service import (
+    NotificationDestinationService,
+)
+from services.notification_factory import (
+    build_notification_service,
+)
 from services.notification_service import (
     NotificationService,
 )
@@ -57,9 +69,6 @@ from services.reminder_service import (
 from services.user_notification_preferences_service import (
     UserNotificationPreferencesService,
 )
-from api.confirmations import (
-    router as confirmations_router,
-)
 
 
 app = FastAPI()
@@ -71,10 +80,16 @@ app.include_router(reminders_router)
 app.include_router(activity_router)
 app.include_router(workflows_router)
 app.include_router(confirmations_router)
+app.include_router(
+    notification_destinations_router
+)
+
 llm_service = LLMService()
+
 memory_service = MemoryService(
     llm_service
 )
+
 conversation_service = ConversationService()
 
 agent_graph = build_graph()
@@ -84,7 +99,17 @@ execution_service = NOVAExecutionService(
 )
 
 reminder_service = ReminderService()
-notification_service = NotificationService()
+
+# Safe import-time fallback.
+#
+# Runtime provider configuration is loaded during FastAPI startup.
+notification_service: NotificationService = (
+    NotificationService()
+)
+
+notification_destination_service = (
+    NotificationDestinationService()
+)
 
 reminder_scheduler = ReminderScheduler(
     interval_seconds=5,
@@ -117,9 +142,11 @@ user_notification_preferences_service = (
 )
 
 scheduler_task: asyncio.Task | None = None
+
 autonomous_workflow_scheduler_task: (
     asyncio.Task | None
 ) = None
+
 proactive_activity_scheduler_task: (
     asyncio.Task | None
 ) = None
@@ -173,6 +200,27 @@ async def startup_event():
     global scheduler_task
     global autonomous_workflow_scheduler_task
     global proactive_activity_scheduler_task
+    global notification_service
+
+    notification_service = (
+        build_notification_service(
+            destination_service=(
+                notification_destination_service
+            )
+        )
+    )
+
+    reminder_scheduler.notification_service = (
+        notification_service
+    )
+
+    autonomous_workflow_scheduler.notification_service = (
+        notification_service
+    )
+
+    proactive_activity_notification_service.notification_service = (
+        notification_service
+    )
 
     if (
         scheduler_task is None
@@ -394,6 +442,7 @@ def chat(
     )
 
     response = result["response"]
+
     understanding = result[
         "understanding"
     ]

@@ -27,6 +27,9 @@ from models.user_notification_preferences import (
 )
 from models.auth_identity import AuthIdentity
 from models.user_session import UserSession
+from models.notification_destination import (
+    NotificationDestination,
+)
 
 # Alembic Config object
 config = context.config
