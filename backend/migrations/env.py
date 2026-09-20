@@ -30,6 +30,10 @@ from models.user_session import UserSession
 from models.notification_destination import (
     NotificationDestination,
 )
+from models.calendar_connection import (
+    CalendarConnection,
+)
+from models.oauth_state import OAuthState
 
 # Alembic Config object
 config = context.config

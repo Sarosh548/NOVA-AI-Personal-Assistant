@@ -12,3 +12,4 @@ PyJWT==2.14.0
 pwdlib[argon2]==0.3.1
 pydantic-settings==2.15.0
 python-multipart==0.0.32
+cryptography==50.0.1

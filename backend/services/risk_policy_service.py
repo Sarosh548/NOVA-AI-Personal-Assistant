@@ -163,6 +163,11 @@ class RiskPolicyService:
         "email",
     }
 
+    CALENDAR_INVITATION_ACTIONS = {
+        "create",
+        "update",
+    }
+
     DESTRUCTIVE_SCOPE_KEYS = {
         "scope",
         "target_scope",
@@ -241,6 +246,18 @@ class RiskPolicyService:
             in self.COMMUNICATION_TOOLS
             and data_keys
             & self.EXTERNAL_TARGET_KEYS
+        ):
+            flags.append(
+                "external_communication"
+            )
+
+        if (
+            normalized_tool == "calendar"
+            and normalized_action
+            in self.CALENDAR_INVITATION_ACTIONS
+            and self._has_calendar_attendees(
+                normalized_data
+            )
         ):
             flags.append(
                 "external_communication"
@@ -339,6 +356,48 @@ class RiskPolicyService:
                 )
 
         return keys
+
+    def _has_calendar_attendees(
+        self,
+        data: dict[str, Any],
+    ) -> bool:
+        """
+        Detect non-empty Calendar attendee structures.
+
+        Attendee values are never included in the risk reason;
+        only the presence of a non-empty attendee collection is
+        relevant to the classification.
+        """
+
+        def contains_attendees(
+            value: Any,
+        ) -> bool:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if self._normalize(str(key)) == "attendees":
+                        if isinstance(item, (list, tuple)):
+                            if len(item) > 0:
+                                return True
+                        elif isinstance(item, dict):
+                            if bool(item):
+                                return True
+                        elif isinstance(item, str):
+                            if item.strip():
+                                return True
+                        elif item:
+                            return True
+
+                    if contains_attendees(item):
+                        return True
+
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    if contains_attendees(item):
+                        return True
+
+            return False
+
+        return contains_attendees(data)
 
     def _has_broad_destructive_scope(
         self,
