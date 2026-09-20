@@ -9,6 +9,9 @@ os.environ.setdefault(
 )
 
 from agent import graph as graph_module
+from services.confirmation_execution_service import (
+    ConfirmationExecutionService,
+)
 from services.planner_service import (
     PlanDecision,
     PlanStep,
@@ -596,10 +599,24 @@ def test_approved_scheduled_workflow_consumes_confirmation_after_persistence(
         fake_autonomous,
     )
 
+    fake_execution = FakeExecutionService()
+
     monkeypatch.setattr(
         graph_module,
         "plan_execution_service",
-        FakeExecutionService(),
+        fake_execution,
+    )
+
+    execution_service = ConfirmationExecutionService(
+        confirmation_service=fake_confirmation,
+        plan_execution_service=fake_execution,
+        autonomous_workflow_service=fake_autonomous,
+    )
+
+    monkeypatch.setattr(
+        graph_module,
+        "confirmation_execution_service",
+        execution_service,
     )
 
     state = base_state()

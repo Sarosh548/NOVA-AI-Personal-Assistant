@@ -83,7 +83,8 @@ class DurableWorkflowExecutionService:
         Claim and execute one durable workflow run.
 
         Autonomous workflows receive a fresh permission/risk
-        evaluation before the workflow is claimed for execution.
+        evaluation after the workflow is atomically claimed for
+        execution.
 
         If current policy denies the workflow or requires new
         confirmation, no tool is executed and the workflow is
@@ -110,6 +111,75 @@ class DurableWorkflowExecutionService:
             return self._blocked_result(
                 "Workflow was not found."
             )
+
+        claimed_workflow = (
+            self.workflow_service.claim_workflow(
+                user_id=user_id,
+                workflow_id=workflow_id,
+                expected_current_status=(
+                    initial_workflow["status"]
+                ),
+            )
+        )
+
+        if claimed_workflow is None:
+            current = (
+                self.workflow_service.get_workflow(
+                    user_id=user_id,
+                    workflow_id=workflow_id,
+                )
+            )
+
+            if current is None:
+                return self._blocked_result(
+                    "Workflow was not found."
+                )
+
+            if current["status"] == "completed":
+                result = self._result_from_workflow(
+                    current
+                )
+                result[
+                    "terminal_effect_owner"
+                ] = False
+                return result
+
+            if current["status"] == "awaiting_confirmation":
+                return self._blocked_result(
+                    "Workflow is waiting for user confirmation.",
+                    status="awaiting_confirmation",
+                    workflow=current,
+                )
+
+            if current["status"] == "cancelled":
+                return self._blocked_result(
+                    "Workflow has been cancelled.",
+                    status="cancelled",
+                    workflow=current,
+                )
+
+            if current["status"] == "blocked":
+                result = self._result_from_workflow(
+                    current
+                )
+                result[
+                    "terminal_effect_owner"
+                ] = False
+                return result
+
+            result = self._blocked_result(
+                (
+                    "Workflow is already being executed "
+                    "by another worker."
+                ),
+                status=current["status"],
+                workflow=current,
+            )
+            result[
+                "terminal_effect_owner"
+            ] = False
+
+            return result
 
         # -------------------------------------------------
         # Defense-in-depth safety boundary.
@@ -157,9 +227,13 @@ class DurableWorkflowExecutionService:
                 )
 
                 if blocked is not None:
-                    return self._result_from_workflow(
+                    result = self._result_from_workflow(
                         blocked
                     )
+                    result[
+                        "terminal_effect_owner"
+                    ] = True
+                    return result
 
                 current = (
                     self.workflow_service.get_workflow(
@@ -181,59 +255,6 @@ class DurableWorkflowExecutionService:
                     ),
                     workflow=current,
                 )
-
-        claimed_workflow = (
-            self.workflow_service.claim_workflow(
-                user_id=user_id,
-                workflow_id=workflow_id,
-            )
-        )
-
-        if claimed_workflow is None:
-            current = (
-                self.workflow_service.get_workflow(
-                    user_id=user_id,
-                    workflow_id=workflow_id,
-                )
-            )
-
-            if current is None:
-                return self._blocked_result(
-                    "Workflow was not found."
-                )
-
-            if current["status"] == "completed":
-                return self._result_from_workflow(
-                    current
-                )
-
-            if current["status"] == "awaiting_confirmation":
-                return self._blocked_result(
-                    "Workflow is waiting for user confirmation.",
-                    status="awaiting_confirmation",
-                    workflow=current,
-                )
-
-            if current["status"] == "cancelled":
-                return self._blocked_result(
-                    "Workflow has been cancelled.",
-                    status="cancelled",
-                    workflow=current,
-                )
-
-            if current["status"] == "blocked":
-                return self._result_from_workflow(
-                    current
-                )
-
-            return self._blocked_result(
-                (
-                    "Workflow is already being executed "
-                    "by another worker."
-                ),
-                status=current["status"],
-                workflow=current,
-            )
 
         current = (
             self.workflow_service.get_workflow(
@@ -466,9 +487,14 @@ class DurableWorkflowExecutionService:
                 "Workflow result is unavailable."
             )
 
-        return self._result_from_workflow(
+        result = self._result_from_workflow(
             final_workflow
         )
+        result[
+            "terminal_effect_owner"
+        ] = True
+
+        return result
 
     def _execute_step(
         self,

@@ -1,4 +1,7 @@
 from agent import graph
+from services.confirmation_execution_service import (
+    ConfirmationExecutionService,
+)
 
 
 class FakePlanPermissionService:
@@ -662,6 +665,17 @@ def test_approved_workflow_uses_saved_steps_and_finishes_once(
         fake_execution,
     )
 
+    execution_service = ConfirmationExecutionService(
+        confirmation_service=fake_confirmation,
+        plan_execution_service=fake_execution,
+    )
+
+    monkeypatch.setattr(
+        graph,
+        "confirmation_execution_service",
+        execution_service,
+    )
+
     state = _base_state()
     state["user_message"] = "yes"
 
@@ -747,6 +761,17 @@ def test_replayed_workflow_confirmation_cannot_execute_again(
         graph,
         "plan_execution_service",
         fake_execution,
+    )
+
+    execution_service = ConfirmationExecutionService(
+        confirmation_service=fake_confirmation,
+        plan_execution_service=fake_execution,
+    )
+
+    monkeypatch.setattr(
+        graph,
+        "confirmation_execution_service",
+        execution_service,
     )
 
     state = _base_state()

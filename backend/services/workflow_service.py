@@ -575,6 +575,7 @@ class WorkflowService:
         *,
         user_id: str,
         workflow_id: int,
+        expected_current_status: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Atomically claim a workflow for execution.
@@ -597,13 +598,19 @@ class WorkflowService:
                 .where(
                     Workflow.id == workflow_id,
                     Workflow.user_id == user_id,
-                    Workflow.status.in_(
-                        [
-                            "pending",
-                            "partial",
-                            "failed",
-                            "blocked",
-                        ]
+                    (
+                        Workflow.status
+                        == expected_current_status
+                        if expected_current_status
+                        is not None
+                        else Workflow.status.in_(
+                            [
+                                "pending",
+                                "partial",
+                                "failed",
+                                "blocked",
+                            ]
+                        )
                     ),
                 )
                 .values(

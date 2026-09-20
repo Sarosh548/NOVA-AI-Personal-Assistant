@@ -124,6 +124,15 @@ class AutonomousWorkflowScheduler:
                     )
                 )
 
+                if (
+                    result.get(
+                        "terminal_effect_owner",
+                        True,
+                    )
+                    is not True
+                ):
+                    continue
+
                 self._record_terminal_event(
                     workflow=workflow,
                     result=result,

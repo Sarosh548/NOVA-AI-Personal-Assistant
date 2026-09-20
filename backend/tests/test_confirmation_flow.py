@@ -1,4 +1,7 @@
 from agent import graph
+from services.confirmation_execution_service import (
+    ConfirmationExecutionService,
+)
 
 
 class FakeConfirmationService:
@@ -271,6 +274,17 @@ def test_approved_confirmation_executes_exact_saved_action_once(
         fake_router,
     )
 
+    execution_service = ConfirmationExecutionService(
+        confirmation_service=fake_confirmation,
+        tool_router=fake_router,
+    )
+
+    monkeypatch.setattr(
+        graph,
+        "confirmation_execution_service",
+        execution_service,
+    )
+
     state = _base_state()
 
     confirmed = graph.confirmation_node(
@@ -366,6 +380,17 @@ def test_replayed_confirmation_cannot_execute_again(
         graph,
         "tool_router",
         fake_router,
+    )
+
+    execution_service = ConfirmationExecutionService(
+        confirmation_service=fake_confirmation,
+        tool_router=fake_router,
+    )
+
+    monkeypatch.setattr(
+        graph,
+        "confirmation_execution_service",
+        execution_service,
     )
 
     state = _base_state()
