@@ -533,6 +533,8 @@ class PlannerService:
             action = understanding.get("task_action")
         elif tool == "reminder":
             action = understanding.get("reminder_action")
+        elif tool == "email":
+            action = understanding.get("email_action") or understanding.get("action")
         else:
             action = understanding.get("action")
 
