@@ -349,7 +349,7 @@ def test_agent_planner_prompt_contains_calendar_rules():
 
     assert llm.instructions is not None
     assert "For calendar:" in llm.instructions
-    assert "calendar_action=" not in llm.instructions
+    assert 'calendar_action="create"' in llm.instructions
     assert "time_min/time_max" in llm.instructions
     assert "attendees" in llm.instructions
     assert "event_id" in llm.instructions
