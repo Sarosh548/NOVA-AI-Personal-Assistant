@@ -806,6 +806,7 @@ class MemoryService:
 
     def update_memory(
         self,
+        user_id: str,
         memory_id: int,
         memory_text: str,
         category: str | None = None,
@@ -818,9 +819,11 @@ class MemoryService:
             )
 
         with Session(engine) as session:
-            memory = session.get(
-                Memory,
-                memory_id,
+            memory = session.scalar(
+                select(Memory).where(
+                    Memory.id == memory_id,
+                    Memory.user_id == user_id,
+                )
             )
 
             if not memory:
@@ -837,6 +840,19 @@ class MemoryService:
             memory.embedding = embedding.tolist()
 
             if category is not None:
+                if category not in {
+                    "identity",
+                    "goal",
+                    "preference",
+                    "project",
+                    "interest",
+                    "context",
+                    "personal",
+                }:
+                    raise ValueError(
+                        "Invalid memory category."
+                    )
+
                 memory.category = category
 
             if importance is not None:
@@ -855,13 +871,16 @@ class MemoryService:
 
     def delete_memory(
         self,
+        user_id: str,
         memory_id: int,
     ) -> bool:
 
         with Session(engine) as session:
-            memory = session.get(
-                Memory,
-                memory_id,
+            memory = session.scalar(
+                select(Memory).where(
+                    Memory.id == memory_id,
+                    Memory.user_id == user_id,
+                )
             )
 
             if not memory:
