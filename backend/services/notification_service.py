@@ -66,6 +66,27 @@ class NotificationDestinationResolver(Protocol):
         ...
 
 
+class EmailDeliveryPort(Protocol):
+    """
+    Provider-backed email delivery contract.
+
+    Agent tools can depend on this capability without depending
+    on a concrete SMTP implementation.
+    """
+
+    def send_email(
+        self,
+        *,
+        user_id: str,
+        to: str | list[str] | tuple[str, ...],
+        subject: str,
+        body: str,
+        cc: str | list[str] | tuple[str, ...] | None = None,
+        bcc: str | list[str] | tuple[str, ...] | None = None,
+    ) -> bool:
+        ...
+
+
 class NotificationChannelRegistry:
     """
     Registry for named notification delivery channels.
@@ -376,30 +397,100 @@ class EmailNotificationChannel:
             timeout_seconds
         )
 
-    def send(
-        self,
-        notification: Notification,
-    ) -> bool:
-        recipient = (
-            notification.destination
-        )
+    @classmethod
+    def _normalize_recipients(
+        cls,
+        value: str | list[str] | tuple[str, ...] | None,
+        field_name: str,
+    ) -> list[str]:
+        if value is None:
+            return []
 
-        if not recipient:
-            logger.warning(
-                "No email destination is configured "
-                "for user=%s.",
-                notification.user_id,
+        if isinstance(value, str):
+            raw_values = value.split(",")
+        elif isinstance(value, (list, tuple)):
+            raw_values = list(value)
+        else:
+            raise ValueError(
+                f"{field_name} must be a string or list of strings."
             )
 
-            return False
+        normalized: list[str] = []
+        seen: set[str] = set()
+
+        for item in raw_values:
+            address = cls._validate_email(
+                str(item),
+                field_name,
+            )
+
+            key = address.casefold()
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            normalized.append(address)
+
+        return normalized
+
+    def send_email(
+        self,
+        *,
+        user_id: str,
+        to: str | list[str] | tuple[str, ...],
+        subject: str,
+        body: str,
+        cc: str | list[str] | tuple[str, ...] | None = None,
+        bcc: str | list[str] | tuple[str, ...] | None = None,
+    ) -> bool:
+        normalized_subject = str(
+            subject
+        ).strip()
+
+        normalized_body = str(
+            body
+        ).strip()
+
+        if not normalized_subject:
+            raise ValueError(
+                "Email subject cannot be empty."
+            )
+
+        if not normalized_body:
+            raise ValueError(
+                "Email body cannot be empty."
+            )
 
         try:
-            normalized_recipient = (
-                self._validate_email(
-                    recipient,
-                    "notification email destination",
-                )
+            normalized_to = self._normalize_recipients(
+                to,
+                "Email recipient",
             )
+
+            normalized_cc = self._normalize_recipients(
+                cc,
+                "Email CC recipient",
+            )
+
+            normalized_bcc = self._normalize_recipients(
+                bcc,
+                "Email BCC recipient",
+            )
+
+            all_recipients = {
+                address.casefold()
+                for address in (
+                    normalized_to
+                    + normalized_cc
+                    + normalized_bcc
+                )
+            }
+
+            if not all_recipients:
+                raise ValueError(
+                    "At least one email recipient is required."
+                )
 
             message = EmailMessage()
 
@@ -407,16 +498,27 @@ class EmailNotificationChannel:
                 self.from_address
             )
 
-            message["To"] = (
-                normalized_recipient
-            )
+            if normalized_to:
+                message["To"] = ", ".join(
+                    normalized_to
+                )
+
+            if normalized_cc:
+                message["Cc"] = ", ".join(
+                    normalized_cc
+                )
+
+            if normalized_bcc:
+                message["Bcc"] = ", ".join(
+                    normalized_bcc
+                )
 
             message["Subject"] = (
-                notification.title
+                normalized_subject[:200]
             )
 
             message.set_content(
-                notification.body
+                normalized_body[:10000]
             )
 
             smtp_class = (
@@ -451,21 +553,45 @@ class EmailNotificationChannel:
             OSError,
         ):
             logger.warning(
-                "Email notification delivery failed "
+                "Email delivery failed "
                 "for user=%s.",
-                notification.user_id,
+                user_id,
             )
 
             return False
 
         except Exception:
             logger.exception(
-                "Unexpected email notification failure "
+                "Unexpected email delivery failure "
+                "for user=%s.",
+                user_id,
+            )
+
+            return False
+
+    def send(
+        self,
+        notification: Notification,
+    ) -> bool:
+        recipient = (
+            notification.destination
+        )
+
+        if not recipient:
+            logger.warning(
+                "No email destination is configured "
                 "for user=%s.",
                 notification.user_id,
             )
 
             return False
+
+        return self.send_email(
+            user_id=notification.user_id,
+            to=recipient,
+            subject=notification.title,
+            body=notification.body,
+        )
 
 
 class WebhookNotificationChannel:
