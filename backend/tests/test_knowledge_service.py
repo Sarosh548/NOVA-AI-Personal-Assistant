@@ -90,7 +90,12 @@ class FakeSession:
         if "count(" in text.lower():
             return self.chunk_count
 
-        if "content_hash" in text:
+        params = statement.compile().params
+
+        if any(
+            str(key).startswith("content_hash")
+            for key in params
+        ):
             return self.duplicate
 
         if self.document is None:
