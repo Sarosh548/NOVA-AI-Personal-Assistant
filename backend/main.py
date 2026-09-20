@@ -15,6 +15,9 @@ from api.conversations import (
 from api.calendar import (
     router as calendar_router,
 )
+from api.memories import (
+    router as memories_router,
+)
 from api.dependencies import (
     CurrentUserId,
     authorize_user_scope,
@@ -82,6 +85,7 @@ app = FastAPI()
 app.include_router(auth_router)
 app.include_router(conversations_router)
 app.include_router(calendar_router)
+app.include_router(memories_router)
 app.include_router(tasks_router)
 app.include_router(reminders_router)
 app.include_router(activity_router)
