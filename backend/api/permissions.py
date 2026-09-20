@@ -65,6 +65,12 @@ def list_permissions(
     response_model=PermissionResponse,
 )
 def set_permission(
+    request: PermissionSetRequest,
+    current_user_id: CurrentUserId,
+    permission_service: Annotated[
+        PermissionService,
+        Depends(get_permission_service),
+    ],
     tool: str = Path(
         min_length=1,
         max_length=100,
@@ -73,12 +79,6 @@ def set_permission(
         min_length=1,
         max_length=50,
     ),
-    request: PermissionSetRequest = None,
-    current_user_id: CurrentUserId = None,
-    permission_service: Annotated[
-        PermissionService,
-        Depends(get_permission_service),
-    ] = None,
 ) -> PermissionResponse:
     try:
         permission_service.set_permission(
@@ -126,6 +126,11 @@ def set_permission(
     response_model=None,
 )
 def delete_permission(
+    current_user_id: CurrentUserId,
+    permission_service: Annotated[
+        PermissionService,
+        Depends(get_permission_service),
+    ],
     tool: str = Path(
         min_length=1,
         max_length=100,
@@ -134,11 +139,6 @@ def delete_permission(
         min_length=1,
         max_length=50,
     ),
-    current_user_id: CurrentUserId = None,
-    permission_service: Annotated[
-        PermissionService,
-        Depends(get_permission_service),
-    ] = None,
 ) -> Response:
     try:
         deleted = permission_service.delete_permission(
