@@ -22,8 +22,17 @@ class DurableWorkflowExecutionService:
         Autonomous workflows are re-checked against the current
         permission/risk policy before any tool execution begins.
 
+        A workflow execution is owned by a durable worker lease.
+        The worker must heartbeat before executing each step and
+        after external tool execution, before persisting the step
+        result.
+
+        All workflow step mutations performed by a lease-aware
+        execution are fenced by the workflow claim token.
+
     Therefore a scheduled workflow cannot execute under stale
-    authorization.
+    authorization or continue mutating durable state after its
+    worker lease has been lost.
 
     This service provides the foundation for:
     - durable state
@@ -31,6 +40,9 @@ class DurableWorkflowExecutionService:
     - explicit retry
     - duplicate execution protection
     - runtime safety re-check
+    - worker leases
+    - heartbeat renewal
+    - stale-worker fencing
     - future worker/queue execution
     """
 
@@ -86,18 +98,14 @@ class DurableWorkflowExecutionService:
         evaluation after the workflow is atomically claimed for
         execution.
 
-        If current policy denies the workflow or requires new
-        confirmation, no tool is executed and the workflow is
-        durably moved to "blocked".
+        A successful claim creates a worker lease. The worker
+        heartbeats immediately before each step and again after
+        external tool execution, before the result is persisted.
 
-        Every step that is eligible at the beginning of this
-        invocation may be processed at most once.
-
-        Failed steps are persisted and are retried only when
-        execute() is called again.
-
-        Dependent steps are skipped when a dependency fails,
-        becomes blocked, or is skipped.
+        If the worker loses its lease:
+        - no new tool execution is started
+        - the current step is not finalized
+        - no stale worker terminal side effect is claimed
         """
 
         initial_workflow = (
@@ -181,6 +189,18 @@ class DurableWorkflowExecutionService:
 
             return result
 
+        claim_token = claimed_workflow.get(
+            "claim_token"
+        )
+
+        if not claim_token:
+            return self._lease_lost_result(
+                workflow=claimed_workflow,
+                error=(
+                    "Workflow worker lease was not created."
+                ),
+            )
+
         # -------------------------------------------------
         # Defense-in-depth safety boundary.
         #
@@ -223,6 +243,7 @@ class DurableWorkflowExecutionService:
                             f"safety policy: "
                             f"{safety_decision.reason}"
                         ),
+                        claim_token=claim_token,
                     )
                 )
 
@@ -242,18 +263,13 @@ class DurableWorkflowExecutionService:
                     )
                 )
 
-                return self._blocked_result(
-                    (
-                        "Autonomous workflow could not be "
-                        "approved by the current execution-time "
-                        "safety policy."
-                    ),
-                    status=(
-                        current["status"]
-                        if current is not None
-                        else "blocked"
-                    ),
+                return self._lease_lost_result(
                     workflow=current,
+                    error=(
+                        "Autonomous workflow safety state "
+                        "could not be finalized because "
+                        "the worker lease was no longer active."
+                    ),
                 )
 
         current = (
@@ -323,6 +339,31 @@ class DurableWorkflowExecutionService:
                     )
                     continue
 
+                # -----------------------------------------
+                # The final lease check before any step
+                # claim or tool execution.
+                # -----------------------------------------
+
+                if not self._heartbeat_workflow(
+                    user_id=user_id,
+                    workflow_id=workflow_id,
+                    claim_token=claim_token,
+                ):
+                    current = (
+                        self.workflow_service.get_workflow(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                        )
+                    )
+
+                    return self._lease_lost_result(
+                        workflow=current,
+                        error=(
+                            "Workflow worker lease was lost "
+                            "before the next step could execute."
+                        ),
+                    )
+
                 dependencies = set(
                     step.get("depends_on")
                     or []
@@ -350,36 +391,102 @@ class DurableWorkflowExecutionService:
                             user_id=user_id,
                             workflow_id=workflow_id,
                             step_id=step_id,
+                            workflow_claim_token=claim_token,
                         )
                     )
 
                     if claimed_step is None:
-                        processed_step_ids.add(
-                            step_id
+                        current = (
+                            self.workflow_service.get_workflow(
+                                user_id=user_id,
+                                workflow_id=workflow_id,
+                            )
                         )
-                        continue
 
-                    self.workflow_service.finish_step(
-                        user_id=user_id,
-                        workflow_id=workflow_id,
-                        step_id=step_id,
-                        status="skipped",
-                        result={},
-                        error=(
-                            "Step was skipped because "
-                            "one or more dependencies "
-                            "did not complete successfully."
-                        ),
+                        return self._lease_lost_result(
+                            workflow=current,
+                            error=(
+                                "Workflow worker lease was lost "
+                                "before a dependent step could "
+                                "be finalized."
+                            ),
+                        )
+
+                    finished_step = (
+                        self.workflow_service.finish_step(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                            step_id=step_id,
+                            status="skipped",
+                            result={},
+                            error=(
+                                "Step was skipped because "
+                                "one or more dependencies "
+                                "did not complete successfully."
+                            ),
+                            workflow_claim_token=claim_token,
+                        )
                     )
+
+                    if finished_step is None:
+                        current = (
+                            self.workflow_service.get_workflow(
+                                user_id=user_id,
+                                workflow_id=workflow_id,
+                            )
+                        )
+
+                        return self._lease_lost_result(
+                            workflow=current,
+                            error=(
+                                "Workflow worker lease was lost "
+                                "while finalizing a skipped step."
+                            ),
+                        )
 
                     processed_step_ids.add(
                         step_id
                     )
 
-                    self.workflow_service.recalculate_workflow(
-                        user_id=user_id,
-                        workflow_id=workflow_id,
+                    recalculated = (
+                        self.workflow_service
+                        .recalculate_workflow(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                            workflow_claim_token=claim_token,
+                        )
                     )
+
+                    if recalculated is None:
+                        current = (
+                            self.workflow_service.get_workflow(
+                                user_id=user_id,
+                                workflow_id=workflow_id,
+                            )
+                        )
+
+                        return self._lease_lost_result(
+                            workflow=current,
+                            error=(
+                                "Workflow worker lease was lost "
+                                "while recalculating workflow state."
+                            ),
+                        )
+
+                    if (
+                        recalculated["status"]
+                        in self.workflow_service
+                        .TERMINAL_WORKFLOW_STATUSES
+                    ):
+                        result = (
+                            self._result_from_workflow(
+                                recalculated
+                            )
+                        )
+                        result[
+                            "terminal_effect_owner"
+                        ] = True
+                        return result
 
                     progress_made = True
                     continue
@@ -395,7 +502,8 @@ class DurableWorkflowExecutionService:
                     continue
 
                 # -----------------------------------------
-                # Claim step atomically.
+                # Claim step atomically under the workflow
+                # lease fence.
                 # -----------------------------------------
 
                 claimed_step = (
@@ -403,14 +511,25 @@ class DurableWorkflowExecutionService:
                         user_id=user_id,
                         workflow_id=workflow_id,
                         step_id=step_id,
+                        workflow_claim_token=claim_token,
                     )
                 )
 
                 if claimed_step is None:
-                    processed_step_ids.add(
-                        step_id
+                    current = (
+                        self.workflow_service.get_workflow(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                        )
                     )
-                    continue
+
+                    return self._lease_lost_result(
+                        workflow=current,
+                        error=(
+                            "Workflow worker lease was lost "
+                            "before the step could be claimed."
+                        ),
+                    )
 
                 # -----------------------------------------
                 # Execute exactly once in this invocation.
@@ -421,38 +540,90 @@ class DurableWorkflowExecutionService:
                     step=claimed_step,
                 )
 
-                if tool_result["success"] is True:
-                    self.workflow_service.finish_step(
-                        user_id=user_id,
-                        workflow_id=workflow_id,
-                        step_id=step_id,
-                        status="completed",
-                        result=dict(
-                            tool_result.get(
-                                "result"
-                            )
-                            or {}
+                # -----------------------------------------
+                # Renew the lease after external execution
+                # and before writing the step result.
+                #
+                # If this fails, the old worker must not
+                # finalize a result after ownership was lost.
+                # -----------------------------------------
+
+                if not self._heartbeat_workflow(
+                    user_id=user_id,
+                    workflow_id=workflow_id,
+                    claim_token=claim_token,
+                ):
+                    current = (
+                        self.workflow_service.get_workflow(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                        )
+                    )
+
+                    return self._lease_lost_result(
+                        workflow=current,
+                        error=(
+                            "Workflow worker lease was lost "
+                            "after tool execution; the step "
+                            "result was not finalized by the "
+                            "stale worker."
                         ),
-                        error=None,
+                    )
+
+                if tool_result["success"] is True:
+                    finished_step = (
+                        self.workflow_service.finish_step(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                            step_id=step_id,
+                            status="completed",
+                            result=dict(
+                                tool_result.get(
+                                    "result"
+                                )
+                                or {}
+                            ),
+                            error=None,
+                            workflow_claim_token=claim_token,
+                        )
                     )
 
                 else:
-                    self.workflow_service.finish_step(
-                        user_id=user_id,
-                        workflow_id=workflow_id,
-                        step_id=step_id,
-                        status="failed",
-                        result=dict(
-                            tool_result.get(
-                                "result"
-                            )
-                            or {}
-                        ),
+                    finished_step = (
+                        self.workflow_service.finish_step(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                            step_id=step_id,
+                            status="failed",
+                            result=dict(
+                                tool_result.get(
+                                    "result"
+                                )
+                                or {}
+                            ),
+                            error=(
+                                tool_result.get(
+                                    "error"
+                                )
+                                or "Tool execution failed."
+                            ),
+                            workflow_claim_token=claim_token,
+                        )
+                    )
+
+                if finished_step is None:
+                    current = (
+                        self.workflow_service.get_workflow(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                        )
+                    )
+
+                    return self._lease_lost_result(
+                        workflow=current,
                         error=(
-                            tool_result.get(
-                                "error"
-                            )
-                            or "Tool execution failed."
+                            "Workflow worker lease was lost "
+                            "while finalizing the step result."
                         ),
                     )
 
@@ -460,10 +631,45 @@ class DurableWorkflowExecutionService:
                     step_id
                 )
 
-                self.workflow_service.recalculate_workflow(
-                    user_id=user_id,
-                    workflow_id=workflow_id,
+                recalculated = (
+                    self.workflow_service
+                    .recalculate_workflow(
+                        user_id=user_id,
+                        workflow_id=workflow_id,
+                        workflow_claim_token=claim_token,
+                    )
                 )
+
+                if recalculated is None:
+                    current = (
+                        self.workflow_service.get_workflow(
+                            user_id=user_id,
+                            workflow_id=workflow_id,
+                        )
+                    )
+
+                    return self._lease_lost_result(
+                        workflow=current,
+                        error=(
+                            "Workflow worker lease was lost "
+                            "while recalculating workflow state."
+                        ),
+                    )
+
+                if (
+                    recalculated["status"]
+                    in self.workflow_service
+                    .TERMINAL_WORKFLOW_STATUSES
+                ):
+                    result = (
+                        self._result_from_workflow(
+                            recalculated
+                        )
+                    )
+                    result[
+                        "terminal_effect_owner"
+                    ] = True
+                    return result
 
                 progress_made = True
 
@@ -475,16 +681,33 @@ class DurableWorkflowExecutionService:
             # cannot be retried during this execute() call.
             # -------------------------------------------------
 
+        # -------------------------------------------------
+        # No terminal state was produced inside the step loop.
+        # Recalculate once while the worker still owns the lease.
+        # -------------------------------------------------
+
         final_workflow = (
             self.workflow_service.recalculate_workflow(
                 user_id=user_id,
                 workflow_id=workflow_id,
+                workflow_claim_token=claim_token,
             )
         )
 
         if final_workflow is None:
-            return self._blocked_result(
-                "Workflow result is unavailable."
+            current = (
+                self.workflow_service.get_workflow(
+                    user_id=user_id,
+                    workflow_id=workflow_id,
+                )
+            )
+
+            return self._lease_lost_result(
+                workflow=current,
+                error=(
+                    "Workflow worker lease was lost before "
+                    "the final workflow state was persisted."
+                ),
             )
 
         result = self._result_from_workflow(
@@ -495,6 +718,30 @@ class DurableWorkflowExecutionService:
         ] = True
 
         return result
+
+    def _heartbeat_workflow(
+        self,
+        *,
+        user_id: str,
+        workflow_id: int,
+        claim_token: str,
+    ) -> bool:
+        """
+        Renew the current workflow worker lease.
+
+        A False result means the worker no longer owns an active
+        lease and must stop mutating workflow state.
+        """
+
+        renewed = (
+            self.workflow_service.heartbeat_workflow(
+                user_id=user_id,
+                workflow_id=workflow_id,
+                claim_token=claim_token,
+            )
+        )
+
+        return renewed is not None
 
     def _execute_step(
         self,
@@ -574,6 +821,50 @@ class DurableWorkflowExecutionService:
             "error": workflow.get(
                 "error"
             ),
+        }
+
+    def _lease_lost_result(
+        self,
+        *,
+        workflow: dict[str, Any] | None,
+        error: str,
+    ) -> dict[str, Any]:
+        """
+        Return a non-terminal result for a worker that lost its
+        lease.
+
+        The current workflow state remains the durable source of
+        truth. Another scheduler/worker may recover or claim it.
+        """
+
+        status = (
+            workflow.get(
+                "status"
+            )
+            if workflow is not None
+            else "running"
+        )
+
+        return {
+            "success": False,
+            "status": status,
+            "workflow_id": (
+                workflow.get(
+                    "id"
+                )
+                if workflow is not None
+                else None
+            ),
+            "steps": (
+                workflow.get(
+                    "steps",
+                    [],
+                )
+                if workflow is not None
+                else []
+            ),
+            "error": error,
+            "terminal_effect_owner": False,
         }
 
     def _blocked_result(

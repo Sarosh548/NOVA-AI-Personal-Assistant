@@ -22,6 +22,8 @@ class AutonomousWorkflowScheduler:
     Background scheduler for durable autonomous workflows.
 
     Responsibilities:
+    - recover stale autonomous workflows whose worker leases
+      have expired
     - poll for due autonomous workflows
     - delegate execution to the durable execution service
     - record durable terminal activity events
@@ -105,6 +107,24 @@ class AutonomousWorkflowScheduler:
         self._running = False
 
     async def process_due_workflows(self) -> None:
+        """
+        Recover stale workers first, then process the currently
+        due autonomous workflow queue.
+
+        A recovered stale workflow is returned to pending by
+        WorkflowService and can therefore be selected immediately
+        by list_due_autonomous_workflows().
+        """
+
+        try:
+            self.workflow_service.recover_stale_autonomous_workflows(
+                limit=self.batch_size
+            )
+        except Exception:
+            logger.exception(
+                "Could not recover stale autonomous workflows."
+            )
+
         workflows = (
             self.workflow_service
             .list_due_autonomous_workflows(

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -22,6 +23,9 @@ class WorkflowService:
     - find due autonomous workflows
     - manage workflow state transitions
     - atomically claim workflows
+    - maintain durable worker leases
+    - renew active worker leases
+    - recover stale autonomous workflows
     - atomically claim individual steps
     - persist execution attempts/results
     - support resume/retry
@@ -29,6 +33,8 @@ class WorkflowService:
 
     This service does not execute tools.
     """
+
+    DEFAULT_WORKFLOW_LEASE_SECONDS = 300
 
     CREATION_STATUSES = {
         "pending",
@@ -41,6 +47,13 @@ class WorkflowService:
         "partial",
         "blocked",
         "cancelled",
+    }
+
+    RESUMABLE_WORKFLOW_STATUSES = {
+        "pending",
+        "partial",
+        "failed",
+        "blocked",
     }
 
     WORKFLOW_TRANSITIONS = {
@@ -82,11 +95,27 @@ class WorkflowService:
     def __init__(
         self,
         db_engine: Any | None = None,
+        workflow_lease_seconds: int = (
+            DEFAULT_WORKFLOW_LEASE_SECONDS
+        ),
     ):
+        normalized_lease_seconds = int(
+            workflow_lease_seconds
+        )
+
+        if normalized_lease_seconds < 1:
+            raise ValueError(
+                "workflow_lease_seconds must be at least 1"
+            )
+
         self.engine = (
             db_engine
             if db_engine is not None
             else default_engine
+        )
+
+        self.workflow_lease_seconds = (
+            normalized_lease_seconds
         )
 
     @staticmethod
@@ -118,6 +147,15 @@ class WorkflowService:
             timezone.utc
         ).replace(
             tzinfo=None
+        )
+
+    def _lease_until(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> datetime:
+        return reference_time + timedelta(
+            seconds=self.workflow_lease_seconds
         )
 
     @classmethod
@@ -180,13 +218,6 @@ class WorkflowService:
         """
         Create a durable workflow and its immutable execution
         step definitions.
-
-        scheduled_at:
-            Optional UTC datetime at which the workflow becomes
-            eligible for autonomous background execution.
-
-            A None scheduled_at means the workflow is eligible
-            immediately, provided execution_mode is autonomous.
         """
 
         if not str(user_id).strip():
@@ -286,6 +317,9 @@ class WorkflowService:
                 idempotency_key=(
                     normalized_idempotency_key
                 ),
+                claim_token=None,
+                lease_until=None,
+                heartbeat_at=None,
                 created_at=now,
                 updated_at=now,
                 started_at=None,
@@ -409,10 +443,6 @@ class WorkflowService:
         background execution.
 
         Only pending workflows are selected.
-
-        This is intentionally separate from normal user-
-        initiated workflow execution so an interactive workflow
-        can never accidentally become background work.
         """
 
         normalized_now = (
@@ -469,6 +499,187 @@ class WorkflowService:
                 for workflow in workflows
             ]
 
+    def recover_stale_workflow(
+        self,
+        *,
+        user_id: str,
+        workflow_id: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Recover one stale autonomous workflow.
+
+        Recovery is allowed only when:
+        - the workflow belongs to the user
+        - execution_mode is autonomous
+        - status is running
+        - a lease exists
+        - the lease has expired
+
+        Recovery returns the workflow to pending so the normal
+        autonomous scheduler can claim it again.
+
+        Any currently running steps are reset to pending.
+        Step attempt counters remain intact for observability.
+        """
+
+        reference_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
+        recovery_reason = (
+            "Stale workflow worker lease expired; the autonomous "
+            "workflow was recovered and returned to pending."
+        )
+
+        with Session(self.engine) as session:
+            statement = (
+                update(Workflow)
+                .where(
+                    Workflow.id == workflow_id,
+                    Workflow.user_id == user_id,
+                    Workflow.execution_mode
+                    == "autonomous",
+                    Workflow.status
+                    == "running",
+                    Workflow.lease_until.is_not(None),
+                    Workflow.lease_until
+                    <= reference_now,
+                )
+                .values(
+                    status="pending",
+                    claim_token=None,
+                    lease_until=None,
+                    heartbeat_at=None,
+                    updated_at=reference_now,
+                    completed_at=None,
+                    error=recovery_reason,
+                    result=None,
+                )
+            )
+
+            update_result = session.execute(
+                statement
+            )
+
+            if update_result.rowcount != 1:
+                session.rollback()
+                return None
+
+            session.execute(
+                update(WorkflowStep)
+                .where(
+                    WorkflowStep.workflow_id
+                    == workflow_id,
+                    WorkflowStep.status
+                    == "running",
+                )
+                .values(
+                    status="pending",
+                    updated_at=reference_now,
+                    started_at=None,
+                    completed_at=None,
+                    error=(
+                        "Step reset because its workflow "
+                        "worker lease expired."
+                    ),
+                )
+            )
+
+            session.commit()
+
+            workflow = session.scalar(
+                select(Workflow).where(
+                    Workflow.id == workflow_id,
+                    Workflow.user_id == user_id,
+                )
+            )
+
+            if workflow is None:
+                return None
+
+            return self._workflow_to_dict(
+                session=session,
+                workflow=workflow,
+            )
+
+    def recover_stale_autonomous_workflows(
+        self,
+        *,
+        limit: int = 50,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Recover currently stale autonomous workflows.
+
+        Each recovery uses recover_stale_workflow()'s
+        compare-and-set conditions, so concurrent schedulers
+        cannot both recover the same workflow.
+        """
+
+        reference_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
+        normalized_limit = max(
+            1,
+            min(
+                int(limit),
+                200,
+            ),
+        )
+
+        with Session(self.engine) as session:
+            workflow_records = session.scalars(
+                select(Workflow)
+                .where(
+                    Workflow.execution_mode
+                    == "autonomous",
+                    Workflow.status
+                    == "running",
+                    Workflow.lease_until.is_not(None),
+                    Workflow.lease_until
+                    <= reference_now,
+                )
+                .order_by(
+                    Workflow.lease_until.asc(),
+                    Workflow.id.asc(),
+                )
+                .limit(normalized_limit)
+            ).all()
+
+            candidates = [
+                (
+                    workflow.id,
+                    workflow.user_id,
+                )
+                for workflow in workflow_records
+            ]
+
+        recovered: list[dict[str, Any]] = []
+
+        for workflow_id, user_id in candidates:
+            workflow = self.recover_stale_workflow(
+                user_id=user_id,
+                workflow_id=workflow_id,
+                now=reference_now,
+            )
+
+            if workflow is not None:
+                recovered.append(
+                    workflow
+                )
+
+        return recovered
+
     def set_awaiting_confirmation(
         self,
         *,
@@ -495,16 +706,15 @@ class WorkflowService:
         user_id: str,
         workflow_id: int,
         reason: str,
+        claim_token: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Permanently pause a workflow in the blocked state
         because current safety/permission policy no longer
         permits execution.
 
-        A blocked workflow remains durable and can be explicitly
-        resumed later through the normal workflow lifecycle.
-
-        This method does not execute tools.
+        When claim_token is provided, the caller must still own
+        the active workflow lease.
         """
 
         cleaned_reason = str(
@@ -535,6 +745,22 @@ class WorkflowService:
             }:
                 return None
 
+            if claim_token is not None:
+                normalized_token = str(
+                    claim_token
+                ).strip()
+
+                if (
+                    not normalized_token
+                    or workflow.status != "running"
+                    or workflow.claim_token
+                    != normalized_token
+                    or workflow.lease_until is None
+                    or workflow.lease_until
+                    <= now
+                ):
+                    return None
+
             allowed_transitions = (
                 self.WORKFLOW_TRANSITIONS.get(
                     workflow.status,
@@ -559,6 +785,9 @@ class WorkflowService:
             )
             workflow.updated_at = now
             workflow.completed_at = now
+            workflow.claim_token = None
+            workflow.lease_until = None
+            workflow.heartbeat_at = None
 
             session.commit()
             session.refresh(
@@ -576,6 +805,7 @@ class WorkflowService:
         user_id: str,
         workflow_id: int,
         expected_current_status: str | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any] | None:
         """
         Atomically claim a workflow for execution.
@@ -587,10 +817,50 @@ class WorkflowService:
             failed
             blocked
 
-        An already-running workflow is not claimed again.
+        An already-running workflow is never re-claimed.
+
+        A successful claim creates a fresh worker lease and
+        returns its claim token.
         """
 
-        now = self._utc_now_naive()
+        reference_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
+        expected_status = (
+            str(
+                expected_current_status
+            ).strip()
+            if expected_current_status is not None
+            else None
+        )
+
+        if (
+            expected_status is not None
+            and expected_status
+            not in self.RESUMABLE_WORKFLOW_STATUSES
+        ):
+            return None
+
+        claim_token = uuid4().hex
+
+        lease_until = self._lease_until(
+            reference_time=reference_now
+        )
+
+        allowed_statuses = (
+            {
+                expected_status,
+            }
+            if expected_status is not None
+            else set(
+                self.RESUMABLE_WORKFLOW_STATUSES
+            )
+        )
 
         with Session(self.engine) as session:
             statement = (
@@ -598,27 +868,19 @@ class WorkflowService:
                 .where(
                     Workflow.id == workflow_id,
                     Workflow.user_id == user_id,
-                    (
-                        Workflow.status
-                        == expected_current_status
-                        if expected_current_status
-                        is not None
-                        else Workflow.status.in_(
-                            [
-                                "pending",
-                                "partial",
-                                "failed",
-                                "blocked",
-                            ]
-                        )
+                    Workflow.status.in_(
+                        allowed_statuses
                     ),
                 )
                 .values(
                     status="running",
-                    updated_at=now,
-                    started_at=now,
+                    updated_at=reference_now,
+                    started_at=reference_now,
                     completed_at=None,
                     error=None,
+                    claim_token=claim_token,
+                    lease_until=lease_until,
+                    heartbeat_at=reference_now,
                 )
             )
 
@@ -627,6 +889,89 @@ class WorkflowService:
             )
 
             if result.rowcount != 1:
+                session.rollback()
+                return None
+
+            session.commit()
+
+            workflow = session.scalar(
+                select(Workflow).where(
+                    Workflow.id == workflow_id,
+                    Workflow.user_id == user_id,
+                )
+            )
+
+            if workflow is None:
+                return None
+
+            return self._workflow_to_dict(
+                session=session,
+                workflow=workflow,
+            )
+
+    def heartbeat_workflow(
+        self,
+        *,
+        user_id: str,
+        workflow_id: int,
+        claim_token: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Renew an active workflow worker lease.
+
+        Heartbeats are accepted only while:
+        - the workflow belongs to the user
+        - workflow status is running
+        - the supplied claim token matches
+        - the existing lease has not already expired
+        """
+
+        normalized_token = str(
+            claim_token
+        ).strip()
+
+        if not normalized_token:
+            return None
+
+        reference_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
+        new_lease_until = self._lease_until(
+            reference_time=reference_now
+        )
+
+        with Session(self.engine) as session:
+            statement = (
+                update(Workflow)
+                .where(
+                    Workflow.id == workflow_id,
+                    Workflow.user_id == user_id,
+                    Workflow.status == "running",
+                    Workflow.claim_token
+                    == normalized_token,
+                    Workflow.lease_until.is_not(None),
+                    Workflow.lease_until
+                    > reference_now,
+                )
+                .values(
+                    lease_until=new_lease_until,
+                    heartbeat_at=reference_now,
+                    updated_at=reference_now,
+                )
+            )
+
+            result = session.execute(
+                statement
+            )
+
+            if result.rowcount != 1:
+                session.rollback()
                 return None
 
             session.commit()
@@ -677,19 +1022,58 @@ class WorkflowService:
         user_id: str,
         workflow_id: int,
         step_id: str,
+        workflow_claim_token: str | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any] | None:
         """
         Atomically claim exactly one workflow step.
+
+        When workflow_claim_token is provided, the step may only
+        be claimed by the current active workflow lease owner.
+
+        The optional now parameter exists for deterministic tests
+        and callers that already have a trusted reference time.
         """
 
-        now = self._utc_now_naive()
+        reference_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
+        normalized_token = None
+
+        if workflow_claim_token is not None:
+            normalized_token = str(
+                workflow_claim_token
+            ).strip()
+
+            if not normalized_token:
+                return None
 
         with Session(self.engine) as session:
+            workflow_conditions = [
+                Workflow.id == workflow_id,
+                Workflow.user_id == user_id,
+                Workflow.status == "running",
+            ]
+
+            if normalized_token is not None:
+                workflow_conditions.extend(
+                    [
+                        Workflow.claim_token
+                        == normalized_token,
+                        Workflow.lease_until.is_not(None),
+                        Workflow.lease_until
+                        > reference_now,
+                    ]
+                )
+
             workflow_exists = session.scalar(
                 select(Workflow.id).where(
-                    Workflow.id == workflow_id,
-                    Workflow.user_id == user_id,
-                    Workflow.status == "running",
+                    *workflow_conditions
                 )
             )
 
@@ -715,8 +1099,8 @@ class WorkflowService:
                 .values(
                     status="running",
                     attempts=WorkflowStep.attempts + 1,
-                    updated_at=now,
-                    started_at=now,
+                    updated_at=reference_now,
+                    started_at=reference_now,
                     completed_at=None,
                     error=None,
                 )
@@ -727,6 +1111,7 @@ class WorkflowService:
             )
 
             if result.rowcount != 1:
+                session.rollback()
                 return None
 
             session.commit()
@@ -756,11 +1141,16 @@ class WorkflowService:
         status: str,
         result: dict[str, Any] | None = None,
         error: str | None = None,
+        workflow_claim_token: str | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any] | None:
         """
         Persist the final result for a claimed step.
 
         Only the running state may be finalized.
+
+        When workflow_claim_token is provided, only the active
+        workflow lease owner may finalize the step.
         """
 
         if status not in {
@@ -773,13 +1163,45 @@ class WorkflowService:
                 "Invalid workflow step final status."
             )
 
-        now = self._utc_now_naive()
+        reference_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
+        normalized_token = None
+
+        if workflow_claim_token is not None:
+            normalized_token = str(
+                workflow_claim_token
+            ).strip()
+
+            if not normalized_token:
+                return None
 
         with Session(self.engine) as session:
+            workflow_conditions = [
+                Workflow.id == workflow_id,
+                Workflow.user_id == user_id,
+            ]
+
+            if normalized_token is not None:
+                workflow_conditions.extend(
+                    [
+                        Workflow.status == "running",
+                        Workflow.claim_token
+                        == normalized_token,
+                        Workflow.lease_until.is_not(None),
+                        Workflow.lease_until
+                        > reference_now,
+                    ]
+                )
+
             workflow = session.scalar(
                 select(Workflow).where(
-                    Workflow.id == workflow_id,
-                    Workflow.user_id == user_id,
+                    *workflow_conditions
                 )
             )
 
@@ -808,8 +1230,8 @@ class WorkflowService:
                         if error is not None
                         else None
                     ),
-                    updated_at=now,
-                    completed_at=now,
+                    updated_at=reference_now,
+                    completed_at=reference_now,
                 )
             )
 
@@ -818,6 +1240,7 @@ class WorkflowService:
             )
 
             if update_result.rowcount != 1:
+                session.rollback()
                 return None
 
             session.commit()
@@ -843,16 +1266,55 @@ class WorkflowService:
         *,
         user_id: str,
         workflow_id: int,
+        workflow_claim_token: str | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any] | None:
         """
         Recalculate workflow status from persisted step state.
+
+        When workflow_claim_token is provided, only the current
+        active workflow lease owner may mutate workflow state.
         """
 
+        normalized_token = None
+
+        if workflow_claim_token is not None:
+            normalized_token = str(
+                workflow_claim_token
+            ).strip()
+
+            if not normalized_token:
+                return None
+
+        reference_now = (
+            self._normalize_datetime(
+                now
+            )
+            if now is not None
+            else self._utc_now_naive()
+        )
+
         with Session(self.engine) as session:
+            workflow_conditions = [
+                Workflow.id == workflow_id,
+                Workflow.user_id == user_id,
+            ]
+
+            if normalized_token is not None:
+                workflow_conditions.extend(
+                    [
+                        Workflow.status == "running",
+                        Workflow.claim_token
+                        == normalized_token,
+                        Workflow.lease_until.is_not(None),
+                        Workflow.lease_until
+                        > reference_now,
+                    ]
+                )
+
             workflow = session.scalar(
                 select(Workflow).where(
-                    Workflow.id == workflow_id,
-                    Workflow.user_id == user_id,
+                    *workflow_conditions
                 )
             )
 
@@ -881,8 +1343,6 @@ class WorkflowService:
                 step.status
                 for step in steps
             ]
-
-            now = self._utc_now_naive()
 
             if not steps:
                 new_status = "completed"
@@ -957,13 +1417,16 @@ class WorkflowService:
             workflow.error = result_payload[
                 "error"
             ]
-            workflow.updated_at = now
+            workflow.updated_at = reference_now
 
             if (
                 new_status
                 in self.TERMINAL_WORKFLOW_STATUSES
             ):
-                workflow.completed_at = now
+                workflow.completed_at = reference_now
+                workflow.claim_token = None
+                workflow.lease_until = None
+                workflow.heartbeat_at = None
 
             session.commit()
             session.refresh(
@@ -1031,9 +1494,21 @@ class WorkflowService:
             if new_status == "running":
                 workflow.started_at = now
                 workflow.completed_at = None
+                workflow.claim_token = uuid4().hex
+                workflow.lease_until = (
+                    self._lease_until(
+                        reference_time=now
+                    )
+                )
+                workflow.heartbeat_at = now
 
             elif completed_at:
                 workflow.completed_at = now
+
+            if new_status in self.TERMINAL_WORKFLOW_STATUSES:
+                workflow.claim_token = None
+                workflow.lease_until = None
+                workflow.heartbeat_at = None
 
             session.commit()
             session.refresh(
@@ -1246,6 +1721,9 @@ class WorkflowService:
             "idempotency_key": (
                 workflow.idempotency_key
             ),
+            "claim_token": workflow.claim_token,
+            "lease_until": workflow.lease_until,
+            "heartbeat_at": workflow.heartbeat_at,
             "created_at": workflow.created_at,
             "updated_at": workflow.updated_at,
             "started_at": workflow.started_at,

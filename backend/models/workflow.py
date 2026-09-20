@@ -88,6 +88,21 @@ class Workflow(Base):
         nullable=True,
     )
 
+    claim_token: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=_utc_now_naive,
@@ -128,5 +143,11 @@ class Workflow(Base):
             "execution_mode",
             "status",
             "scheduled_at",
+        ),
+        Index(
+            "ix_workflows_lease_recovery",
+            "execution_mode",
+            "status",
+            "lease_until",
         ),
     )
