@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database.connection import engine
@@ -149,14 +149,16 @@ class KnowledgeService:
         session: Session,
         document_id: int,
     ) -> int:
-        return len(
-            session.scalars(
-                select(KnowledgeChunk.id).where(
-                    KnowledgeChunk.document_id
-                    == document_id
-                )
-            ).all()
+        count = session.scalar(
+            select(
+                func.count(KnowledgeChunk.id)
+            ).where(
+                KnowledgeChunk.document_id
+                == document_id
+            )
         )
+
+        return int(count or 0)
 
     def create_document(
         self,
