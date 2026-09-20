@@ -43,6 +43,23 @@ class FakeSession:
         return False
 
     def scalar(self, statement):
+        if self.memory is None:
+            return None
+
+        params = statement.compile().params
+        user_id = next(
+            (
+                value
+                for key, value in params.items()
+                if key.startswith("user_id")
+            ),
+            None,
+        )
+
+        if user_id is not None:
+            if self.memory.user_id != user_id:
+                return None
+
         return self.memory
 
     def commit(self):
