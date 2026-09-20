@@ -95,8 +95,11 @@ class FakeSession:
         user_id = next(
             (
                 value
-                for key, value in params.items()
-                if key.startswith("user_id")
+                for value in params.values()
+                if value in {
+                    "user-001",
+                    "user-002",
+                }
             ),
             None,
         )
