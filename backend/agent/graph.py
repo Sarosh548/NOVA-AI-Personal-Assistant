@@ -21,6 +21,9 @@ from services.execution_context import (
     DEFAULT_INTERACTIVE_CONTEXT,
     ExecutionContext,
 )
+from services.google_calendar_tool_service import (
+    GoogleCalendarToolService,
+)
 from services.intent_service import IntentService
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
@@ -50,7 +53,9 @@ plan_permission_service = PlanPermissionService(
 confirmation_service = ConfirmationService()
 activity_report_service = ActivityReportService()
 
-tool_router = ToolRouter()
+tool_router = ToolRouter(
+    calendar_tool_service=GoogleCalendarToolService(),
+)
 
 plan_execution_service = PlanExecutionService(
     tool_router=tool_router,
