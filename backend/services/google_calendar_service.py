@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -61,6 +61,28 @@ class GoogleCalendarService:
     DEFAULT_MAX_RESULTS = 50
     MAX_MAX_RESULTS = 2500
     HTTP_TIMEOUT_SECONDS = 10
+
+    SUPPORTED_EVENT_FIELDS = {
+        "summary",
+        "description",
+        "location",
+        "start",
+        "end",
+        "attendees",
+    }
+
+    SUPPORTED_EVENT_BOUNDARY_FIELDS = {
+        "date",
+        "dateTime",
+        "timeZone",
+    }
+
+    SUPPORTED_ATTENDEE_FIELDS = {
+        "email",
+        "displayName",
+        "optional",
+        "resource",
+    }
 
     def __init__(
         self,
@@ -755,8 +777,9 @@ class GoogleCalendarService:
 
         return normalized
 
-    @staticmethod
+    @classmethod
     def _validate_event_payload(
+        cls,
         event: Any,
         *,
         require_start_end: bool = True,
@@ -773,6 +796,23 @@ class GoogleCalendarService:
             event
         )
 
+        unsupported_fields = (
+            set(payload)
+            - cls.SUPPORTED_EVENT_FIELDS
+        )
+
+        if unsupported_fields:
+            fields = ", ".join(
+                sorted(
+                    str(field)
+                    for field in unsupported_fields
+                )
+            )
+
+            raise ValueError(
+                f"Calendar event contains unsupported fields: {fields}."
+            )
+
         if require_start_end:
             if "start" not in payload:
                 raise ValueError(
@@ -785,33 +825,294 @@ class GoogleCalendarService:
                 )
 
         for field_name in (
-            "start",
-            "end",
+            "summary",
+            "description",
+            "location",
         ):
             if field_name in payload:
                 value = payload[field_name]
 
                 if not isinstance(
                     value,
-                    dict,
+                    str,
                 ):
                     raise ValueError(
-                        f"Calendar event {field_name} must be an object."
+                        f"Calendar event {field_name} must be a string."
                     )
 
-                if not (
-                    value.get(
-                        "date"
-                    )
-                    or value.get(
-                        "dateTime"
-                    )
-                ):
-                    raise ValueError(
-                        f"Calendar event {field_name} must contain date or dateTime."
-                    )
+        boundary_values = {}
+
+        for field_name in (
+            "start",
+            "end",
+        ):
+            if field_name not in payload:
+                continue
+
+            boundary_values[field_name] = (
+                cls._validate_event_boundary(
+                    payload[field_name],
+                    field_name,
+                )
+            )
+
+        if (
+            "start" in boundary_values
+            and "end" in boundary_values
+        ):
+            start_kind, start_value = (
+                boundary_values["start"]
+            )
+            end_kind, end_value = (
+                boundary_values["end"]
+            )
+
+            if start_kind != end_kind:
+                raise ValueError(
+                    "Calendar event start and end must both use date or both use dateTime."
+                )
+
+            if end_value <= start_value:
+                raise ValueError(
+                    "Calendar event end must be after start."
+                )
+
+        if "attendees" in payload:
+            cls._validate_attendees(
+                payload["attendees"]
+            )
 
         return payload
+
+    @classmethod
+    def _validate_event_boundary(
+        cls,
+        value: Any,
+        field_name: str,
+    ) -> tuple[str, date | datetime]:
+        if not isinstance(
+            value,
+            dict,
+        ):
+            raise ValueError(
+                f"Calendar event {field_name} must be an object."
+            )
+
+        unsupported_fields = (
+            set(value)
+            - cls.SUPPORTED_EVENT_BOUNDARY_FIELDS
+        )
+
+        if unsupported_fields:
+            fields = ", ".join(
+                sorted(
+                    str(field)
+                    for field in unsupported_fields
+                )
+            )
+
+            raise ValueError(
+                f"Calendar event {field_name} contains unsupported fields: {fields}."
+            )
+
+        has_date = "date" in value
+        has_datetime = "dateTime" in value
+
+        if has_date == has_datetime:
+            raise ValueError(
+                f"Calendar event {field_name} must contain exactly one of date or dateTime."
+            )
+
+        time_zone = value.get(
+            "timeZone"
+        )
+
+        if time_zone is not None:
+            if not isinstance(
+                time_zone,
+                str,
+            ) or not time_zone.strip():
+                raise ValueError(
+                    f"Calendar event {field_name} timeZone must be a non-empty string."
+                )
+
+        if has_date:
+            raw_date = value.get(
+                "date"
+            )
+
+            if not isinstance(
+                raw_date,
+                str,
+            ):
+                raise ValueError(
+                    f"Calendar event {field_name} date must be a string."
+                )
+
+            normalized_date = raw_date.strip()
+
+            if not normalized_date:
+                raise ValueError(
+                    f"Calendar event {field_name} date cannot be empty."
+                )
+
+            try:
+                parsed_date = date.fromisoformat(
+                    normalized_date
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Calendar event {field_name} date must use YYYY-MM-DD."
+                ) from exc
+
+            return "date", parsed_date
+
+        raw_datetime = value.get(
+            "dateTime"
+        )
+
+        if not isinstance(
+            raw_datetime,
+            str,
+        ):
+            raise ValueError(
+                f"Calendar event {field_name} dateTime must be a string."
+            )
+
+        normalized_datetime = raw_datetime.strip()
+
+        if not normalized_datetime:
+            raise ValueError(
+                f"Calendar event {field_name} dateTime cannot be empty."
+            )
+
+        if normalized_datetime.endswith(
+            "Z"
+        ):
+            normalized_datetime = (
+                normalized_datetime[:-1]
+                + "+00:00"
+            )
+
+        try:
+            parsed_datetime = datetime.fromisoformat(
+                normalized_datetime
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Calendar event {field_name} dateTime must be a valid ISO 8601 timestamp."
+            ) from exc
+
+        if (
+            parsed_datetime.tzinfo is None
+            or parsed_datetime.utcoffset() is None
+        ):
+            raise ValueError(
+                f"Calendar event {field_name} dateTime must include a timezone offset."
+            )
+
+        return "dateTime", parsed_datetime
+
+    @classmethod
+    def _validate_attendees(
+        cls,
+        attendees: Any,
+    ) -> None:
+        if not isinstance(
+            attendees,
+            list,
+        ):
+            raise ValueError(
+                "Calendar event attendees must be a list."
+            )
+
+        for index, attendee in enumerate(
+            attendees
+        ):
+            if not isinstance(
+                attendee,
+                dict,
+            ):
+                raise ValueError(
+                    f"Calendar attendee at index {index} must be an object."
+                )
+
+            unsupported_fields = (
+                set(attendee)
+                - cls.SUPPORTED_ATTENDEE_FIELDS
+            )
+
+            if unsupported_fields:
+                fields = ", ".join(
+                    sorted(
+                        str(field)
+                        for field in unsupported_fields
+                    )
+                )
+
+                raise ValueError(
+                    f"Calendar attendee at index {index} contains unsupported fields: {fields}."
+                )
+
+            email = attendee.get(
+                "email"
+            )
+
+            if not isinstance(
+                email,
+                str,
+            ):
+                raise ValueError(
+                    f"Calendar attendee at index {index} must include an email."
+                )
+
+            normalized_email = email.strip()
+
+            if (
+                not normalized_email
+                or "@" not in normalized_email
+                or " " in normalized_email
+                or normalized_email.startswith("@")
+                or normalized_email.endswith("@")
+                or "." not in normalized_email.rsplit(
+                    "@",
+                    1
+                )[-1]
+            ):
+                raise ValueError(
+                    f"Calendar attendee at index {index} has an invalid email."
+                )
+
+            for field_name in (
+                "displayName",
+            ):
+                value = attendee.get(
+                    field_name
+                )
+
+                if value is not None and not isinstance(
+                    value,
+                    str,
+                ):
+                    raise ValueError(
+                        f"Calendar attendee at index {index} {field_name} must be a string."
+                    )
+
+            for field_name in (
+                "optional",
+                "resource",
+            ):
+                value = attendee.get(
+                    field_name
+                )
+
+                if value is not None and not isinstance(
+                    value,
+                    bool,
+                ):
+                    raise ValueError(
+                        f"Calendar attendee at index {index} {field_name} must be a boolean."
+                    )
 
     @staticmethod
     def _format_datetime(
@@ -821,7 +1122,10 @@ class GoogleCalendarService:
             value,
             datetime,
         ):
-            if value.tzinfo is None:
+            if (
+                value.tzinfo is None
+                or value.utcoffset() is None
+            ):
                 raise ValueError(
                     "Calendar datetime values must be timezone-aware."
                 )
@@ -837,6 +1141,33 @@ class GoogleCalendarService:
             if not normalized:
                 raise ValueError(
                     "Calendar datetime value cannot be empty."
+                )
+
+            timestamp = normalized
+
+            if timestamp.endswith(
+                "Z"
+            ):
+                timestamp = (
+                    timestamp[:-1]
+                    + "+00:00"
+                )
+
+            try:
+                parsed_datetime = datetime.fromisoformat(
+                    timestamp
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "Calendar datetime values must be valid ISO 8601 timestamps."
+                ) from exc
+
+            if (
+                parsed_datetime.tzinfo is None
+                or parsed_datetime.utcoffset() is None
+            ):
+                raise ValueError(
+                    "Calendar datetime values must include a timezone offset."
                 )
 
             return normalized
