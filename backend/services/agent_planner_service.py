@@ -198,6 +198,25 @@ For email:
     When no recipient is provided, leave "to" empty so the
     email tool can resolve the user's enabled default destination.
 
+For calendar:
+- list:
+    preserve time_min/time_max, query, max_results, page_token,
+    single_events, order_by, and show_deleted when available.
+- get:
+    preserve event_id and calendar_id.
+- create:
+    data must contain calendar_action="create" and event.
+    The event must include start and end objects.
+    Preserve summary, description, location, attendees, and other
+    explicitly requested Calendar fields.
+- update:
+    preserve event_id and calendar_id.
+    Include only fields the user requested to change.
+    When changing the event time, preserve both start and end.
+- delete:
+    preserve event_id and calendar_id.
+- preserve send_updates only when explicitly requested.
+
 
 Return exactly this structure:
 
