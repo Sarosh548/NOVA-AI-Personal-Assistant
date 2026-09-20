@@ -386,3 +386,32 @@ def test_calendar_attendee_action_cannot_be_bypassed_by_saved_allow():
             tool="calendar",
             action="create",
         )
+
+ 
+def test_agent_graph_exposes_calendar_tool():
+    from agent import graph
+
+    tools = graph.tool_router.get_available_tools()
+
+    calendar_tools = [
+        item
+        for item in tools
+        if item["name"] == "calendar"
+    ]
+
+    assert calendar_tools == [
+        {
+            "name": "calendar",
+            "description": (
+                "List, retrieve, create, update, and delete "
+                "Google Calendar events."
+            ),
+            "actions": [
+                "list",
+                "get",
+                "create",
+                "update",
+                "delete",
+            ],
+        }
+    ]
