@@ -342,9 +342,12 @@ def test_create_event_posts_event_and_send_updates(
         "all"
     ]
 
-    assert request.headers[
-        "Content-Type"
-    ] == "application/json"
+    headers = {
+        name.lower(): value
+        for name, value in request.header_items()
+    }
+
+    assert headers["content-type"] == "application/json"
 
     import json
 
