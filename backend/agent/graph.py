@@ -1007,6 +1007,14 @@ def permission_node(state: NOVAState) -> NOVAState:
         user_requested=(
             execution_context.user_requested
         ),
+        data=(
+            plan.get("data")
+            if isinstance(
+                plan.get("data"),
+                dict,
+            )
+            else {}
+        ),
     )
 
     permission = {
