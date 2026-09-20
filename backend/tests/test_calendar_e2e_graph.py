@@ -166,6 +166,14 @@ def test_calendar_read_only_request_flows_through_full_graph(
     assert captured["permission"]["tool"] == "calendar"
     assert captured["permission"]["action"] == "list"
     assert captured["permission"]["user_requested"] is True
+    assert (
+        captured["permission"]["data"]["calendar_action"]
+        == "list"
+    )
+    assert (
+        captured["permission"]["data"]["time_min"]
+        == "2026-09-21T00:00:00+05:00"
+    )
 
     assert captured["tool"]["intent"] == "calendar"
     assert captured["tool"]["user_id"] == "user-001"
