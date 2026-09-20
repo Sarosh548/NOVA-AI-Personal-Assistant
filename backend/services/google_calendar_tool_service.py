@@ -138,22 +138,26 @@ class GoogleCalendarToolService:
                 "event_id",
             )
 
-            return self.calendar_service.get_event(
-                user_id=user_id,
-                event_id=event_id,
-                calendar_id=calendar_id,
+            return self._normalize_event_result(
+                self.calendar_service.get_event(
+                    user_id=user_id,
+                    event_id=event_id,
+                    calendar_id=calendar_id,
+                )
             )
 
         if action == "create":
-            return self.calendar_service.create_event(
-                user_id=user_id,
-                event=self._require_event(
-                    data.get("event")
-                ),
-                calendar_id=calendar_id,
-                send_updates=self._send_updates(
-                    data
-                ),
+            return self._normalize_event_result(
+                self.calendar_service.create_event(
+                    user_id=user_id,
+                    event=self._require_event(
+                        data.get("event")
+                    ),
+                    calendar_id=calendar_id,
+                    send_updates=self._send_updates(
+                        data
+                    ),
+                )
             )
 
         event_id = self._require_string(
@@ -162,16 +166,18 @@ class GoogleCalendarToolService:
         )
 
         if action == "update":
-            return self.calendar_service.update_event(
-                user_id=user_id,
-                event_id=event_id,
-                event=self._require_event(
-                    data.get("event")
-                ),
-                calendar_id=calendar_id,
-                send_updates=self._send_updates(
-                    data
-                ),
+            return self._normalize_event_result(
+                self.calendar_service.update_event(
+                    user_id=user_id,
+                    event_id=event_id,
+                    event=self._require_event(
+                        data.get("event")
+                    ),
+                    calendar_id=calendar_id,
+                    send_updates=self._send_updates(
+                        data
+                    ),
+                )
             )
 
         return self.calendar_service.delete_event(
@@ -182,6 +188,22 @@ class GoogleCalendarToolService:
                 data
             ),
         )
+
+    @staticmethod
+    def _normalize_event_result(
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(result)
+
+        event_id = (
+            normalized.get("event_id")
+            or normalized.get("id")
+        )
+
+        if event_id is not None:
+            normalized["event_id"] = str(event_id)
+
+        return normalized
 
     @staticmethod
     def _require_string(
