@@ -946,6 +946,19 @@ Return exactly:
             "bcc": None,
             "subject": None,
             "body": None,
+            "calendar_action": None,
+            "calendar_id": None,
+            "event_id": None,
+            "event": None,
+            "time_min": None,
+            "time_max": None,
+            "query": None,
+            "max_results": None,
+            "page_token": None,
+            "single_events": None,
+            "order_by": None,
+            "show_deleted": None,
+            "send_updates": None,
             "requires_tool": False,
         }
 
@@ -1003,6 +1016,7 @@ Return exactly:
             "task",
             "action",
             "email",
+            "calendar",
         }
 
         valid_emotions = {
