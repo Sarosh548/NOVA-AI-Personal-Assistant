@@ -856,6 +856,58 @@ class NotificationService:
             destination_service
         )
 
+    def send_email(
+        self,
+        *,
+        user_id: str,
+        to: str | list[str] | tuple[str, ...] | None = None,
+        subject: str,
+        body: str,
+        cc: str | list[str] | tuple[str, ...] | None = None,
+        bcc: str | list[str] | tuple[str, ...] | None = None,
+    ) -> bool:
+        """Send an outbound email through the registered email channel."""
+        resolved_to = to
+
+        if resolved_to is None and self.destination_service is not None:
+            destination_record = self.destination_service.get_default_destination(
+                user_id=user_id,
+                channel="email",
+            )
+
+            if destination_record is not None:
+                resolved_to = destination_record.get("destination")
+
+        if resolved_to is None:
+            logger.warning(
+                "No email destination is configured for user=%s.",
+                user_id,
+            )
+            return False
+
+        delivery_channel = self.channel_registry.get("email")
+
+        if delivery_channel is None:
+            logger.warning("Email notification channel is not configured.")
+            return False
+
+        sender = getattr(delivery_channel, "send_email", None)
+
+        if not callable(sender):
+            logger.error(
+                "Registered email channel does not support direct email delivery."
+            )
+            return False
+
+        return bool(sender(
+            user_id=user_id,
+            to=resolved_to,
+            subject=subject,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+        ))
+
     def notify(
         self,
         *,
