@@ -13,6 +13,7 @@ from fastapi import (
 
 from api.dependencies import CurrentUserId
 from api.schemas.permission import (
+    PermissionAction,
     PermissionResponse,
     PermissionSetRequest,
 )
@@ -35,6 +36,11 @@ def _permission_response(
     return PermissionResponse.model_validate(
         permission
     )
+
+
+_VALID_PERMISSION_ACTIONS = frozenset(
+    PermissionAction.__args__
+)
 
 
 @router.get(
@@ -80,6 +86,15 @@ def set_permission(
         max_length=50,
     ),
 ) -> PermissionResponse:
+    normalized_tool = tool.strip().lower()
+    normalized_action = action.strip().lower()
+
+    if normalized_action not in _VALID_PERMISSION_ACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unknown permission action.",
+        )
+
     try:
         permission_service.set_permission(
             user_id=current_user_id,
@@ -93,9 +108,6 @@ def set_permission(
                 user_id=current_user_id,
             )
         )
-
-        normalized_tool = tool.strip().lower()
-        normalized_action = action.strip().lower()
 
         for permission in permissions:
             if (
