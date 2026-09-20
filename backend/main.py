@@ -210,6 +210,15 @@ async def startup_event():
         )
     )
 
+    # The agent graph and its confirmation executor share the same
+    # ToolRouter instance. Inject the runtime-configured provider so
+    # confirmed email actions use the exact startup configuration.
+    from agent import graph as agent_graph_module
+
+    agent_graph_module.tool_router.notification_service = (
+        notification_service
+    )
+
     reminder_scheduler.notification_service = (
         notification_service
     )

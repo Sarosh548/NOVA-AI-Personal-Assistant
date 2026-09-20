@@ -100,6 +100,7 @@ class PermissionService:
     }
 
     STATE_CHANGING_ACTIONS = {
+        "send",
         "create",
         "update",
         "start",

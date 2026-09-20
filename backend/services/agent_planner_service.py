@@ -190,6 +190,15 @@ For reminder:
     preserve task when the reminder text is explicitly changed
     and scheduled_at when the reminder time is changed.
 
+For email:
+- send:
+    data must contain action="send", subject, and body.
+    Include "to" when the user explicitly provides recipients.
+    Include "cc" and "bcc" only when explicitly requested.
+    When no recipient is provided, leave "to" empty so the
+    email tool can resolve the user's enabled default destination.
+
+
 Return exactly this structure:
 
 {{

@@ -1,5 +1,9 @@
 import pytest
 
+from services.notification_service import (
+    NotificationService,
+)
+
 from services.reminder_scheduler import (
     ReminderScheduler,
 )
@@ -221,6 +225,24 @@ class FakeNotificationService:
 
         return self.result
 
+class FakeEmailNotificationService:
+    def __init__(
+        self,
+        result=True,
+    ):
+        self.result = result
+        self.calls = []
+
+    def send_email(
+        self,
+        **kwargs,
+    ):
+        self.calls.append(
+            kwargs
+        )
+
+        return self.result
+
 
 def test_tool_router_records_successful_task_change():
     activity_service = (
@@ -383,6 +405,81 @@ def test_tool_router_records_successful_reminder_change():
         event["metadata"]["entity_id"]
         == 601
     )
+
+
+def test_tool_router_records_successful_email_send_without_body_metadata():
+    activity_service = (
+        FakeActivityEventService()
+    )
+
+    notification_service = (
+        FakeEmailNotificationService()
+    )
+
+    router = ToolRouter(
+        notification_service=notification_service,
+        activity_event_service=activity_service,
+    )
+
+    result = router.execute(
+        intent="email",
+        user_id="test-user",
+        data={
+            "action": "send",
+            "to": [
+                "recipient@example.com",
+                "second@example.com",
+            ],
+            "cc": ["copy@example.com"],
+            "bcc": ["hidden@example.com"],
+            "subject": "Interview update",
+            "body": "The assignment is complete.",
+        },
+    )
+
+    assert result["success"] is True
+    assert len(
+        activity_service.events
+    ) == 1
+
+    event = activity_service.events[0]
+
+    assert (
+        event["event_type"]
+        == "email_send"
+    )
+
+    assert (
+        event["status"]
+        == "success"
+    )
+
+    assert (
+        event["title"]
+        == "Email sent: Interview update"
+    )
+
+    assert (
+        event["metadata"]["tool"]
+        == "email"
+    )
+
+    assert (
+        event["metadata"]["action"]
+        == "send"
+    )
+
+    assert (
+        event["metadata"]["subject"]
+        == "Interview update"
+    )
+
+    assert (
+        event["metadata"]["recipient_count"]
+        == 4
+    )
+
+    assert "body" not in event["metadata"]
 
 
 def test_tool_router_does_not_record_read_only_list():

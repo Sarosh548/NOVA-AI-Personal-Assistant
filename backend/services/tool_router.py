@@ -4,6 +4,7 @@ from typing import Any
 from services.activity_event_service import (
     ActivityEventService,
 )
+from services.notification_service import NotificationService
 from services.reminder_service import ReminderService
 from services.task_service import TaskService
 from services.tool_registry import ToolRegistry
@@ -42,6 +43,7 @@ class ToolRouter:
         "complete",
         "cancel",
         "delete",
+        "send",
     }
 
     def __init__(
@@ -52,6 +54,7 @@ class ToolRouter:
         activity_event_service: (
             ActivityEventService | None
         ) = None,
+        notification_service: NotificationService | None = None,
     ):
         self.reminder_service = (
             reminder_service
@@ -70,6 +73,8 @@ class ToolRouter:
             if activity_event_service is not None
             else ActivityEventService()
         )
+
+        self.notification_service = notification_service
 
         self._register_default_tools()
 
@@ -117,6 +122,17 @@ class ToolRouter:
                     "update",
                 ),
                 handler=self._execute_task,
+            )
+
+        if not self.registry.has("email"):
+            self.registry.register(
+                name="email",
+                description=(
+                    "Send outbound email messages to recipients "
+                    "using NOVA's configured email provider."
+                ),
+                actions=("send",),
+                handler=self._execute_email,
             )
 
     # =====================================================
@@ -191,6 +207,7 @@ class ToolRouter:
         if normalized_tool not in {
             "task",
             "reminder",
+            "email",
         }:
             return
 
@@ -199,7 +216,11 @@ class ToolRouter:
             or payload.get(
                 "task_action"
                 if normalized_tool == "task"
-                else "reminder_action"
+                else (
+                    "reminder_action"
+                    if normalized_tool == "reminder"
+                    else "action"
+                )
             )
         )
 
@@ -250,13 +271,19 @@ class ToolRouter:
                 "task_id"
             )
             if normalized_tool == "task"
-            else result_data.get(
-                "reminder_id"
+            else (
+                result_data.get(
+                    "reminder_id"
+                )
+                if normalized_tool == "reminder"
+                else None
             )
         )
 
-        title = result_data.get(
-            "title"
+        title = (
+            result_data.get("subject")
+            if normalized_tool == "email"
+            else result_data.get("title")
         )
 
         event_title = (
@@ -302,6 +329,55 @@ class ToolRouter:
                 str(returned_status)
             )
 
+        if normalized_tool == "email":
+            email_subject = result_data.get(
+                "subject"
+            )
+
+            if email_subject is not None:
+                metadata["subject"] = str(
+                    email_subject
+                )[:200]
+
+            recipient_count = 0
+
+            for recipient_field in (
+                "to",
+                "cc",
+                "bcc",
+            ):
+                recipients = result_data.get(
+                    recipient_field
+                )
+
+                if isinstance(
+                    recipients,
+                    str,
+                ):
+                    recipient_count += len(
+                        [
+                            item
+                            for item in recipients.split(",")
+                            if item.strip()
+                        ]
+                    )
+                elif isinstance(
+                    recipients,
+                    (list, tuple),
+                ):
+                    recipient_count += len(
+                        [
+                            item
+                            for item in recipients
+                            if str(item).strip()
+                        ]
+                    )
+
+            if recipient_count > 0:
+                metadata["recipient_count"] = (
+                    recipient_count
+                )
+
         try:
             self.activity_event_service.record_event(
                 user_id=user_id,
@@ -327,11 +403,11 @@ class ToolRouter:
         entity_id: Any,
         title: Any,
     ) -> str:
-        noun = (
-            "Task"
-            if tool == "task"
-            else "Reminder"
-        )
+        noun = {
+            "task": "Task",
+            "reminder": "Reminder",
+            "email": "Email",
+        }.get(tool, tool.capitalize())
 
         verb_map = {
             "create": "created",
@@ -340,6 +416,7 @@ class ToolRouter:
             "complete": "completed",
             "cancel": "cancelled",
             "delete": "deleted",
+            "send": "sent",
         }
 
         verb = verb_map.get(
@@ -376,11 +453,11 @@ class ToolRouter:
         title: Any,
         error: Any,
     ) -> str:
-        noun = (
-            "task"
-            if tool == "task"
-            else "reminder"
-        )
+        noun = {
+            "task": "task",
+            "reminder": "reminder",
+            "email": "email",
+        }.get(tool, tool)
 
         if not success:
             error_text = (
@@ -411,6 +488,119 @@ class ToolRouter:
             f"'{action}' succeeded for "
             f"{identity}."
         )
+
+    # =====================================================
+    # EMAIL
+    # =====================================================
+
+    def _execute_email(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.notification_service is None:
+            return {
+                "success": False,
+                "tool": "email",
+                "action": "send",
+                "result": None,
+                "error": "Email delivery is not configured.",
+            }
+
+        action = str(
+            data.get("action")
+            or "send"
+        ).strip().lower()
+
+        if action != "send":
+            return {
+                "success": False,
+                "tool": "email",
+                "action": action,
+                "result": None,
+                "error": "Unsupported email action.",
+            }
+
+        subject = str(
+            data.get("subject")
+            or ""
+        ).strip()
+
+        body = str(
+            data.get("body")
+            or ""
+        ).strip()
+
+        to = data.get("to")
+        cc = data.get("cc")
+        bcc = data.get("bcc")
+
+        if not subject:
+            return {
+                "success": False,
+                "tool": "email",
+                "action": "send",
+                "result": None,
+                "error": "Email subject is missing.",
+            }
+
+        if not body:
+            return {
+                "success": False,
+                "tool": "email",
+                "action": "send",
+                "result": None,
+                "error": "Email body is missing.",
+            }
+
+        try:
+            success = self.notification_service.send_email(
+                user_id=user_id,
+                to=to,
+                subject=subject,
+                body=body,
+                cc=cc,
+                bcc=bcc,
+            )
+        except (ValueError, TypeError) as exc:
+            return {
+                "success": False,
+                "tool": "email",
+                "action": "send",
+                "result": None,
+                "error": str(exc),
+            }
+        except Exception:
+            return {
+                "success": False,
+                "tool": "email",
+                "action": "send",
+                "result": None,
+                "error": "Email delivery failed.",
+            }
+
+        if not success:
+            return {
+                "success": False,
+                "tool": "email",
+                "action": "send",
+                "result": None,
+                "error": "Email delivery failed.",
+            }
+
+        return {
+            "success": True,
+            "tool": "email",
+            "action": "send",
+            "result": {
+                "status": "sent",
+                "to": to,
+                "cc": cc,
+                "bcc": bcc,
+                "subject": subject[:200],
+            },
+            "error": None,
+        }
 
     # =====================================================
     # REMINDER
