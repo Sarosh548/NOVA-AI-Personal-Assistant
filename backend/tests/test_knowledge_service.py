@@ -321,6 +321,7 @@ def test_delete_document_is_user_scoped(
         document=FakeDocument(
             user_id="user-001"
         ),
+        visible_user_id="user-002",
     )
 
     monkeypatch.setattr(
