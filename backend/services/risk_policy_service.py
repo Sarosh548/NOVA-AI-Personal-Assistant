@@ -237,10 +237,16 @@ class RiskPolicyService:
             )
 
         if (
-            normalized_tool
-            in self.COMMUNICATION_TOOLS
-            and data_keys
-            & self.EXTERNAL_TARGET_KEYS
+            (
+                normalized_tool
+                in self.COMMUNICATION_TOOLS
+                and data_keys
+                & self.EXTERNAL_TARGET_KEYS
+            )
+            or (
+                normalized_tool == "calendar"
+                and "attendees" in data_keys
+            )
         ):
             flags.append(
                 "external_communication"
