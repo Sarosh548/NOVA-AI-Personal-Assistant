@@ -60,9 +60,11 @@ class FakeSession:
         document=None,
         chunk_count=1,
         duplicate=None,
+        visible_user_id=None,
     ):
         self.engine = engine
         self.document = document
+        self.visible_user_id = visible_user_id
         self.chunk_count = chunk_count
         self.duplicate = duplicate
         self.added = []
@@ -91,23 +93,13 @@ class FakeSession:
         if "content_hash" in text:
             return self.duplicate
 
-        params = statement.compile().params
-        user_id = next(
-            (
-                value
-                for value in params.values()
-                if value in {
-                    "user-001",
-                    "user-002",
-                }
-            ),
-            None,
-        )
+        if self.document is None:
+            return None
 
         if (
-            user_id is not None
-            and self.document is not None
-            and self.document.user_id != user_id
+            self.visible_user_id is not None
+            and self.document.user_id
+            != self.visible_user_id
         ):
             return None
 
@@ -304,6 +296,7 @@ def test_get_document_is_user_scoped(
         document=FakeDocument(
             user_id="user-001"
         ),
+        visible_user_id="user-002",
     )
 
     monkeypatch.setattr(
@@ -355,6 +348,7 @@ def test_delete_document_allows_owned_document(
     session = FakeSession(
         None,
         document=document,
+        visible_user_id="user-001",
     )
 
     monkeypatch.setattr(
