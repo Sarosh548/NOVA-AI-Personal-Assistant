@@ -394,6 +394,22 @@ reminder_reference = "review my LangGraph notes"
 reminder_id = null
 scheduled_at = the correct ISO datetime
 
+Email examples:
+
+User:
+"Send an email to hr@example.com with subject Interview Update and tell them I completed the assignment."
+
+Return:
+
+intent = "email"
+email_action = "send"
+to = ["hr@example.com"]
+cc = null
+bcc = null
+subject = "Interview Update"
+body = "I completed the assignment."
+requires_tool = true
+
 Task examples:
 
 User:
@@ -500,6 +516,12 @@ Return exactly:
   "tone": "friendly|supportive|playful|romantic|professional|neutral",
   "visual": "none|smile|laugh|hearts|sad|concerned|celebration|thinking|listening|reminder",
   "action": "action description or null",
+  "email_action": "send or null",
+  "to": "recipient or null",
+  "cc": "CC recipient or null",
+  "bcc": "BCC recipient or null",
+  "subject": "email subject or null",
+  "body": "email body or null",
   "requires_tool": true
 }}
 """
