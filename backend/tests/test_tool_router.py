@@ -38,6 +38,16 @@ def test_tool_router_registers_default_tools():
                 "update",
             ],
         },
+        {
+            "name": "email",
+            "description": (
+                "Send outbound email messages to recipients "
+                "using NOVA's configured email provider."
+            ),
+            "actions": [
+                "send",
+            ],
+        },
     ]
 
 
