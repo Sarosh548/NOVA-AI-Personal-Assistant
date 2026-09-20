@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date as Date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -29,7 +29,7 @@ class CalendarConnectionStatusResponse(BaseModel):
 class CalendarEventBoundaryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    date: date | None = None
+    date: Date | None = None
     dateTime: datetime | None = None
     timeZone: str | None = None
 
