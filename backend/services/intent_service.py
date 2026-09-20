@@ -91,6 +91,7 @@ Choose exactly one intent:
                  cancel, delete, or update a task
 - "action"     = asking NOVA to perform an external action
 - "email"      = asking NOVA to send an email
+- "calendar"   = asking NOVA to view, create, update, or delete a Google Calendar event
 
 Choose exactly one emotion:
 
@@ -228,6 +229,118 @@ Extract:
 
 - body:
     email body, or null
+
+Calendar rules:
+
+- calendar_action:
+    "list", "get", "create", "update", "delete", or null
+
+- calendar_id:
+    explicit Google Calendar ID, or null
+
+- event_id:
+    explicit Google Calendar event ID, or null
+
+- event:
+    for create, an object containing the requested event fields.
+    Create events must include start and end objects using either
+    dateTime or date.
+    Include summary, description, or location only when explicitly
+    provided by the user.
+    Include attendees only when the user explicitly asks to invite
+    participants.
+    For update, include only fields the user explicitly wants changed.
+    When changing event time, include both start and end.
+    For list/get/delete, normally null.
+
+- time_min:
+    ISO 8601 filter for listing events, or null
+
+- time_max:
+    ISO 8601 filter for listing events, or null
+
+- query:
+    Calendar search query, or null
+
+- max_results:
+    integer from 1 to 2500 when requested, otherwise null
+
+- page_token:
+    Calendar pagination token, or null
+
+- single_events:
+    true or false when explicitly requested, otherwise null
+
+- order_by:
+    "startTime" or "updated" when explicitly requested, otherwise null
+
+- show_deleted:
+    true or false when explicitly requested, otherwise null
+
+- send_updates:
+    "all", "externalOnly", or "none" when explicitly requested,
+    otherwise null
+
+Calendar examples:
+
+User:
+"What's on my calendar tomorrow?"
+
+Return:
+intent = "calendar"
+calendar_action = "list"
+time_min/time_max = tomorrow start/end in Asia/Karachi
+event = null
+requires_tool = true
+
+User:
+"Schedule a team meeting tomorrow at 3 PM for one hour."
+
+Return:
+intent = "calendar"
+calendar_action = "create"
+event = {
+  "summary": "Team meeting",
+  "start": {"dateTime": "calculated ISO datetime with timezone"},
+  "end": {"dateTime": "calculated ISO datetime with timezone"}
+}
+requires_tool = true
+
+User:
+"Create a client meeting tomorrow at 4 PM and invite client@example.com."
+
+Return a create event with summary, start, end, and:
+attendees = [{"email": "client@example.com"}]
+
+User:
+"Move event abc123 to tomorrow at 6 PM."
+
+Return:
+intent = "calendar"
+calendar_action = "update"
+event_id = "abc123"
+event = {
+  "start": {"dateTime": "calculated ISO datetime with timezone"},
+  "end": {"dateTime": "calculated ISO datetime with timezone"}
+}
+
+User:
+"Delete calendar event abc123."
+
+Return:
+intent = "calendar"
+calendar_action = "delete"
+event_id = "abc123"
+event = null
+
+Calendar safety rules:
+- Never invent an event ID or attendee email address.
+- Never invent a location or description.
+- For timed event creation without a duration, use one hour.
+- Use the user's timezone Asia/Karachi.
+- For today/tomorrow/date-range listing, populate time_min/time_max.
+- Do not populate attendees unless explicitly supplied.
+- Keep Calendar action in calendar_action.
 
 - requires_tool:
     true for reminders, tasks, or external actions,
