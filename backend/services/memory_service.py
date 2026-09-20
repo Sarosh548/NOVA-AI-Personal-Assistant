@@ -560,6 +560,126 @@ class MemoryService:
     # Memory retrieval
     # =========================================================
 
+    def list_memories(
+        self,
+        user_id: str,
+        category: str | None = None,
+        importance: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        Return user-owned memories for management APIs.
+
+        Results are scoped by user_id and optionally filtered by
+        category and importance.
+        """
+
+        if limit < 1:
+            raise ValueError(
+                "limit must be greater than 0"
+            )
+
+        valid_categories = {
+            "identity",
+            "goal",
+            "preference",
+            "project",
+            "interest",
+            "context",
+            "personal",
+        }
+
+        if (
+            category is not None
+            and category not in valid_categories
+        ):
+            raise ValueError(
+                "Invalid memory category."
+            )
+
+        valid_importance = {
+            "high",
+            "medium",
+            "low",
+        }
+
+        if (
+            importance is not None
+            and importance not in valid_importance
+        ):
+            raise ValueError(
+                "Invalid memory importance."
+            )
+
+        with Session(engine) as session:
+            filters = [
+                Memory.user_id == user_id,
+            ]
+
+            if category is not None:
+                filters.append(
+                    Memory.category == category
+                )
+
+            if importance is not None:
+                filters.append(
+                    Memory.importance == importance
+                )
+
+            statement = (
+                select(Memory)
+                .where(*filters)
+                .order_by(
+                    Memory.created_at.desc()
+                )
+                .limit(limit)
+            )
+
+            memories = session.scalars(
+                statement
+            ).all()
+
+            return [
+                {
+                    "id": memory.id,
+                    "memory": memory.memory_text,
+                    "category": memory.category,
+                    "importance": memory.importance,
+                    "created_at": memory.created_at,
+                    "updated_at": memory.updated_at,
+                }
+                for memory in memories
+            ]
+
+    def get_memory(
+        self,
+        user_id: str,
+        memory_id: int,
+    ) -> dict | None:
+        """
+        Return one memory only when it belongs to the user.
+        """
+
+        with Session(engine) as session:
+            memory = session.scalar(
+                select(Memory).where(
+                    Memory.id == memory_id,
+                    Memory.user_id == user_id,
+                )
+            )
+
+            if memory is None:
+                return None
+
+            return {
+                "id": memory.id,
+                "memory": memory.memory_text,
+                "category": memory.category,
+                "importance": memory.importance,
+                "created_at": memory.created_at,
+                "updated_at": memory.updated_at,
+            }
+
     def get_memories(
         self,
         user_id: str,
