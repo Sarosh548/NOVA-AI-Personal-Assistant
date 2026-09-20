@@ -87,6 +87,9 @@ app.include_router(confirmations_router)
 app.include_router(
     notification_destinations_router
 )
+app.include_router(
+    permissions_router
+)
 
 llm_service = LLMService()
 
