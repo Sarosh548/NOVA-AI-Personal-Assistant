@@ -95,7 +95,8 @@ def test_truly_unknown_action_is_denied():
 
     decision = service.check(
         user_id="user-001",
-        tool="em        action="unknown-action",
+        tool="email",
+        action="unknown-action",
     )
 
     assert decision.allowed is False
