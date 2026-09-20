@@ -11,8 +11,10 @@ class Settings(BaseSettings):
     """
     Application configuration loaded from environment variables.
 
-    Sensitive values such as JWT signing secrets and SMTP
-    credentials are intentionally never given insecure code defaults.
+    Sensitive values such as JWT signing secrets, SMTP
+    credentials, Google OAuth credentials, and external-token
+    encryption keys are intentionally never given insecure code
+    defaults.
     """
 
     auth_jwt_secret_key: str = Field(
@@ -69,6 +71,18 @@ class Settings(BaseSettings):
         default=10,
         gt=0,
         le=60,
+    )
+
+    integration_token_encryption_key: str | None = None
+
+    calendar_google_client_id: str | None = None
+
+    calendar_google_client_secret: str | None = None
+
+    calendar_google_redirect_uri: str | None = None
+
+    calendar_google_scopes: str = (
+        "https://www.googleapis.com/auth/calendar.events"
     )
 
     model_config = SettingsConfigDict(
