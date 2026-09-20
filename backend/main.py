@@ -22,6 +22,9 @@ from api.dependencies import (
 from api.notification_destinations import (
     router as notification_destinations_router,
 )
+from api.permissions import (
+    router as permissions_router,
+)
 from api.reminders import (
     router as reminders_router,
 )
