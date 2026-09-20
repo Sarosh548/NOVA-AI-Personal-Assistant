@@ -535,6 +535,8 @@ class PlannerService:
             action = understanding.get("reminder_action")
         elif tool == "email":
             action = understanding.get("email_action") or understanding.get("action")
+        elif tool == "calendar":
+            action = understanding.get("calendar_action")
         else:
             action = understanding.get("action")
 
@@ -569,3 +571,6 @@ class PlannerService:
 
         if tool == "reminder":
             plan_data["reminder_action"] = action
+
+        if tool == "calendar":
+            plan_data["calendar_action"] = action

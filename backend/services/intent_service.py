@@ -91,6 +91,7 @@ Choose exactly one intent:
                  cancel, delete, or update a task
 - "action"     = asking NOVA to perform an external action
 - "email"      = asking NOVA to send an email
+- "calendar"   = asking NOVA to view, create, update, or delete a Google Calendar event
 
 Choose exactly one emotion:
 
@@ -228,6 +229,118 @@ Extract:
 
 - body:
     email body, or null
+
+Calendar rules:
+
+- calendar_action:
+    "list", "get", "create", "update", "delete", or null
+
+- calendar_id:
+    explicit Google Calendar ID, or null
+
+- event_id:
+    explicit Google Calendar event ID, or null
+
+- event:
+    for create, an object containing the requested event fields.
+    Create events must include start and end objects using either
+    dateTime or date.
+    Include summary, description, or location only when explicitly
+    provided by the user.
+    Include attendees only when the user explicitly asks to invite
+    participants.
+    For update, include only fields the user explicitly wants changed.
+    When changing event time, include both start and end.
+    For list/get/delete, normally null.
+
+- time_min:
+    ISO 8601 filter for listing events, or null
+
+- time_max:
+    ISO 8601 filter for listing events, or null
+
+- query:
+    Calendar search query, or null
+
+- max_results:
+    integer from 1 to 2500 when requested, otherwise null
+
+- page_token:
+    Calendar pagination token, or null
+
+- single_events:
+    true or false when explicitly requested, otherwise null
+
+- order_by:
+    "startTime" or "updated" when explicitly requested, otherwise null
+
+- show_deleted:
+    true or false when explicitly requested, otherwise null
+
+- send_updates:
+    "all", "externalOnly", or "none" when explicitly requested,
+    otherwise null
+
+Calendar examples:
+
+User:
+"What's on my calendar tomorrow?"
+
+Return:
+intent = "calendar"
+calendar_action = "list"
+time_min/time_max = tomorrow start/end in Asia/Karachi
+event = null
+requires_tool = true
+
+User:
+"Schedule a team meeting tomorrow at 3 PM for one hour."
+
+Return:
+intent = "calendar"
+calendar_action = "create"
+event = {
+  "summary": "Team meeting",
+  "start": {"dateTime": "calculated ISO datetime with timezone"},
+  "end": {"dateTime": "calculated ISO datetime with timezone"}
+}
+requires_tool = true
+
+User:
+"Create a client meeting tomorrow at 4 PM and invite client@example.com."
+
+Return a create event with summary, start, end, and:
+attendees = [{"email": "client@example.com"}]
+
+User:
+"Move event abc123 to tomorrow at 6 PM."
+
+Return:
+intent = "calendar"
+calendar_action = "update"
+event_id = "abc123"
+event = {
+  "start": {"dateTime": "calculated ISO datetime with timezone"},
+  "end": {"dateTime": "calculated ISO datetime with timezone"}
+}
+
+User:
+"Delete calendar event abc123."
+
+Return:
+intent = "calendar"
+calendar_action = "delete"
+event_id = "abc123"
+event = null
+
+Calendar safety rules:
+- Never invent an event ID or attendee email address.
+- Never invent a location or description.
+- For timed event creation without a duration, use one hour.
+- Use the user's timezone Asia/Karachi.
+- For today/tomorrow/date-range listing, populate time_min/time_max.
+- Do not populate attendees unless explicitly supplied.
+- Keep Calendar action in calendar_action.
 
 - requires_tool:
     true for reminders, tasks, or external actions,
@@ -833,6 +946,19 @@ Return exactly:
             "bcc": None,
             "subject": None,
             "body": None,
+            "calendar_action": None,
+            "calendar_id": None,
+            "event_id": None,
+            "event": None,
+            "time_min": None,
+            "time_max": None,
+            "query": None,
+            "max_results": None,
+            "page_token": None,
+            "single_events": None,
+            "order_by": None,
+            "show_deleted": None,
+            "send_updates": None,
             "requires_tool": False,
         }
 
@@ -890,6 +1016,7 @@ Return exactly:
             "task",
             "action",
             "email",
+            "calendar",
         }
 
         valid_emotions = {
@@ -1048,11 +1175,106 @@ Return exactly:
         if time is not None:
             time = str(time).strip() or None
 
+        calendar_action = result.get("calendar_action")
+        calendar_id = result.get("calendar_id")
+        event_id = result.get("event_id")
+        event = result.get("event")
+        time_min = result.get("time_min")
+        time_max = result.get("time_max")
+        query = result.get("query")
+        max_results = result.get("max_results")
+        page_token = result.get("page_token")
+        single_events = result.get("single_events")
+        order_by = result.get("order_by")
+        show_deleted = result.get("show_deleted")
+        send_updates = result.get("send_updates")
+
         if scheduled_at is not None:
             scheduled_at = (
                 str(scheduled_at).strip()
                 or None
             )
+
+        valid_calendar_actions = {
+            "list",
+            "get",
+            "create",
+            "update",
+            "delete",
+        }
+
+        if calendar_action not in valid_calendar_actions:
+            calendar_action = None
+
+        for field_name in (
+            "calendar_id",
+            "event_id",
+            "time_min",
+            "time_max",
+            "query",
+            "page_token",
+        ):
+            value = locals()[field_name]
+
+            if value is not None:
+                value = str(value).strip() or None
+                if field_name == "calendar_id":
+                    calendar_id = value
+                elif field_name == "event_id":
+                    event_id = value
+                elif field_name == "time_min":
+                    time_min = value
+                elif field_name == "time_max":
+                    time_max = value
+                elif field_name == "query":
+                    query = value
+                elif field_name == "page_token":
+                    page_token = value
+
+        if isinstance(max_results, bool):
+            max_results = None
+        elif max_results is not None:
+            try:
+                max_results = int(max_results)
+            except (TypeError, ValueError):
+                max_results = None
+
+            if (
+                max_results is not None
+                and not 1 <= max_results <= 2500
+            ):
+                max_results = None
+
+        if single_events is not None and not isinstance(
+            single_events,
+            bool,
+        ):
+            single_events = None
+
+        if show_deleted is not None and not isinstance(
+            show_deleted,
+            bool,
+        ):
+            show_deleted = None
+
+        if order_by not in {
+            "startTime",
+            "updated",
+        }:
+            order_by = None
+
+        if send_updates not in {
+            "all",
+            "externalOnly",
+            "none",
+        }:
+            send_updates = None
+
+        if event is not None and not isinstance(
+            event,
+            dict,
+        ):
+            event = None
 
         if action is not None:
             action = str(action).strip() or None
@@ -1115,6 +1337,21 @@ Return exactly:
             subject = None
             body = None
 
+        if intent != "calendar":
+            calendar_action = None
+            calendar_id = None
+            event_id = None
+            event = None
+            time_min = None
+            time_max = None
+            query = None
+            max_results = None
+            page_token = None
+            single_events = None
+            order_by = None
+            show_deleted = None
+            send_updates = None
+
         # -------------------------------------------------
         # For reminder creation, default action is create.
         # -------------------------------------------------
@@ -1130,6 +1367,7 @@ Return exactly:
             "task",
             "action",
             "email",
+            "calendar",
         }
 
         return {
@@ -1154,5 +1392,18 @@ Return exactly:
             "bcc": bcc,
             "subject": subject,
             "body": body,
+            "calendar_action": calendar_action,
+            "calendar_id": calendar_id,
+            "event_id": event_id,
+            "event": event,
+            "time_min": time_min,
+            "time_max": time_max,
+            "query": query,
+            "max_results": max_results,
+            "page_token": page_token,
+            "single_events": single_events,
+            "order_by": order_by,
+            "show_deleted": show_deleted,
+            "send_updates": send_updates,
             "requires_tool": requires_tool,
         }
