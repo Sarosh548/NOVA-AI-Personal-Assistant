@@ -271,14 +271,7 @@ def test_set_permission_rejects_unknown_action(
     assert response.json()["detail"] == (
         "Unknown permission action."
     )
-    assert service.set_calls == [
-        {
-            "user_id": "user-001",
-            "tool": "task",
-            "action": "not-an-action",
-            "mode": "allow",
-        }
-    ]
+    assert service.set_calls == []
 
 
 def test_set_permission_rejects_invalid_mode(
