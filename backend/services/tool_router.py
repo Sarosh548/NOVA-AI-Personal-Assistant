@@ -104,17 +104,6 @@ class ToolRouter:
                 handler=self._execute_reminder,
             )
 
-        if not self.registry.has("email"):
-            self.registry.register(
-                name="email",
-                description=(
-                    "Send outbound email messages to recipients "
-                    "using NOVA's configured email provider."
-                ),
-                actions=("send",),
-                handler=self._execute_email,
-            )
-
         if not self.registry.has("task"):
             self.registry.register(
                 name="task",
@@ -135,6 +124,18 @@ class ToolRouter:
             )
 
     # =====================================================
+
+        if not self.registry.has("email"):
+            self.registry.register(
+                name="email",
+                description=(
+                    "Send outbound email messages to recipients "
+                    "using NOVA's configured email provider."
+                ),
+                actions=("send",),
+                handler=self._execute_email,
+            )
+
     # TOOL DISCOVERY
     # =====================================================
 
