@@ -4,6 +4,9 @@ from typing import Any
 from services.activity_event_service import (
     ActivityEventService,
 )
+from services.google_calendar_tool_service import (
+    GoogleCalendarToolService,
+)
 from services.notification_service import NotificationService
 from services.reminder_service import ReminderService
 from services.task_service import TaskService
@@ -55,6 +58,9 @@ class ToolRouter:
             ActivityEventService | None
         ) = None,
         notification_service: NotificationService | None = None,
+        calendar_tool_service: (
+            GoogleCalendarToolService | None
+        ) = None,
     ):
         self.reminder_service = (
             reminder_service
@@ -75,6 +81,12 @@ class ToolRouter:
         )
 
         self.notification_service = notification_service
+
+        self.calendar_tool_service = (
+            calendar_tool_service
+            if calendar_tool_service is not None
+            else GoogleCalendarToolService()
+        )
 
         self._register_default_tools()
 
@@ -122,6 +134,23 @@ class ToolRouter:
                     "update",
                 ),
                 handler=self._execute_task,
+            )
+
+        if not self.registry.has("calendar"):
+            self.registry.register(
+                name="calendar",
+                description=(
+                    "List, retrieve, create, update, and delete "
+                    "Google Calendar events."
+                ),
+                actions=(
+                    "list",
+                    "get",
+                    "create",
+                    "update",
+                    "delete",
+                ),
+                handler=self._execute_calendar,
             )
 
         if not self.registry.has("email"):
@@ -208,6 +237,7 @@ class ToolRouter:
             "task",
             "reminder",
             "email",
+            "calendar",
         }:
             return
 
@@ -219,7 +249,11 @@ class ToolRouter:
                 else (
                     "reminder_action"
                     if normalized_tool == "reminder"
-                    else "action"
+                    else (
+                        "calendar_action"
+                        if normalized_tool == "calendar"
+                        else "action"
+                    )
                 )
             )
         )
@@ -276,14 +310,26 @@ class ToolRouter:
                     "reminder_id"
                 )
                 if normalized_tool == "reminder"
-                else None
+                else (
+                    result_data.get("event_id")
+                    or result_data.get("id")
+                    if normalized_tool == "calendar"
+                    else None
+                )
             )
         )
 
         title = (
             result_data.get("subject")
             if normalized_tool == "email"
-            else result_data.get("title")
+            else (
+                result_data.get("title")
+                if normalized_tool in {
+                    "task",
+                    "reminder",
+                }
+                else None
+            )
         )
 
         event_title = (
@@ -601,6 +647,24 @@ class ToolRouter:
             },
             "error": None,
         }
+
+    # =====================================================
+    # CALENDAR
+    # =====================================================
+
+    def _execute_calendar(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Execute a Google Calendar tool payload.
+        """
+
+        return self.calendar_tool_service.execute(
+            user_id=user_id,
+            data=data,
+        )
 
     # =====================================================
     # REMINDER
