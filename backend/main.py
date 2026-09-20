@@ -22,6 +22,9 @@ from api.dependencies import (
 from api.notification_destinations import (
     router as notification_destinations_router,
 )
+from api.permissions import (
+    router as permissions_router,
+)
 from api.reminders import (
     router as reminders_router,
 )
@@ -86,6 +89,9 @@ app.include_router(workflows_router)
 app.include_router(confirmations_router)
 app.include_router(
     notification_destinations_router
+)
+app.include_router(
+    permissions_router
 )
 
 llm_service = LLMService()
