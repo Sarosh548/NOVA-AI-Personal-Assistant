@@ -13,6 +13,8 @@ class FakeMemory:
     memory_text: str = "User prefers Python."
     category: str = "preference"
     importance: str = "medium"
+    created_at: object = None
+    updated_at: object = None
     embedding: list[float] | None = None
 
 
