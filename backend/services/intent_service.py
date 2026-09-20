@@ -90,6 +90,7 @@ Choose exactly one intent:
 - "task"       = asking NOVA to create, view, start, complete,
                  cancel, delete, or update a task
 - "action"     = asking NOVA to perform an external action
+- "email"      = asking NOVA to send an email
 
 Choose exactly one emotion:
 
@@ -209,6 +210,24 @@ Extract:
 
 - action:
     short external action description, or null
+
+- email_action:
+    "send" or null when not an email request
+
+- to:
+    explicit recipient email address or list, or null
+
+- cc:
+    explicit CC recipient email address or list, or null
+
+- bcc:
+    explicit BCC recipient email address or list, or null
+
+- subject:
+    email subject, or null
+
+- body:
+    email body, or null
 
 - requires_tool:
     true for reminders, tasks, or external actions,
@@ -466,7 +485,7 @@ For scheduled_at:
 Return exactly:
 
 {{
-  "intent": "chat|question|advice|planning|reminder|task|action",
+  "intent": "chat|question|advice|planning|reminder|task|action|email",
   "task": "task title, reminder content, or null",
   "task_reference": "existing task reference or null",
   "task_action": "create|list|start|complete|cancel|delete|update or null",
@@ -786,6 +805,12 @@ Return exactly:
             "tone": "friendly",
             "visual": "none",
             "action": None,
+            "email_action": None,
+            "to": None,
+            "cc": None,
+            "bcc": None,
+            "subject": None,
+            "body": None,
             "requires_tool": False,
         }
 
@@ -842,6 +867,7 @@ Return exactly:
             "reminder",
             "task",
             "action",
+            "email",
         }
 
         valid_emotions = {
@@ -944,6 +970,12 @@ Return exactly:
             "scheduled_at"
         )
         action = result.get("action")
+        email_action = result.get("email_action")
+        to = result.get("to")
+        cc = result.get("cc")
+        bcc = result.get("bcc")
+        subject = result.get("subject")
+        body = result.get("body")
 
         if task is not None:
             task = str(task).strip() or None
@@ -1003,6 +1035,26 @@ Return exactly:
         if action is not None:
             action = str(action).strip() or None
 
+        if email_action != "send":
+            email_action = None
+
+        def _normalize_recipients(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                values = [item.strip() for item in value.split(",") if item.strip()]
+            elif isinstance(value, list):
+                values = [str(item).strip() for item in value if str(item).strip()]
+            else:
+                values = []
+            return values or None
+
+        to = _normalize_recipients(to)
+        cc = _normalize_recipients(cc)
+        bcc = _normalize_recipients(bcc)
+        subject = str(subject).strip() or None if subject is not None else None
+        body = str(body).strip() or None if body is not None else None
+
         # -------------------------------------------------
         # Normalize reminder content into `task`.
         # -------------------------------------------------
@@ -1033,6 +1085,14 @@ Return exactly:
             reminder_reference = None
             reminder_id = None
 
+        if intent != "email":
+            email_action = None
+            to = None
+            cc = None
+            bcc = None
+            subject = None
+            body = None
+
         # -------------------------------------------------
         # For reminder creation, default action is create.
         # -------------------------------------------------
@@ -1047,6 +1107,7 @@ Return exactly:
             "reminder",
             "task",
             "action",
+            "email",
         }
 
         return {
@@ -1065,5 +1126,11 @@ Return exactly:
             "tone": tone,
             "visual": visual,
             "action": action,
+            "email_action": email_action,
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "subject": subject,
+            "body": body,
             "requires_tool": requires_tool,
         }
