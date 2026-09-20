@@ -12,6 +12,9 @@ from api.auth import router as auth_router
 from api.conversations import (
     router as conversations_router,
 )
+from api.calendar import (
+    router as calendar_router,
+)
 from api.dependencies import (
     CurrentUserId,
     authorize_user_scope,
@@ -75,6 +78,7 @@ app = FastAPI()
 
 app.include_router(auth_router)
 app.include_router(conversations_router)
+app.include_router(calendar_router)
 app.include_router(tasks_router)
 app.include_router(reminders_router)
 app.include_router(activity_router)
