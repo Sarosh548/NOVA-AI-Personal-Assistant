@@ -4,6 +4,9 @@ from typing import Any
 from services.activity_event_service import (
     ActivityEventService,
 )
+from services.google_calendar_tool_service import (
+    GoogleCalendarToolService,
+)
 from services.notification_service import NotificationService
 from services.reminder_service import ReminderService
 from services.task_service import TaskService
@@ -55,6 +58,9 @@ class ToolRouter:
             ActivityEventService | None
         ) = None,
         notification_service: NotificationService | None = None,
+        calendar_tool_service: (
+            GoogleCalendarToolService | None
+        ) = None,
     ):
         self.reminder_service = (
             reminder_service
@@ -75,6 +81,7 @@ class ToolRouter:
         )
 
         self.notification_service = notification_service
+        self.calendar_tool_service = calendar_tool_service
 
         self._register_default_tools()
 
@@ -133,6 +140,21 @@ class ToolRouter:
                 ),
                 actions=("send",),
                 handler=self._execute_email,
+            )
+
+        if (
+            self.calendar_tool_service is not None
+            and not self.registry.has("calendar")
+        ):
+            self.registry.register(
+                name="calendar",
+                description=(
+                    GoogleCalendarToolService.DESCRIPTION
+                ),
+                actions=(
+                    GoogleCalendarToolService.ACTIONS
+                ),
+                handler=self._execute_calendar,
             )
 
     # =====================================================
@@ -208,6 +230,7 @@ class ToolRouter:
             "task",
             "reminder",
             "email",
+            "calendar",
         }:
             return
 
@@ -219,7 +242,11 @@ class ToolRouter:
                 else (
                     "reminder_action"
                     if normalized_tool == "reminder"
-                    else "action"
+                    else (
+                        "calendar_action"
+                        if normalized_tool == "calendar"
+                        else "action"
+                    )
                 )
             )
         )
@@ -276,14 +303,24 @@ class ToolRouter:
                     "reminder_id"
                 )
                 if normalized_tool == "reminder"
-                else None
+                else (
+                    result_data.get(
+                        "event_id"
+                    )
+                    if normalized_tool == "calendar"
+                    else None
+                )
             )
         )
 
         title = (
             result_data.get("subject")
             if normalized_tool == "email"
-            else result_data.get("title")
+            else (
+                None
+                if normalized_tool == "calendar"
+                else result_data.get("title")
+            )
         )
 
         event_title = (
@@ -407,6 +444,7 @@ class ToolRouter:
             "task": "Task",
             "reminder": "Reminder",
             "email": "Email",
+            "calendar": "Calendar event",
         }.get(tool, tool.capitalize())
 
         verb_map = {
@@ -457,6 +495,7 @@ class ToolRouter:
             "task": "task",
             "reminder": "reminder",
             "email": "email",
+            "calendar": "calendar event",
         }.get(tool, tool)
 
         if not success:
@@ -487,6 +526,35 @@ class ToolRouter:
             f"{noun.capitalize()} action "
             f"'{action}' succeeded for "
             f"{identity}."
+        )
+
+    # =====================================================
+    # CALENDAR
+    # =====================================================
+
+    def _execute_calendar(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.calendar_tool_service is None:
+            return {
+                "success": False,
+                "tool": "calendar",
+                "action": str(
+                    data.get("calendar_action")
+                    or data.get("action")
+                    or ""
+                ).strip().lower() or None,
+                "result": None,
+                "error": (
+                    "Google Calendar tool is not configured."
+                ),
+            }
+
+        return self.calendar_tool_service.execute(
+            user_id=user_id,
+            data=data,
         )
 
     # =====================================================
