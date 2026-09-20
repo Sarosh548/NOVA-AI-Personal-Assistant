@@ -428,8 +428,11 @@ def test_calendar_create_invitation_requires_confirmation_and_approval_executes_
     )
     assert first_result["confirmation"]["tool"] == "calendar"
     assert first_result["confirmation"]["action"] == "create"
-    assert first_result["tool_result"]["success"] is False
     assert captured["tool_calls"] == []
+    assert (
+        first_result["permission"]["requires_confirmation"]
+        is True
+    )
     assert pending["data"] == (
         first_result["plan"]["data"]
     )
