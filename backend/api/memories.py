@@ -143,14 +143,14 @@ def search_memories(
     response_model=MemoryResponse,
 )
 def get_memory(
-    memory_id: int = Path(
-        ge=1,
-    ),
-    current_user_id: CurrentUserId = None,
+    current_user_id: CurrentUserId,
     memory_service: Annotated[
         MemoryService,
         Depends(get_memory_service),
-    ] = None,
+    ],
+    memory_id: int = Path(
+        ge=1,
+    ),
 ) -> MemoryResponse:
     memory = memory_service.get_memory(
         user_id=current_user_id,
@@ -173,15 +173,15 @@ def get_memory(
     response_model=MemoryResponse,
 )
 def update_memory(
-    memory_id: int = Path(
-        ge=1,
-    ),
-    request: MemoryUpdateRequest = None,
-    current_user_id: CurrentUserId = None,
+    request: MemoryUpdateRequest,
+    current_user_id: CurrentUserId,
     memory_service: Annotated[
         MemoryService,
         Depends(get_memory_service),
-    ] = None,
+    ],
+    memory_id: int = Path(
+        ge=1,
+    ),
 ) -> MemoryResponse:
     try:
         updated = memory_service.update_memory(
@@ -225,14 +225,14 @@ def update_memory(
     response_model=None,
 )
 def delete_memory(
-    memory_id: int = Path(
-        ge=1,
-    ),
-    current_user_id: CurrentUserId = None,
+    current_user_id: CurrentUserId,
     memory_service: Annotated[
         MemoryService,
         Depends(get_memory_service),
-    ] = None,
+    ],
+    memory_id: int = Path(
+        ge=1,
+    ),
 ) -> Response:
     try:
         deleted = memory_service.delete_memory(
