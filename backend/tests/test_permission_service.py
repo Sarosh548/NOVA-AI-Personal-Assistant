@@ -90,13 +90,12 @@ def test_delete_action_requires_confirmation():
     assert decision.risk_level == "medium"
 
 
-def test_unknown_action_is_denied():
+def test_truly_unknown_action_is_denied():
     service = PermissionService()
 
     decision = service.check(
         user_id="user-001",
-        tool="email",
-        action="send",
+        tool="em        action="unknown-action",
     )
 
     assert decision.allowed is False
