@@ -42,27 +42,33 @@ def build_runtime():
         bind=engine
     )
 
-    engine.connect().execute(
-        User.__table__.insert().values(
-            id="user-001",
-            display_name="Test User",
-            is_active=True,
-            created_at=datetime(
-                2026,
-                9,
-                20,
-                0,
-                0,
-            ),
-            updated_at=datetime(
-                2026,
-                9,
-                20,
-                0,
-                0,
-            ),
+    from sqlalchemy.orm import Session
+
+    with Session(
+        engine
+    ) as session:
+        session.add(
+            User(
+                id="user-001",
+                display_name="Test User",
+                is_active=True,
+                created_at=datetime(
+                    2026,
+                    9,
+                    20,
+                    0,
+                    0,
+                ),
+                updated_at=datetime(
+                    2026,
+                    9,
+                    20,
+                    0,
+                    0,
+                ),
+            )
         )
-    )
+        session.commit()
 
     return engine
 
