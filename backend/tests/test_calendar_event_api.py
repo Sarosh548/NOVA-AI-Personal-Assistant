@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -196,10 +196,7 @@ def test_list_calendar_events_uses_authenticated_user(
                 0,
                 0,
                 tzinfo=timezone(
-                    datetime.now(
-                        timezone.utc
-                    ).utcoffset()
-                    or timezone.utc
+                    timedelta(hours=5)
                 ),
             ),
             "time_max": datetime(
@@ -209,10 +206,7 @@ def test_list_calendar_events_uses_authenticated_user(
                 0,
                 0,
                 tzinfo=timezone(
-                    datetime.now(
-                        timezone.utc
-                    ).utcoffset()
-                    or timezone.utc
+                    timedelta(hours=5)
                 ),
             ),
             "query": "planning",
