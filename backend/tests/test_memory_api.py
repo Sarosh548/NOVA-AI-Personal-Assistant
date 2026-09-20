@@ -167,6 +167,13 @@ class FakeMemoryService:
         if self.raise_on_update is not None:
             raise self.raise_on_update
 
+        if self.update_result:
+            self.memory["memory"] = memory_text
+            if category is not None:
+                self.memory["category"] = category
+            if importance is not None:
+                self.memory["importance"] = importance
+
         return self.update_result
 
     def delete_memory(
@@ -329,9 +336,8 @@ def test_update_memory_uses_authenticated_user(
     assert response.status_code == 200
     assert response.json()["memory"] == (
         "User prefers Python for AI development."
-        if False
-        else "User prefers Python."
     )
+    assert response.json()["importance"] == "high"
     assert service.update_calls == [
         {
             "user_id": "user-001",
