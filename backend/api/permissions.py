@@ -135,6 +135,15 @@ def set_permission(
             mode=request.mode,
         )
 
+        _record_permission_audit(
+            user_id=current_user_id,
+            action="set",
+            status="success",
+            tool=normalized_tool,
+            permission_action=normalized_action,
+            mode=request.mode,
+        )
+
         permissions = (
             permission_service.list_permissions(
                 user_id=current_user_id,
@@ -148,16 +157,6 @@ def set_permission(
                 and permission["action"]
                 == normalized_action
             ):
-                _record_permission_audit(
-                    user_id=current_user_id,
-                    action="set",
-                    status="success",
-                    tool=normalized_tool,
-                    permission_action=normalized_action,
-                    mode=request.mode,
-                    resource_id=permission["id"],
-                )
-
                 return _permission_response(
                     permission
                 )
