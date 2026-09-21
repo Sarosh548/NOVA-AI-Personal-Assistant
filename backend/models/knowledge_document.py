@@ -1,9 +1,23 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.base import Base
+
+
+def _utc_now_naive() -> datetime:
+    """
+    Return current UTC time as a naive datetime for NOVA's
+    existing naive-UTC database timestamp columns.
+    """
+
+    return datetime.now(
+        timezone.utc
+    ).replace(
+        tzinfo=None
+    )
+
 
 
 class KnowledgeDocument(Base):
@@ -42,14 +56,14 @@ class KnowledgeDocument(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
+        default=_utc_now_naive,
         nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=_utc_now_naive,
+        onupdate=_utc_now_naive,
         nullable=False,
     )
 
