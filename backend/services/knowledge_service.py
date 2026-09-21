@@ -26,7 +26,6 @@ CHUNK_OVERLAP = 200
 DEFAULT_SEARCH_THRESHOLD = 0.65
 DEFAULT_SEARCH_LIMIT = 8
 DEFAULT_RERANK_CANDIDATE_LIMIT = 24
-DEFAULT_RERANK_CANDIDATE_LIMIT = 24
 
 
 class KnowledgeService:
@@ -51,11 +50,6 @@ class KnowledgeService:
         self.web_parser_service = (
             web_parser_service
             or WebPageParserService()
-        )
-
-        self.reranker_service = (
-            reranker_service
-            or RerankerService()
         )
 
         self.reranker_service = (
