@@ -692,3 +692,41 @@ def test_scheduler_supports_dst_timezone():
         )
         is True
     )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_survives_cycle_failure(monkeypatch):
+    scheduler = ProactiveActivityScheduler()
+    calls = []
+    sleeps = []
+
+    async def flaky_cycle():
+        calls.append("cycle")
+
+        if len(calls) == 1:
+            raise RuntimeError(
+                "simulated cycle failure"
+            )
+
+        scheduler.stop()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    scheduler.process_daily_activity_digests = flaky_cycle
+
+    monkeypatch.setattr(
+        "services.proactive_activity_scheduler.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await scheduler.run()
+
+    assert calls == [
+        "cycle",
+        "cycle",
+    ]
+    assert sleeps == [
+        scheduler.interval_seconds
+    ]
+    assert scheduler._running is False
