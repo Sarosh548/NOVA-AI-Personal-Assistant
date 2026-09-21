@@ -24,6 +24,15 @@ class KnowledgeDocumentCreateRequest(BaseModel):
     )
 
 
+class KnowledgeUrlCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(
+        min_length=1,
+        max_length=2048,
+    )
+
+
 class KnowledgeDocumentResponse(BaseModel):
     id: int
     title: str
