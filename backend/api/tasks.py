@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import (
     APIRouter,
     Depends,
+    Header,
     HTTPException,
     Query,
     Response,
@@ -20,7 +21,11 @@ from api.schemas.task import (
     TaskUpdateRequest,
     TaskUpdateResponse,
 )
+from services.idempotency_service import IdempotencyService
 from services.task_service import TaskService
+
+
+idempotency_service = IdempotencyService()
 
 
 router = APIRouter(
@@ -45,7 +50,55 @@ def create_task(
         TaskService,
         Depends(get_task_service),
     ],
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
 ) -> TaskCreatedResponse:
+    claim = None
+
+    if idempotency_key is not None:
+        request_hash = (
+            IdempotencyService.build_request_hash(
+                {
+                    "title": request.title,
+                    "description": request.description,
+                    "priority": request.priority,
+                    "due_at": request.due_at,
+                }
+            )
+        )
+
+        claim = idempotency_service.claim_or_replay(
+            user_id=current_user_id,
+            endpoint="/tasks",
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+        if claim["status"] == "conflict":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Idempotency-Key was already used "
+                    "for a different request."
+                ),
+            )
+
+        if claim["status"] == "in_progress":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This request is already being processed."
+                ),
+                headers={"Retry-After": "1"},
+            )
+
+        if claim["status"] == "replay":
+            return TaskCreatedResponse.model_validate(
+                claim["response_body"]
+            )
+
     try:
         task_id = task_service.create_task(
             user_id=current_user_id,
@@ -56,10 +109,48 @@ def create_task(
         )
 
     except ValueError as exc:
+        if claim is not None and claim.get("claim_token"):
+            try:
+                idempotency_service.fail(
+                    record_id=claim["record_id"],
+                    claim_token=claim["claim_token"],
+                    error="Task creation failed.",
+                )
+            except Exception:
+                pass
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    except Exception:
+        if claim is not None and claim.get("claim_token"):
+            try:
+                idempotency_service.fail(
+                    record_id=claim["record_id"],
+                    claim_token=claim["claim_token"],
+                    error="Task creation failed.",
+                )
+            except Exception:
+                pass
+
+        raise
+
+    response_payload = {
+        "id": task_id,
+    }
+
+    if claim is not None and claim.get("claim_token"):
+        try:
+            idempotency_service.complete(
+                record_id=claim["record_id"],
+                claim_token=claim["claim_token"],
+                response_status=status.HTTP_201_CREATED,
+                response_body=response_payload,
+            )
+        except Exception:
+            pass
 
     return TaskCreatedResponse(
         id=task_id,

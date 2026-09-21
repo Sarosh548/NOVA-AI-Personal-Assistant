@@ -108,7 +108,6 @@ def get_security_settings() -> SecuritySettings:
     return SecuritySettings()
 
 
-
 class RateLimitSettings(BaseSettings):
     """
     API rate limiting and quota configuration.
@@ -156,7 +155,6 @@ def get_rate_limit_settings() -> RateLimitSettings:
     return RateLimitSettings()
 
 
-
 class LLMSettings(BaseSettings):
     """
     External LLM provider reliability configuration.
@@ -188,6 +186,40 @@ def get_llm_settings() -> LLMSettings:
     Return cached LLM provider reliability settings.
     """
     return LLMSettings()
+
+
+class ObservabilitySettings(BaseSettings):
+    """
+    API observability and logging configuration.
+
+    Structured JSON is the production default. Text logging remains
+    available for local development and troubleshooting.
+    """
+
+    api_log_level: Literal[
+        "DEBUG",
+        "INFO",
+        "WARNING",
+        "ERROR",
+        "CRITICAL",
+    ] = "INFO"
+
+    api_log_format: Literal[
+        "json",
+        "text",
+    ] = "json"
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+
+@lru_cache
+def get_observability_settings() -> ObservabilitySettings:
+    """
+    Return cached API observability settings.
+    """
+    return ObservabilitySettings()
 
 
 class Settings(BaseSettings):

@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
+import time
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -81,6 +82,11 @@ from services.request_context import (
     normalize_request_id,
     reset_request_id,
     set_request_id,
+)
+from services.api_observability import (
+    configure_api_logging,
+    log_api_exception,
+    log_api_request,
 )
 from services.proactive_activity_notification_service import (
     ProactiveActivityNotificationService,
@@ -326,6 +332,25 @@ def _notification_preferences_payload(
     }
 
 
+def _request_route_template(
+    request: Request,
+) -> str:
+    route = request.scope.get(
+        "route"
+    )
+
+    route_path = getattr(
+        route,
+        "path",
+        None,
+    )
+
+    if isinstance(route_path, str) and route_path:
+        return route_path
+
+    return request.url.path
+
+
 @app.middleware("http")
 async def request_id_middleware(
     request: Request,
@@ -344,9 +369,37 @@ async def request_id_middleware(
         request_id
     )
 
+    started_at = time.perf_counter()
+
     try:
         response = await call_next(
             request
+        )
+    except Exception:
+        log_api_exception(
+            request_id=request_id,
+            method=request.method,
+            route=_request_route_template(
+                request
+            ),
+            duration_ms=(
+                time.perf_counter()
+                - started_at
+            ) * 1000,
+        )
+        raise
+    else:
+        log_api_request(
+            request_id=request_id,
+            method=request.method,
+            route=_request_route_template(
+                request
+            ),
+            status_code=response.status_code,
+            duration_ms=(
+                time.perf_counter()
+                - started_at
+            ) * 1000,
         )
     finally:
         reset_request_id(
@@ -357,7 +410,10 @@ async def request_id_middleware(
     return response
 
 
+
 async def startup_event():
+    configure_api_logging()
+
     global scheduler_task
     global autonomous_workflow_scheduler_task
     global proactive_activity_scheduler_task
@@ -420,15 +476,15 @@ async def startup_event():
             )
         )
 
-    print(
+    logging.getLogger(__name__).info(
         "NOVA reminder scheduler started automatically."
     )
 
-    print(
+    logging.getLogger(__name__).info(
         "NOVA autonomous workflow scheduler started automatically."
     )
 
-    print(
+    logging.getLogger(__name__).info(
         "NOVA proactive activity scheduler started automatically."
     )
 
@@ -466,15 +522,15 @@ async def shutdown_event():
 
         proactive_activity_scheduler_task = None
 
-    print(
+    logging.getLogger(__name__).info(
         "NOVA reminder scheduler stopped."
     )
 
-    print(
+    logging.getLogger(__name__).info(
         "NOVA autonomous workflow scheduler stopped."
     )
 
-    print(
+    logging.getLogger(__name__).info(
         "NOVA proactive activity scheduler stopped."
     )
 
