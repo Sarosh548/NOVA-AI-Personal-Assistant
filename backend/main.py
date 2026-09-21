@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -96,7 +97,21 @@ from services.user_notification_preferences_service import (
 )
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(
+    app: FastAPI,
+):
+    await startup_event()
+
+    try:
+        yield
+    finally:
+        await shutdown_event()
+
+
+app = FastAPI(
+    lifespan=lifespan
+)
 
 
 @app.exception_handler(HTTPException)
@@ -338,7 +353,6 @@ async def request_id_middleware(
     return response
 
 
-@app.on_event("startup")
 async def startup_event():
     global scheduler_task
     global autonomous_workflow_scheduler_task
@@ -415,7 +429,6 @@ async def startup_event():
     )
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
     global scheduler_task
     global autonomous_workflow_scheduler_task
