@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -168,11 +169,21 @@ class _WebPageHTMLParser(HTMLParser):
         if self._ignored_depth > 0:
             return
 
+        normalized_data = re.sub(
+            r"\s+",
+            " ",
+            data,
+        )
+
         if self._in_title:
-            self._title_parts.append(data)
+            self._title_parts.append(
+                normalized_data
+            )
             return
 
-        self._text_parts.append(data)
+        self._text_parts.append(
+            normalized_data
+        )
 
 
 class _SafeRedirectHandler(
@@ -297,7 +308,7 @@ class WebPageParserService:
             (
                 parsed.scheme.lower(),
                 parsed.netloc,
-                parsed.path or "/",
+                parsed.path,
                 parsed.query,
                 "",
                 "",
