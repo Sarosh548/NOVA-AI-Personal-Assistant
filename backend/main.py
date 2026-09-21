@@ -7,6 +7,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from security import configure_api_security
+
 from agent.graph import build_graph
 from api.activity import (
     router as activity_router,
@@ -112,6 +114,8 @@ async def lifespan(
 app = FastAPI(
     lifespan=lifespan
 )
+
+configure_api_security(app)
 
 
 @app.exception_handler(HTTPException)
