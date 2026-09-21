@@ -13,5 +13,6 @@ pwdlib[argon2]==0.3.1
 pydantic-settings==2.15.0
 python-multipart==0.0.32
 cryptography==50.0.1
+prometheus-client==0.26.0
 pypdf==6.19.0
 python-docx==1.2.0
