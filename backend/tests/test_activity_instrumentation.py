@@ -116,6 +116,9 @@ class FakeReminderService:
         self.complete_result = (
             complete_result
         )
+        self.claim_token = (
+            "test-claim-token"
+        )
 
     def create_reminder(
         self,
@@ -183,12 +186,15 @@ class FakeReminderService:
                 "title": "Submit CV",
                 "reminder_time": None,
                 "status": "processing",
+                "claim_token": self.claim_token,
             }
         ]
 
     def mark_reminder_completed(
         self,
         reminder_id,
+        *,
+        claim_token,
     ):
         if self.complete_result:
             self.completed_ids.append(
@@ -200,6 +206,8 @@ class FakeReminderService:
     def mark_reminder_pending(
         self,
         reminder_id,
+        *,
+        claim_token,
     ):
         self.pending_ids.append(
             reminder_id
