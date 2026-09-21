@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -8,7 +7,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from api.auth import router as auth_router
+from api.auth import (
+    get_token_service,
+    router as auth_router,
+)
+from config import Settings
 from api.conversations import router as conversation_router
 from api.notification_destinations import (
     router as notification_destination_router,
@@ -20,9 +23,14 @@ from database.connection import engine
 from models.auth_identity import AuthIdentity
 from models.user import User
 from models.user_session import UserSession
+from services.token_service import TokenService
 
 
 PASSWORD = "CorrectPassword123!"
+
+TEST_SECRET = (
+    "api-test-secret-key-that-is-longer-than-32-characters"
+)
 
 
 def _build_app() -> FastAPI:
@@ -35,6 +43,23 @@ def _build_app() -> FastAPI:
     app.include_router(
         notification_destination_router
     )
+
+    settings = Settings(
+        auth_jwt_secret_key=TEST_SECRET,
+        auth_jwt_algorithm="HS256",
+        auth_jwt_issuer="nova-api-test",
+        auth_jwt_audience="nova-client-test",
+        auth_access_token_expire_minutes=10,
+    )
+
+    token_service = TokenService(
+        settings=settings
+    )
+
+    app.dependency_overrides[
+        get_token_service
+    ] = lambda: token_service
+
     return app
 
 
