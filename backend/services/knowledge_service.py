@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from database.connection import engine
@@ -484,6 +484,12 @@ class KnowledgeService:
         )
 
         with Session(engine) as session:
+            session.execute(
+                text(
+                    "SET LOCAL hnsw.iterative_scan = strict_order"
+                )
+            )
+
             results = session.execute(
                 statement
             ).all()
