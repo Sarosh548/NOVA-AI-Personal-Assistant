@@ -561,6 +561,84 @@ def test_search_can_rerank_candidates_after_similarity_filter(
     assert 24 in params.values()
 
 
+def test_search_falls_back_to_similarity_order_when_reranker_fails(
+    monkeypatch,
+):
+    class FailingReranker:
+        def rerank(
+            self,
+            query,
+            candidates,
+            *,
+            top_k,
+        ):
+            raise RuntimeError(
+                "reranker unavailable"
+            )
+
+    session = FakeSession(
+        None,
+        search_rows=[
+            (
+                FakeChunk(
+                    document_id=7,
+                    content="Alpha passage",
+                ),
+                FakeDocument(
+                    id=7,
+                    content="Alpha passage",
+                ),
+                0.10,
+            ),
+            (
+                FakeChunk(
+                    document_id=8,
+                    content="Beta passage",
+                    chunk_index=1,
+                ),
+                FakeDocument(
+                    id=8,
+                    content="Beta passage",
+                ),
+                0.20,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        knowledge_module,
+        "Session",
+        lambda engine: session,
+    )
+
+    service = KnowledgeService(
+        embedding_service=FakeEmbedding(),
+        reranker_service=FailingReranker(),
+    )
+
+    result = service.search(
+        user_id="user-001",
+        query="passage",
+        threshold=0.65,
+        limit=2,
+        rerank=True,
+        candidate_limit=24,
+    )
+
+    assert [
+        item["document_id"]
+        for item in result
+    ] == [
+        7,
+        8,
+    ]
+
+    assert all(
+        "rerank_score" not in item
+        for item in result
+    )
+
+
 def test_search_without_rerank_returns_similarity_order(
     monkeypatch,
 ):
