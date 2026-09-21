@@ -105,6 +105,22 @@ def create_reminder(
             )
         )
 
+    except ValueError as exc:
+        if claim is not None and claim.get("claim_token"):
+            try:
+                idempotency_service.fail(
+                    record_id=claim["record_id"],
+                    claim_token=claim["claim_token"],
+                    error="Reminder creation failed.",
+                )
+            except Exception:
+                pass
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
     except Exception:
         if claim is not None and claim.get("claim_token"):
             try:
