@@ -36,6 +36,16 @@ class Reminder(Base):
         default="pending",
     )
 
+    claim_token: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
