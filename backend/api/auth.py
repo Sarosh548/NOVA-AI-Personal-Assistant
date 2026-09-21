@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Annotated
@@ -18,6 +20,7 @@ from fastapi.security import (
 
 from models.user import User
 from models.user_session import UserSession
+from services.audit_service import AuditService
 from services.auth_service import AuthService
 from services.token_service import TokenService
 from services.user_service import UserService
@@ -28,6 +31,12 @@ from api.schemas.auth import (
     TokenResponse,
     UserResponse,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+audit_service = AuditService()
 
 
 router = APIRouter(
@@ -52,6 +61,36 @@ def get_token_service() -> TokenService:
 
 def get_user_service() -> UserService:
     return UserService()
+
+
+def _record_auth_audit(
+    *,
+    action: str,
+    status_value: str,
+    user_id: str | None = None,
+    resource_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """
+    Best-effort security audit recording.
+
+    Authentication must remain available even if the audit
+    subsystem is temporarily unavailable.
+    """
+    try:
+        audit_service.record_event(
+            event_type="authentication",
+            action=action,
+            status=status_value,
+            user_id=user_id,
+            resource_type="session",
+            resource_id=resource_id,
+            metadata=metadata,
+        )
+    except Exception:
+        logger.exception(
+            "Could not persist authentication audit event."
+        )
 
 
 def _utc_now_naive() -> datetime:
@@ -211,6 +250,20 @@ def register(
             detail=str(exc),
         ) from exc
 
+    _record_auth_audit(
+        action="register",
+        status_value="success",
+        user_id=user.id,
+        resource_id=user_session.id,
+    )
+
+    _record_auth_audit(
+        action="login",
+        status_value="success",
+        user_id=user.id,
+        resource_id=user_session.id,
+    )
+
     access_token = (
         token_service.create_access_token(
             user_id=user.id,
@@ -269,6 +322,13 @@ def login(
         ) from exc
 
     if user is None:
+        _record_auth_audit(
+            action="login",
+            status_value="failure",
+            metadata={
+                "reason": "invalid_credentials"
+            },
+        )
         raise _unauthorized(
             "Incorrect username or password."
         )
@@ -280,10 +340,24 @@ def login(
             )
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="register",
+            status_value="failure",
+            metadata={
+                "reason": "registration_failed"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    _record_auth_audit(
+        action="register",
+        status_value="success",
+        user_id=user.id,
+        resource_id=user_session.id,
+    )
 
     access_token = (
         token_service.create_access_token(
@@ -337,6 +411,13 @@ def refresh(
             )
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="refresh",
+            status_value="failure",
+            metadata={
+                "reason": "invalid_or_expired_refresh_token"
+            },
+        )
         raise _unauthorized(
             str(exc)
         ) from exc
@@ -361,6 +442,13 @@ def refresh(
             user_id=user.id,
             session_id=user_session.id,
         )
+    )
+
+    _record_auth_audit(
+        action="refresh",
+        status_value="success",
+        user_id=user.id,
+        resource_id=user_session.id,
     )
 
     return TokenResponse(
@@ -404,6 +492,13 @@ def logout(
         raise _unauthorized(
             "Authentication session is no longer active."
         )
+
+    _record_auth_audit(
+        action="logout",
+        status_value="success",
+        user_id=context.user.id,
+        resource_id=context.session.id,
+    )
 
     return Response(
         status_code=status.HTTP_204_NO_CONTENT
