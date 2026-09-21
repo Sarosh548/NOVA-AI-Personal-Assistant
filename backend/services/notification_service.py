@@ -4,6 +4,7 @@ import json
 import logging
 import smtplib
 from dataclasses import dataclass, field
+from hashlib import sha256
 from email.message import EmailMessage
 from email.utils import parseaddr
 from typing import Any, Protocol
@@ -37,6 +38,7 @@ class Notification:
         default_factory=dict
     )
     destination: str | None = None
+    idempotency_key: str | None = None
 
 
 class NotificationChannel(Protocol):
@@ -83,6 +85,7 @@ class EmailDeliveryPort(Protocol):
         body: str,
         cc: str | list[str] | tuple[str, ...] | None = None,
         bcc: str | list[str] | tuple[str, ...] | None = None,
+        message_id: str | None = None,
     ) -> bool:
         ...
 
@@ -241,6 +244,19 @@ class EmailNotificationChannel:
     """
 
     DEFAULT_TIMEOUT_SECONDS = 10
+
+    @staticmethod
+    def _build_idempotent_message_id(
+        idempotency_key: str | None,
+    ) -> str | None:
+        if not idempotency_key:
+            return None
+
+        digest = sha256(
+            idempotency_key.encode("utf-8")
+        ).hexdigest()[:32]
+
+        return f"<nova-{digest}@nova.local>"
 
     @staticmethod
     def _validate_email(
@@ -443,6 +459,7 @@ class EmailNotificationChannel:
         body: str,
         cc: str | list[str] | tuple[str, ...] | None = None,
         bcc: str | list[str] | tuple[str, ...] | None = None,
+        message_id: str | None = None,
     ) -> bool:
         normalized_subject = str(
             subject
@@ -517,6 +534,9 @@ class EmailNotificationChannel:
                 normalized_subject[:200]
             )
 
+            if message_id:
+                message["Message-ID"] = message_id
+
             message.set_content(
                 normalized_body[:10000]
             )
@@ -586,11 +606,18 @@ class EmailNotificationChannel:
 
             return False
 
+        message_id = (
+            self._build_idempotent_message_id(
+                notification.idempotency_key
+            )
+        )
+
         return self.send_email(
             user_id=notification.user_id,
             to=recipient,
             subject=notification.title,
             body=notification.body,
+            message_id=message_id,
         )
 
 
@@ -725,6 +752,11 @@ class WebhookNotificationChannel:
             headers[
                 "X-NOVA-Notification-Secret"
             ] = self.secret
+
+        if notification.idempotency_key:
+            headers[
+                "Idempotency-Key"
+            ] = notification.idempotency_key
 
         request = Request(
             self.endpoint_url,
@@ -918,6 +950,7 @@ class NotificationService:
         metadata: dict[str, Any] | None = None,
         channel: str | None = None,
         destination: str | None = None,
+        idempotency_key: str | None = None,
     ) -> bool:
         cleaned_user_id = (
             user_id.strip()
@@ -1012,6 +1045,28 @@ class NotificationService:
 
                 return False
 
+        normalized_idempotency_key = (
+            None
+            if idempotency_key is None
+            else str(idempotency_key).strip()
+        )
+
+        if (
+            normalized_idempotency_key is not None
+            and not normalized_idempotency_key
+        ):
+            raise ValueError(
+                "Notification idempotency_key cannot be empty."
+            )
+
+        if (
+            normalized_idempotency_key is not None
+            and len(normalized_idempotency_key) > 255
+        ):
+            raise ValueError(
+                "Notification idempotency_key cannot exceed 255 characters."
+            )
+
         notification = Notification(
             user_id=cleaned_user_id,
             notification_type=cleaned_type,
@@ -1022,6 +1077,9 @@ class NotificationService:
             ),
             destination=(
                 resolved_destination
+            ),
+            idempotency_key=(
+                normalized_idempotency_key
             ),
         )
 

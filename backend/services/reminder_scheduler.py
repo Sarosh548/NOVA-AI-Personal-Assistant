@@ -79,6 +79,9 @@ class ReminderScheduler:
             user_id = reminder["user_id"]
             title = reminder["title"]
             claim_token = reminder["claim_token"]
+            idempotency_key = (
+                f"nova:reminder:{reminder_id}"
+            )
 
             try:
                 delivered = (
@@ -90,6 +93,7 @@ class ReminderScheduler:
                         metadata={
                             "reminder_id": reminder_id,
                         },
+                        idempotency_key=idempotency_key,
                     )
                 )
 

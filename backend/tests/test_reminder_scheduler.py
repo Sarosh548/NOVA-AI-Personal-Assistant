@@ -66,6 +66,7 @@ class FakeNotificationService:
         body,
         notification_type,
         metadata,
+        idempotency_key,
     ):
         self.notifications.append(
             {
@@ -74,6 +75,7 @@ class FakeNotificationService:
                 "body": body,
                 "notification_type": notification_type,
                 "metadata": metadata,
+                "idempotency_key": idempotency_key,
             }
         )
 
@@ -112,7 +114,33 @@ async def test_scheduler_processes_due_reminder_after_successful_notification():
             "metadata": {
                 "reminder_id": 101,
             },
+            "idempotency_key": "nova:reminder:101",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_reuses_stable_idempotency_key_on_retry():
+    reminder_service = FakeReminderService()
+    notification_service = FakeNotificationService(
+        result=True
+    )
+
+    scheduler = ReminderScheduler(
+        interval_seconds=5,
+        reminder_service=reminder_service,
+        notification_service=notification_service,
+    )
+
+    await scheduler.process_due_reminders()
+    await scheduler.process_due_reminders()
+
+    assert [
+        item["idempotency_key"]
+        for item in notification_service.notifications
+    ] == [
+        "nova:reminder:101",
+        "nova:reminder:101",
     ]
 
 
