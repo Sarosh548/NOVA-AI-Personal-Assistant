@@ -252,6 +252,22 @@ def test_scheduler_rejects_invalid_interval():
             ),
         )
 
+    with pytest.raises(
+        ValueError,
+        match="interval_seconds must not exceed MAX_CYCLE_BACKOFF_SECONDS",
+    ):
+        ProactiveActivityScheduler(
+            interval_seconds=(
+                ProactiveActivityScheduler.MAX_CYCLE_BACKOFF_SECONDS + 1
+            ),
+            notification_service=(
+                FakeProactiveNotificationService()
+            ),
+            preferences_service=(
+                FakePreferencesService({})
+            ),
+        )
+
 
 def test_scheduler_uses_current_local_day_for_each_user():
     (

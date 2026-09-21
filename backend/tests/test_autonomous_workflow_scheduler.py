@@ -548,6 +548,16 @@ def test_scheduler_rejects_invalid_interval():
             interval_seconds=0
         )
 
+    with pytest.raises(
+        ValueError,
+        match="interval_seconds must not exceed MAX_CYCLE_BACKOFF_SECONDS",
+    ):
+        AutonomousWorkflowScheduler(
+            interval_seconds=(
+                AutonomousWorkflowScheduler.MAX_CYCLE_BACKOFF_SECONDS + 1
+            )
+        )
+
 
 def test_scheduler_rejects_invalid_batch_size():
     with pytest.raises(

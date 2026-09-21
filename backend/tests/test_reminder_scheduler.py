@@ -258,6 +258,15 @@ def test_scheduler_rejects_invalid_interval():
             interval_seconds=0,
         )
 
+    with pytest.raises(
+        ValueError,
+        match="interval_seconds must not exceed MAX_CYCLE_BACKOFF_SECONDS",
+    ):
+        ReminderScheduler(
+            interval_seconds=(
+                ReminderScheduler.MAX_CYCLE_BACKOFF_SECONDS + 1
+            )
+        )
 
 
 @pytest.mark.asyncio

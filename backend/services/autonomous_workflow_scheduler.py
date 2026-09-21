@@ -64,6 +64,15 @@ class AutonomousWorkflowScheduler:
                 "interval_seconds must be at least 1"
             )
 
+        if (
+            interval_seconds
+            > AutonomousWorkflowScheduler.MAX_CYCLE_BACKOFF_SECONDS
+        ):
+            raise ValueError(
+                "interval_seconds must not exceed "
+                "MAX_CYCLE_BACKOFF_SECONDS"
+            )
+
         if batch_size < 1:
             raise ValueError(
                 "batch_size must be at least 1"

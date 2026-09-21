@@ -45,6 +45,12 @@ class ReminderScheduler:
                 "interval_seconds must be at least 1"
             )
 
+        if interval_seconds > ReminderScheduler.MAX_CYCLE_BACKOFF_SECONDS:
+            raise ValueError(
+                "interval_seconds must not exceed "
+                "MAX_CYCLE_BACKOFF_SECONDS"
+            )
+
         self.interval_seconds = interval_seconds
         self.reminder_service = (
             reminder_service
