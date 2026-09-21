@@ -557,3 +557,41 @@ def test_scheduler_rejects_invalid_batch_size():
         AutonomousWorkflowScheduler(
             batch_size=0
         )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_survives_cycle_failure(monkeypatch):
+    scheduler = AutonomousWorkflowScheduler()
+    calls = []
+    sleeps = []
+
+    async def flaky_cycle():
+        calls.append("cycle")
+
+        if len(calls) == 1:
+            raise RuntimeError(
+                "simulated cycle failure"
+            )
+
+        scheduler.stop()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    scheduler.process_due_workflows = flaky_cycle
+
+    monkeypatch.setattr(
+        "services.autonomous_workflow_scheduler.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await scheduler.run()
+
+    assert calls == [
+        "cycle",
+        "cycle",
+    ]
+    assert sleeps == [
+        scheduler.interval_seconds
+    ]
+    assert scheduler._running is False
