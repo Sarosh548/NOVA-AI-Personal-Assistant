@@ -11,6 +11,7 @@ from services.notification_service import NotificationService
 from services.reminder_service import ReminderService
 from services.task_service import TaskService
 from services.tool_registry import ToolRegistry
+from services.web_search_service import WebSearchService
 
 
 class ToolRouter:
@@ -61,6 +62,7 @@ class ToolRouter:
         calendar_tool_service: (
             GoogleCalendarToolService | None
         ) = None,
+        web_search_service: WebSearchService | None = None,
     ):
         self.reminder_service = (
             reminder_service
@@ -82,6 +84,11 @@ class ToolRouter:
 
         self.notification_service = notification_service
         self.calendar_tool_service = calendar_tool_service
+        self.web_search_service = (
+            web_search_service
+            if web_search_service is not None
+            else WebSearchService()
+        )
 
         self._register_default_tools()
 
@@ -155,6 +162,21 @@ class ToolRouter:
                     GoogleCalendarToolService.ACTIONS
                 ),
                 handler=self._execute_calendar,
+            )
+
+        if (
+            not self.registry.has("web")
+        ):
+            self.registry.register(
+                name="web",
+                description=(
+                    "Search the live public web for "
+                    "current information and source snippets."
+                ),
+                actions=(
+                    "search",
+                ),
+                handler=self._execute_web,
             )
 
     # =====================================================
@@ -527,6 +549,88 @@ class ToolRouter:
             f"'{action}' succeeded for "
             f"{identity}."
         )
+
+    # =====================================================
+    # WEB SEARCH
+    # =====================================================
+
+    def _execute_web(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        action = str(
+            data.get("action")
+            or data.get("web_action")
+            or "search"
+        ).strip().lower()
+
+        if action != "search":
+            return {
+                "success": False,
+                "tool": "web",
+                "action": action,
+                "result": None,
+                "error": "Unsupported web action.",
+            }
+
+        query = str(
+            data.get("query")
+            or ""
+        ).strip()
+
+        if not query:
+            return {
+                "success": False,
+                "tool": "web",
+                "action": "search",
+                "result": None,
+                "error": "Web search query is missing.",
+            }
+
+        try:
+            results = self.web_search_service.search(
+                query=query,
+                max_results=int(
+                    data.get("max_results")
+                    or 5
+                ),
+                topic=str(
+                    data.get("topic")
+                    or "general"
+                ),
+                time_range=(
+                    data.get("time_range")
+                ),
+            )
+        except (ValueError, TypeError) as exc:
+            return {
+                "success": False,
+                "tool": "web",
+                "action": "search",
+                "result": None,
+                "error": str(exc),
+            }
+        except Exception:
+            return {
+                "success": False,
+                "tool": "web",
+                "action": "search",
+                "result": None,
+                "error": "Live web search failed.",
+            }
+
+        return {
+            "success": True,
+            "tool": "web",
+            "action": "search",
+            "result": {
+                "query": query,
+                "results": results,
+            },
+            "error": None,
+        }
+
 
     # =====================================================
     # CALENDAR

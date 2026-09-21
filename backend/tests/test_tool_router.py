@@ -48,6 +48,16 @@ def test_tool_router_registers_default_tools():
                 "send",
             ],
         },
+        {
+            "name": "web",
+            "description": (
+                "Search the live public web for "
+                "current information and source snippets."
+            ),
+            "actions": [
+                "search",
+            ],
+        },
     ]
 
 
@@ -120,3 +130,69 @@ def test_tool_router_can_register_and_execute_custom_tool():
     )
     assert result["result"]["user_id"] == "user-001"
     assert result["error"] is None
+
+class FakeWebSearchService:
+    def __init__(self):
+        self.calls = []
+
+    def search(
+        self,
+        *,
+        query,
+        max_results,
+        topic,
+        time_range,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "max_results": max_results,
+                "topic": topic,
+                "time_range": time_range,
+            }
+        )
+
+        return [
+            {
+                "title": "AI News",
+                "url": "https://example.com/ai",
+                "content": "Fresh AI information.",
+                "score": 0.9,
+                "published_date": "2026-09-21",
+            }
+        ]
+
+
+def test_tool_router_executes_live_web_search():
+    web_service = FakeWebSearchService()
+    router = ToolRouter(
+        web_search_service=web_service,
+    )
+
+    result = router.execute(
+        intent="web",
+        user_id="user-001",
+        data={
+            "action": "search",
+            "query": "latest AI news",
+            "max_results": 3,
+            "topic": "news",
+            "time_range": "day",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["tool"] == "web"
+    assert result["action"] == "search"
+    assert result["error"] is None
+    assert result["result"]["query"] == "latest AI news"
+    assert result["result"]["results"][0]["title"] == "AI News"
+
+    assert web_service.calls == [
+        {
+            "query": "latest AI news",
+            "max_results": 3,
+            "topic": "news",
+            "time_range": "day",
+        }
+    ]

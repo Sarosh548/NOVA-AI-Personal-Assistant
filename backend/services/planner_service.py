@@ -537,6 +537,8 @@ class PlannerService:
             action = understanding.get("email_action") or understanding.get("action")
         elif tool == "calendar":
             action = understanding.get("calendar_action")
+        elif tool == "web":
+            action = understanding.get("web_action") or understanding.get("action")
         else:
             action = understanding.get("action")
 
