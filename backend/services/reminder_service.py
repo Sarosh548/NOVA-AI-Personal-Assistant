@@ -1,10 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
-from database.connection import engine
+from database.connection import engine as default_engine
 from models.reminder import Reminder
 
 
@@ -12,6 +13,14 @@ USER_TIMEZONE = "Asia/Karachi"
 
 
 class ReminderService:
+    CLAIM_LEASE_SECONDS = 300
+
+    def __init__(self, engine=None):
+        self.engine = (
+            engine
+            if engine is not None
+            else default_engine
+        )
 
     def _normalize_datetime(
         self,
@@ -69,7 +78,7 @@ class ReminderService:
                 "Reminder time must be in the future."
             )
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             reminder = Reminder(
                 user_id=user_id,
                 title=cleaned_title[:300],
@@ -91,7 +100,7 @@ class ReminderService:
         Return all pending reminders for a user.
         """
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             statement = (
                 select(Reminder)
                 .where(
@@ -159,7 +168,7 @@ class ReminderService:
         if not reference_tokens:
             return []
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             statement = (
                 select(Reminder)
                 .where(
@@ -279,7 +288,7 @@ class ReminderService:
                     "Reminder time must be in the future."
                 )
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             reminder = session.scalar(
                 select(Reminder).where(
                     Reminder.id == reminder_id,
@@ -302,63 +311,137 @@ class ReminderService:
 
             return True
 
-    def claim_due_reminders(self) -> list[dict]:
+    def claim_due_reminders(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> list[dict]:
         """
-        Atomically claim due reminders.
+        Atomically claim due or stale-processing reminders.
 
-        pending -> processing
+        pending + due -> processing
+        processing + expired lease -> processing with a new lease
+
+        Every claim receives a unique token so a worker that loses
+        its lease cannot finalize the reminder later.
         """
 
-        current_time = datetime.utcnow()
+        current_time = (
+            now
+            if now is not None
+            else datetime.utcnow()
+        )
 
-        with Session(engine) as session:
+        if current_time.tzinfo is not None:
+            current_time = (
+                current_time.astimezone(
+                    timezone.utc
+                ).replace(
+                    tzinfo=None
+                )
+            )
 
-            rows = session.execute(
-                text(
-                    """
-                    UPDATE reminders
-                    SET status = 'processing',
-                        updated_at = :updated_at
-                    WHERE status = 'pending'
-                      AND reminder_time <= :current_time
-                    RETURNING
-                        id,
-                        user_id,
-                        title,
-                        reminder_time,
-                        status
-                    """
+        lease_until = (
+            current_time
+            + timedelta(
+                seconds=self.CLAIM_LEASE_SECONDS
+            )
+        )
+
+        claimable = select(Reminder).where(
+            or_(
+                and_(
+                    Reminder.status == "pending",
+                    Reminder.reminder_time
+                    <= current_time,
                 ),
-                {
-                    "updated_at": current_time,
-                    "current_time": current_time,
-                },
-            ).mappings().all()
+                and_(
+                    Reminder.status == "processing",
+                    or_(
+                        Reminder.lease_until.is_(None),
+                        Reminder.lease_until
+                        <= current_time,
+                    ),
+                ),
+            )
+        ).order_by(
+            Reminder.reminder_time.asc(),
+            Reminder.id.asc(),
+        ).with_for_update(
+            skip_locked=True
+        )
+
+        with Session(self.engine) as session:
+            reminders = session.scalars(
+                claimable
+            ).all()
+
+            claimed: list[dict] = []
+
+            for reminder in reminders:
+                claim_token = uuid4().hex
+
+                reminder.status = "processing"
+                reminder.claim_token = claim_token
+                reminder.lease_until = lease_until
+                reminder.updated_at = current_time
+
+                claimed.append(
+                    {
+                        "id": reminder.id,
+                        "user_id": reminder.user_id,
+                        "title": reminder.title,
+                        "reminder_time": (
+                            reminder.reminder_time
+                        ),
+                        "status": reminder.status,
+                        "claim_token": claim_token,
+                        "lease_until": lease_until,
+                    }
+                )
 
             session.commit()
 
-            return [dict(row) for row in rows]
+            return claimed
 
     def mark_reminder_completed(
         self,
         reminder_id: int,
+        *,
+        claim_token: str,
     ) -> bool:
+        """
+        Complete a reminder only when the worker still owns its lease.
+        """
 
-        with Session(engine) as session:
+        normalized_token = str(
+            claim_token
+        ).strip()
+
+        if not normalized_token:
+            raise ValueError(
+                "claim_token cannot be empty."
+            )
+
+        now = datetime.utcnow()
+
+        with Session(self.engine) as session:
             result = session.execute(
-                text(
-                    """
-                    UPDATE reminders
-                    SET status = 'completed',
-                        updated_at = :updated_at
-                    WHERE id = :reminder_id
-                      AND status = 'processing'
-                    """
-                ),
-                {
-                    "updated_at": datetime.utcnow(),
-                    "reminder_id": reminder_id,
-                },
+                update(Reminder)
+                .where(
+                    Reminder.id == reminder_id,
+                    Reminder.status == "processing",
+                    Reminder.claim_token
+                    == normalized_token,
+                    Reminder.lease_until.is_not(None),
+                    Reminder.lease_until > now,
+                )
+                .values(
+                    status="completed",
+                    claim_token=None,
+                    lease_until=None,
+                    updated_at=now,
+                )
             )
 
             session.commit()
@@ -368,23 +451,42 @@ class ReminderService:
     def mark_reminder_pending(
         self,
         reminder_id: int,
+        *,
+        claim_token: str,
     ) -> bool:
+        """
+        Return a failed reminder to pending only when the worker still
+        owns its lease.
+        """
 
-        with Session(engine) as session:
+        normalized_token = str(
+            claim_token
+        ).strip()
+
+        if not normalized_token:
+            raise ValueError(
+                "claim_token cannot be empty."
+            )
+
+        now = datetime.utcnow()
+
+        with Session(self.engine) as session:
             result = session.execute(
-                text(
-                    """
-                    UPDATE reminders
-                    SET status = 'pending',
-                        updated_at = :updated_at
-                    WHERE id = :reminder_id
-                      AND status = 'processing'
-                    """
-                ),
-                {
-                    "updated_at": datetime.utcnow(),
-                    "reminder_id": reminder_id,
-                },
+                update(Reminder)
+                .where(
+                    Reminder.id == reminder_id,
+                    Reminder.status == "processing",
+                    Reminder.claim_token
+                    == normalized_token,
+                    Reminder.lease_until.is_not(None),
+                    Reminder.lease_until > now,
+                )
+                .values(
+                    status="pending",
+                    claim_token=None,
+                    lease_until=None,
+                    updated_at=now,
+                )
             )
 
             session.commit()
@@ -398,12 +500,13 @@ class ReminderService:
 
         current_time = datetime.utcnow()
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             statement = (
                 select(Reminder)
                 .where(
                     Reminder.status == "pending",
-                    Reminder.reminder_time <= current_time,
+                    Reminder.reminder_time
+                    <= current_time,
                 )
                 .order_by(
                     Reminder.reminder_time.asc()
@@ -431,7 +534,7 @@ class ReminderService:
         user_id: str,
     ) -> bool:
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             reminder = session.scalar(
                 select(Reminder).where(
                     Reminder.id == reminder_id,
@@ -443,6 +546,8 @@ class ReminderService:
                 return False
 
             reminder.status = "completed"
+            reminder.claim_token = None
+            reminder.lease_until = None
             reminder.updated_at = datetime.utcnow()
 
             session.commit()
@@ -455,7 +560,7 @@ class ReminderService:
         user_id: str,
     ) -> bool:
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             reminder = session.scalar(
                 select(Reminder).where(
                     Reminder.id == reminder_id,
@@ -467,6 +572,8 @@ class ReminderService:
                 return False
 
             reminder.status = "cancelled"
+            reminder.claim_token = None
+            reminder.lease_until = None
             reminder.updated_at = datetime.utcnow()
 
             session.commit()
@@ -479,7 +586,7 @@ class ReminderService:
         user_id: str,
     ) -> bool:
 
-        with Session(engine) as session:
+        with Session(self.engine) as session:
             reminder = session.scalar(
                 select(Reminder).where(
                     Reminder.id == reminder_id,
