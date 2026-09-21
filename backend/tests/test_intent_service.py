@@ -237,3 +237,177 @@ def test_validate_invalid_web_action_defaults_to_search():
     assert validated["web_topic"] == "general"
     assert validated["web_time_range"] is None
     assert validated["requires_tool"] is True
+
+def test_fresh_information_question_forces_web_search():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "question",
+        "query": None,
+        "web_action": None,
+        "web_topic": None,
+        "web_time_range": None,
+        "requires_tool": False,
+    }
+
+    routed = service._force_fresh_web_research(
+        message="What's the latest FastAPI release?",
+        result=result,
+    )
+
+    assert routed["intent"] == "web"
+    assert routed["web_action"] == "search"
+    assert routed["web_topic"] == "general"
+    assert routed["web_time_range"] is None
+    assert routed["query"] == "What's the latest FastAPI release?"
+    assert routed["action"] == "search"
+    assert routed["requires_tool"] is True
+
+
+def test_fresh_news_request_forces_news_day_search():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "chat",
+        "query": None,
+        "web_action": None,
+        "web_topic": None,
+        "web_time_range": None,
+        "requires_tool": False,
+    }
+
+    routed = service._force_fresh_web_research(
+        message="What are today's AI news headlines?",
+        result=result,
+    )
+
+    assert routed["intent"] == "web"
+    assert routed["web_action"] == "search"
+    assert routed["web_topic"] == "news"
+    assert routed["web_time_range"] == "day"
+    assert routed["query"] == "What are today's AI news headlines?"
+    assert routed["requires_tool"] is True
+
+
+def test_fresh_finance_request_forces_finance_search():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "question",
+        "query": "USD to PKR rate",
+        "web_action": None,
+        "web_topic": None,
+        "web_time_range": None,
+        "requires_tool": False,
+    }
+
+    routed = service._force_fresh_web_research(
+        message="What is the current USD to PKR exchange rate?",
+        result=result,
+    )
+
+    assert routed["intent"] == "web"
+    assert routed["web_action"] == "search"
+    assert routed["web_topic"] == "finance"
+    assert routed["web_time_range"] is None
+    assert routed["query"] == "USD to PKR rate"
+    assert routed["requires_tool"] is True
+
+
+def test_personal_task_today_is_not_forced_to_web():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "chat",
+        "query": None,
+        "web_action": None,
+        "web_topic": None,
+        "web_time_range": None,
+        "requires_tool": False,
+    }
+
+    routed = service._force_fresh_web_research(
+        message="Remind me to submit my CV today.",
+        result=result,
+    )
+
+    assert routed["intent"] == "chat"
+    assert routed["requires_tool"] is False
+
+
+def test_current_personal_task_is_not_forced_to_web():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "question",
+        "query": "my current task",
+        "web_action": None,
+        "web_topic": None,
+        "web_time_range": None,
+        "requires_tool": False,
+    }
+
+    routed = service._force_fresh_web_research(
+        message="What is my current task?",
+        result=result,
+    )
+
+    assert routed["intent"] == "question"
+    assert routed["requires_tool"] is False
+
+
+def test_word_boundary_prevents_now_substring_false_positive():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "chat",
+        "query": None,
+        "web_action": None,
+        "web_topic": None,
+        "web_time_range": None,
+        "requires_tool": False,
+    }
+
+    routed = service._force_fresh_web_research(
+        message="I don't know how to improve my Python.",
+        result=result,
+    )
+
+    assert routed["intent"] == "chat"
+    assert routed["requires_tool"] is False
+
+
+def test_analyze_applies_deterministic_fresh_web_routing(monkeypatch):
+    service = make_service_without_llm()
+
+    class FakeMessage:
+        content = '{"intent":"question","query":null,"requires_tool":false}'
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return FakeResponse()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    service.client = FakeClient()
+
+    result = service.analyze(
+        message="What's the latest FastAPI release?",
+        history=[],
+    )
+
+    assert result["intent"] == "web"
+    assert result["web_action"] == "search"
+    assert result["query"] == "What's the latest FastAPI release?"
+    assert result["requires_tool"] is True
+
