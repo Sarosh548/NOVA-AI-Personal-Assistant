@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -334,7 +334,7 @@ def test_pending_transition_requires_current_claim(
 def test_mark_completion_rejects_expired_current_lease(
     reminder_service,
 ):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     reminder_id = seed_reminder(
         reminder_service,
