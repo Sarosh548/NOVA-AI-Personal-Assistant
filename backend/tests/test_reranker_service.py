@@ -134,7 +134,7 @@ def test_rerank_includes_candidate_title_when_available():
                 (
                     "How can I add a web page to NOVA knowledge?",
                     (
-                        "Title: NOVA URL Knowledge Ingestion\\n"
+                        "Title: NOVA URL Knowledge Ingestion\n"
                         "Content: URL knowledge ingestion validates and safely "
                         "fetches web pages."
                     ),
