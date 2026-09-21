@@ -661,7 +661,7 @@ For scheduled_at:
 Return exactly:
 
 {{
-  "intent": "chat|question|advice|planning|reminder|task|action|email",
+  "intent": "chat|question|advice|planning|reminder|task|action|email|calendar|web",
   "task": "task title, reminder content, or null",
   "task_reference": "existing task reference or null",
   "task_action": "create|list|start|complete|cancel|delete|update or null",
@@ -717,6 +717,22 @@ Return exactly:
 
         validated_result = self._validate_result(
             result
+        )
+
+        # -------------------------------------------------
+        # Deterministic fresh-information routing.
+        #
+        # The LLM remains responsible for extracting the search
+        # query and other structured fields, but explicit current
+        # or recent-information language must not depend on the
+        # LLM choosing the "web" intent correctly.
+        # -------------------------------------------------
+
+        validated_result = (
+            self._force_fresh_web_research(
+                message=message,
+                result=validated_result,
+            )
         )
 
         # -------------------------------------------------
@@ -914,6 +930,207 @@ Return exactly:
                 return reference
 
         return None
+
+    def _force_fresh_web_research(
+        self,
+        message: str,
+        result: dict,
+    ) -> dict:
+        """
+        Force clearly stated fresh-information requests onto
+        the live web-search path even when the LLM misclassifies
+        the request as chat/question/advice.
+
+        Personal task/reminder/calendar requests are intentionally
+        excluded so words such as "today" or "current" do not
+        accidentally trigger a web search.
+        """
+
+        intent = result.get("intent")
+
+        if intent not in {
+            "chat",
+            "question",
+            "advice",
+        }:
+            return result
+
+        normalized = " ".join(
+            message.strip().lower().split()
+        )
+
+        if not normalized:
+            return result
+
+        protected_patterns = (
+            r"\\bremind me\\b",
+            r"\\b(?:create|add|make)\\s+(?:a\\s+)?(?:high\\s+|medium\\s+|low\\s+)?priority\\s+task\\b",
+            r"\\b(?:create|add|make)\\s+(?:a\\s+)?task\\b",
+            r"\\b(?:show|list|view)\\s+(?:my\\s+)?(?:tasks?|reminders?|calendar|schedule)\\b",
+            r"\\b(?:complete|start|cancel|delete|update|move|reschedule)\\s+(?:my\\s+)?(?:task|reminder|event)\\b",
+        )
+
+        if any(
+            re.search(pattern, normalized)
+            for pattern in protected_patterns
+        ):
+            return result
+
+        fresh_markers = (
+            "latest",
+            "current",
+            "currently",
+            "today",
+            "today's",
+            "recent",
+            "recently",
+            "newest",
+            "this week",
+            "this month",
+            "this year",
+            "as of",
+            "up to date",
+            "up-to-date",
+            "live",
+            "real time",
+            "realtime",
+            "right now",
+            "now",
+        )
+
+        has_fresh_marker = any(
+            marker in normalized
+            for marker in fresh_markers
+        )
+
+        if not has_fresh_marker:
+            return result
+
+        information_markers = (
+            "what ",
+            "what's",
+            "who ",
+            "which ",
+            "when ",
+            "where ",
+            "why ",
+            "how ",
+            "is ",
+            "are ",
+            "does ",
+            "did ",
+            "tell me",
+            "give me",
+            "show me",
+            "news",
+            "headline",
+            "headlines",
+            "release",
+            "released",
+            "announcement",
+            "announcements",
+            "price",
+            "prices",
+            "rate",
+            "rates",
+            "stock",
+            "stocks",
+            "market",
+            "weather",
+            "status",
+            "version",
+            "versions",
+            "update",
+            "updates",
+            "happening",
+            "search",
+            "research",
+            "look up",
+            "find ",
+        )
+
+        has_information_marker = any(
+            marker in normalized
+            for marker in information_markers
+        )
+
+        if not has_information_marker:
+            return result
+
+        topic = result.get("web_topic")
+
+        if "news" in normalized or "headline" in normalized:
+            topic = "news"
+        elif any(
+            marker in normalized
+            for marker in (
+                "price",
+                "prices",
+                "stock",
+                "stocks",
+                "market",
+                "forex",
+                "exchange rate",
+                "usd",
+                "pkr",
+                "bitcoin",
+            )
+        ):
+            topic = "finance"
+        elif topic not in {
+            "general",
+            "news",
+            "finance",
+        }:
+            topic = "general"
+
+        time_range = result.get(
+            "web_time_range"
+        )
+
+        if any(
+            marker in normalized
+            for marker in (
+                "today",
+                "today's",
+                "right now",
+                "now",
+                "live",
+                "realtime",
+                "real time",
+            )
+        ):
+            time_range = "day"
+        elif "this week" in normalized:
+            time_range = "week"
+        elif "this month" in normalized:
+            time_range = "month"
+        elif "this year" in normalized:
+            time_range = "year"
+        elif time_range not in {
+            "day",
+            "week",
+            "month",
+            "year",
+        }:
+            time_range = None
+
+        query = str(
+            result.get("query") or ""
+        ).strip()
+
+        if not query:
+            query = message.strip()
+
+        result["intent"] = "web"
+        result["web_action"] = "search"
+        result["web_topic"] = topic or "general"
+        result["web_time_range"] = time_range
+        result["query"] = query or None
+        result["action"] = "search"
+        result["requires_tool"] = True
+
+        return result
 
     def _resolve_recent_context_reference(
         self,
