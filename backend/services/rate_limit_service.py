@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import math
 from typing import Any
 
-from sqlalchemy import case
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -141,13 +140,9 @@ class RateLimitService:
                 != excluded.window_start,
                 1,
             ),
-            (
-                RateLimitCounter.request_count
-                < limit,
+            else_=
                 RateLimitCounter.request_count
                 + 1,
-            ),
-            else_=RateLimitCounter.request_count,
         )
 
         return (

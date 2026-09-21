@@ -70,10 +70,18 @@ class FakeUserService:
         if user_id != TEST_USER_ID:
             return None
 
+        now = datetime.now(
+            timezone.utc
+        ).replace(
+            tzinfo=None
+        )
+
         return SimpleNamespace(
             id=TEST_USER_ID,
             is_active=True,
             display_name="Rate Limit User",
+            created_at=now,
+            updated_at=now,
         )
 
 
