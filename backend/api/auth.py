@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import logging
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from typing import Annotated
 
 from fastapi import (
@@ -35,9 +34,7 @@ from api.schemas.auth import (
 
 logger = logging.getLogger(__name__)
 
-
 audit_service = AuditService()
-
 
 router = APIRouter(
     prefix="/auth",
@@ -245,6 +242,13 @@ def register(
         )
 
     except ValueError as exc:
+        _record_auth_audit(
+            action="register",
+            status_value="failure",
+            metadata={
+                "reason": "registration_failed"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -252,13 +256,6 @@ def register(
 
     _record_auth_audit(
         action="register",
-        status_value="success",
-        user_id=user.id,
-        resource_id=user_session.id,
-    )
-
-    _record_auth_audit(
-        action="login",
         status_value="success",
         user_id=user.id,
         resource_id=user_session.id,
@@ -316,6 +313,13 @@ def login(
             )
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="login",
+            status_value="failure",
+            metadata={
+                "reason": "invalid_login_request"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -341,10 +345,11 @@ def login(
         )
     except ValueError as exc:
         _record_auth_audit(
-            action="register",
+            action="login",
             status_value="failure",
+            user_id=user.id,
             metadata={
-                "reason": "registration_failed"
+                "reason": "session_creation_failed"
             },
         )
         raise HTTPException(
@@ -353,7 +358,7 @@ def login(
         ) from exc
 
     _record_auth_audit(
-        action="register",
+        action="login",
         status_value="success",
         user_id=user.id,
         resource_id=user_session.id,
@@ -427,28 +432,44 @@ def refresh(
             user_id=user_session.user_id
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="refresh",
+            status_value="failure",
+            metadata={
+                "reason": "user_lookup_failed"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
 
     if user is None or not user.is_active:
+        _record_auth_audit(
+            action="refresh",
+            status_value="failure",
+            user_id=user_session.user_id,
+            resource_id=user_session.id,
+            metadata={
+                "reason": "user_unavailable"
+            },
+        )
         raise _unauthorized(
             "Authenticated user is unavailable."
         )
-
-    access_token = (
-        token_service.create_access_token(
-            user_id=user.id,
-            session_id=user_session.id,
-        )
-    )
 
     _record_auth_audit(
         action="refresh",
         status_value="success",
         user_id=user.id,
         resource_id=user_session.id,
+    )
+
+    access_token = (
+        token_service.create_access_token(
+            user_id=user.id,
+            session_id=user_session.id,
+        )
     )
 
     return TokenResponse(
@@ -489,6 +510,15 @@ def logout(
     )
 
     if not revoked:
+        _record_auth_audit(
+            action="logout",
+            status_value="failure",
+            user_id=context.user.id,
+            resource_id=context.session.id,
+            metadata={
+                "reason": "session_already_inactive"
+            },
+        )
         raise _unauthorized(
             "Authentication session is no longer active."
         )
