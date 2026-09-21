@@ -3,8 +3,109 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class SecuritySettings(BaseSettings):
+    """
+    API-facing security boundary configuration.
+
+    Origins and trusted hosts are intentionally explicit. The default
+    values are local-development safe and fail closed for deployment
+    until real production values are supplied through the environment.
+    """
+
+    api_cors_allowed_origins: str = ""
+
+    api_trusted_hosts: str = (
+        "testserver,localhost,127.0.0.1"
+    )
+
+    security_hsts_enabled: bool = False
+
+    security_hsts_max_age_seconds: int = Field(
+        default=31536000,
+        gt=0,
+        le=63072000,
+    )
+
+    security_hsts_include_subdomains: bool = True
+
+    security_hsts_preload: bool = False
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+    @field_validator(
+        "api_cors_allowed_origins",
+        "api_trusted_hosts",
+    )
+    @classmethod
+    def _validate_security_list(
+        cls,
+        value: str,
+    ) -> str:
+        items = [
+            item.strip()
+            for item in str(value).split(",")
+            if item.strip()
+        ]
+
+        if "*" in items:
+            raise ValueError(
+                "Wildcard '*' is not allowed for "
+                "security configuration."
+            )
+
+        return str(value)
+
+    @staticmethod
+    def _parse_csv(
+        value: str,
+        field_name: str,
+    ) -> tuple[str, ...]:
+        items = tuple(
+            item.strip()
+            for item in str(value).split(",")
+            if item.strip()
+        )
+
+        if "*" in items:
+            raise ValueError(
+                f"{field_name} cannot contain '*'."
+            )
+
+        return items
+
+    def cors_allowed_origins(
+        self,
+    ) -> tuple[str, ...]:
+        return self._parse_csv(
+            self.api_cors_allowed_origins,
+            "api_cors_allowed_origins",
+        )
+
+    def trusted_hosts(
+        self,
+    ) -> tuple[str, ...]:
+        return self._parse_csv(
+            self.api_trusted_hosts,
+            "api_trusted_hosts",
+        )
+
+
+@lru_cache
+def get_security_settings() -> SecuritySettings:
+    """
+    Return cached API security settings.
+
+    This configuration is intentionally separate from the main
+    application Settings model so security middleware does not depend
+    on unrelated secrets being present at import time.
+    """
+    return SecuritySettings()
 
 
 class Settings(BaseSettings):
