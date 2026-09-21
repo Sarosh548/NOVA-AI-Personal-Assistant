@@ -27,6 +27,7 @@ from models.user_notification_preferences import (
 )
 from models.auth_identity import AuthIdentity
 from models.user_session import UserSession
+from models.refresh_token_history import RefreshTokenHistory
 from models.notification_destination import (
     NotificationDestination,
 )
