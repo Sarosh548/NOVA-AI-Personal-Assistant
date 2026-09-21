@@ -110,6 +110,42 @@ def test_rerank_sorts_candidates_by_cross_encoder_score():
     ]
 
 
+def test_rerank_includes_candidate_title_when_available():
+    model = FakeCrossEncoder([0.90])
+
+    service = RerankerService(model=model)
+
+    service.rerank(
+        "How can I add a web page to NOVA knowledge?",
+        [
+            {
+                "title": "NOVA URL Knowledge Ingestion",
+                "content": (
+                    "URL knowledge ingestion validates and safely "
+                    "fetches web pages."
+                ),
+            }
+        ],
+    )
+
+    assert model.calls == [
+        {
+            "pairs": [
+                (
+                    "How can I add a web page to NOVA knowledge?",
+                    (
+                        "Title: NOVA URL Knowledge Ingestion\n"
+                        "Content: URL knowledge ingestion validates and safely "
+                        "fetches web pages."
+                    ),
+                )
+            ],
+            "batch_size": 16,
+            "show_progress_bar": False,
+        }
+    ]
+
+
 def test_rerank_supports_top_k():
     model = FakeCrossEncoder(
         [

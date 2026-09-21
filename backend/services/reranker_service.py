@@ -85,7 +85,18 @@ class RerankerService:
                 f"candidate at index {index} has empty content"
             )
 
-        return normalized
+        title = candidate.get("title")
+        if title is None:
+            return normalized
+
+        normalized_title = str(title).strip()
+        if not normalized_title:
+            return normalized
+
+        return (
+            f"Title: {normalized_title}\n"
+            f"Content: {normalized}"
+        )
 
     def rerank(
         self,
