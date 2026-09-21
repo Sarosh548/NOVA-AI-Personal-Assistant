@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database.connection import engine
@@ -449,15 +449,38 @@ class KnowledgeService:
             else list(vector)
         )
 
+        user_chunks = (
+            select(
+                KnowledgeChunk.id.label(
+                    "chunk_id"
+                ),
+                KnowledgeChunk.document_id,
+                KnowledgeChunk.chunk_index,
+                KnowledgeChunk.content,
+                KnowledgeChunk.embedding,
+            )
+            .where(
+                KnowledgeChunk.user_id
+                == user_id,
+                KnowledgeChunk.embedding.is_not(
+                    None
+                ),
+            )
+            .cte(
+                "user_knowledge_chunks"
+            )
+            .prefix_with("MATERIALIZED")
+        )
+
         distance_expression = (
-            KnowledgeChunk.embedding.cosine_distance(
+            user_chunks.c.embedding.cosine_distance(
                 query_embedding
             )
         )
 
         statement = (
             select(
-                KnowledgeChunk,
+                user_chunks,
                 KnowledgeDocument,
                 distance_expression.label(
                     "distance"
@@ -466,16 +489,11 @@ class KnowledgeService:
             .join(
                 KnowledgeDocument,
                 KnowledgeDocument.id
-                == KnowledgeChunk.document_id,
+                == user_chunks.c.document_id,
             )
             .where(
-                KnowledgeChunk.user_id
-                == user_id,
                 KnowledgeDocument.user_id
                 == user_id,
-                KnowledgeChunk.embedding.is_not(
-                    None
-                ),
             )
             .order_by(
                 distance_expression
@@ -484,12 +502,6 @@ class KnowledgeService:
         )
 
         with Session(engine) as session:
-            session.execute(
-                text(
-                    "SET LOCAL hnsw.iterative_scan = strict_order"
-                )
-            )
-
             results = session.execute(
                 statement
             ).all()
