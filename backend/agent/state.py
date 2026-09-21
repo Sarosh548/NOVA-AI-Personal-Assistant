@@ -17,5 +17,6 @@ class NOVAState(TypedDict):
     tool_result: dict[str, Any]
     workflow_result: dict[str, Any]
     memory_context: str
+    knowledge_context: NotRequired[str]
     response: str
     activity_report: NotRequired[dict[str, Any]]
