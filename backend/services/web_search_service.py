@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
@@ -88,6 +89,45 @@ class WebSearchService:
                 f"Search query exceeds the maximum length of "
                 f"{MAX_QUERY_LENGTH} characters."
             )
+
+        return normalized
+
+    @staticmethod
+    def _normalize_result_url(
+        url: str,
+    ) -> str | None:
+        """
+        Accept only browser-navigable HTTP(S) result URLs.
+
+        Provider responses are untrusted input. Reject non-web
+        schemes, missing hosts, and embedded URL credentials before
+        source metadata reaches the agent or API response.
+        """
+
+        normalized = str(url).strip()
+
+        if not normalized:
+            return None
+
+        try:
+            parsed = urlparse(normalized)
+        except ValueError:
+            return None
+
+        if parsed.scheme.lower() not in {
+            "http",
+            "https",
+        }:
+            return None
+
+        if not parsed.netloc:
+            return None
+
+        if (
+            parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
 
         return normalized
 
@@ -224,16 +264,16 @@ class WebSearchService:
 
         results: list[dict] = []
 
-        for raw_result in raw_results[:normalized_max_results]:
+        for raw_result in raw_results:
             if not isinstance(raw_result, dict):
                 continue
 
             title = str(
                 raw_result.get("title") or ""
             ).strip()
-            url = str(
+            url = self._normalize_result_url(
                 raw_result.get("url") or ""
-            ).strip()
+            )
             content = str(
                 raw_result.get("content") or ""
             ).strip()
@@ -274,5 +314,8 @@ class WebSearchService:
                     ),
                 ).to_dict()
             )
+
+            if len(results) >= normalized_max_results:
+                break
 
         return results
