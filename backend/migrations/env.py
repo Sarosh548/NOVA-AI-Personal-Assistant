@@ -40,6 +40,7 @@ from models.knowledge_chunk import KnowledgeChunk
 from models.audit_event import AuditEvent
 from models.notification_delivery import NotificationDelivery
 from models.idempotency_record import IdempotencyRecord
+from models.rate_limit_counter import RateLimitCounter
 
 # Alembic Config object
 config = context.config

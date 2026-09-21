@@ -108,6 +108,54 @@ def get_security_settings() -> SecuritySettings:
     return SecuritySettings()
 
 
+
+class RateLimitSettings(BaseSettings):
+    """
+    API rate limiting and quota configuration.
+
+    Limits are environment-driven so deployment profiles can tune
+    protection without changing application code.
+    """
+
+    api_rate_limit_enabled: bool = True
+
+    api_rate_limit_requests_per_window: int = Field(
+        default=120,
+        ge=1,
+        le=100000,
+    )
+
+    api_rate_limit_window_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+    )
+
+    api_auth_rate_limit_requests_per_window: int = Field(
+        default=20,
+        ge=1,
+        le=100000,
+    )
+
+    api_auth_rate_limit_window_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+    )
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+
+@lru_cache
+def get_rate_limit_settings() -> RateLimitSettings:
+    """
+    Return cached API rate limit settings.
+    """
+    return RateLimitSettings()
+
+
 class Settings(BaseSettings):
     """
     Application configuration loaded from environment variables.

@@ -9,6 +9,7 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Request,
     Response,
     status,
 )
@@ -17,9 +18,17 @@ from fastapi.security import (
     OAuth2PasswordRequestFormStrict,
 )
 
+from config import (
+    RateLimitSettings,
+    get_rate_limit_settings,
+)
+
 from models.user import User
 from models.user_session import UserSession
 from services.audit_service import AuditService
+from services.rate_limit_service import (
+    RateLimitService,
+)
 from services.auth_service import (
     AuthService,
     RefreshTokenReplayDetected,
@@ -61,6 +70,95 @@ def get_token_service() -> TokenService:
 
 def get_user_service() -> UserService:
     return UserService()
+
+def get_rate_limit_service() -> RateLimitService:
+    return RateLimitService()
+
+
+
+def _set_rate_limit_headers(
+    response: Response,
+    decision,
+) -> None:
+    response.headers["RateLimit-Limit"] = str(
+        decision.limit
+    )
+    response.headers["RateLimit-Remaining"] = str(
+        decision.remaining
+    )
+    response.headers["RateLimit-Reset"] = str(
+        decision.reset_after_seconds
+    )
+
+
+def _rate_limit_exception(
+    decision,
+) -> HTTPException:
+    headers = {
+        "RateLimit-Limit": str(
+            decision.limit
+        ),
+        "RateLimit-Remaining": str(
+            decision.remaining
+        ),
+        "RateLimit-Reset": str(
+            decision.reset_after_seconds
+        ),
+        "Retry-After": str(
+            decision.reset_after_seconds
+        ),
+    }
+
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Rate limit exceeded. Try again later.",
+        headers=headers,
+    )
+
+
+def enforce_auth_endpoint_rate_limit(
+    request: Request,
+    response: Response,
+    rate_limit_service: Annotated[
+        RateLimitService,
+        Depends(get_rate_limit_service),
+    ],
+    rate_limit_settings: Annotated[
+        RateLimitSettings,
+        Depends(get_rate_limit_settings),
+    ],
+) -> None:
+    if not rate_limit_settings.api_rate_limit_enabled:
+        return
+
+    client_host = (
+        request.client.host
+        if request.client is not None
+        else "unknown"
+    )
+
+    decision = rate_limit_service.check_and_consume(
+        principal_key=f"ip:{client_host}",
+        scope=f"authentication:{request.url.path}",
+        limit=(
+            rate_limit_settings
+            .api_auth_rate_limit_requests_per_window
+        ),
+        window_seconds=(
+            rate_limit_settings
+            .api_auth_rate_limit_window_seconds
+        ),
+    )
+
+    _set_rate_limit_headers(
+        response,
+        decision,
+    )
+
+    if not decision.allowed:
+        raise _rate_limit_exception(
+            decision
+        )
 
 
 def _record_auth_audit(
@@ -136,6 +234,15 @@ def get_current_auth_context(
         UserService,
         Depends(get_user_service),
     ],
+    response: Response,
+    rate_limit_service: Annotated[
+        RateLimitService,
+        Depends(get_rate_limit_service),
+    ],
+    rate_limit_settings: Annotated[
+        RateLimitSettings,
+        Depends(get_rate_limit_settings),
+    ],
 ) -> AuthenticatedContext:
     """
     Resolve the authenticated NOVA user and active session from
@@ -203,6 +310,30 @@ def get_current_auth_context(
             "Authenticated user is inactive."
         )
 
+    if rate_limit_settings.api_rate_limit_enabled:
+        decision = rate_limit_service.check_and_consume(
+            principal_key=f"user:{user.id}",
+            scope="authenticated_api",
+            limit=(
+                rate_limit_settings
+                .api_rate_limit_requests_per_window
+            ),
+            window_seconds=(
+                rate_limit_settings
+                .api_rate_limit_window_seconds
+            ),
+        )
+
+        _set_rate_limit_headers(
+            response,
+            decision,
+        )
+
+        if not decision.allowed:
+            raise _rate_limit_exception(
+                decision
+            )
+
     return AuthenticatedContext(
         user=user,
         session=user_session,
@@ -213,6 +344,9 @@ def get_current_auth_context(
     "/register",
     response_model=TokenResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(enforce_auth_endpoint_rate_limit)
+    ],
 )
 def register(
     request: RegisterRequest,
@@ -290,6 +424,9 @@ def register(
 @router.post(
     "/login",
     response_model=TokenResponse,
+    dependencies=[
+        Depends(enforce_auth_endpoint_rate_limit)
+    ],
 )
 def login(
     form_data: Annotated[
@@ -393,6 +530,9 @@ def login(
 @router.post(
     "/refresh",
     response_model=TokenResponse,
+    dependencies=[
+        Depends(enforce_auth_endpoint_rate_limit)
+    ],
 )
 def refresh(
     request: RefreshRequest,
