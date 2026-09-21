@@ -1613,6 +1613,8 @@ def _get_knowledge_retrieval(
             query=user_message,
             threshold=0.65,
             limit=8,
+            rerank=True,
+            candidate_limit=DEFAULT_RERANK_CANDIDATE_LIMIT,
         )
     except Exception:
         return (
