@@ -9,6 +9,10 @@ from database.connection import engine
 from models.knowledge_chunk import KnowledgeChunk
 from models.knowledge_document import KnowledgeDocument
 from services.embedding_service import EmbeddingService
+from services.url_parser_service import (
+    ParsedWebPage,
+    WebPageParserService,
+)
 
 
 MAX_TITLE_LENGTH = 300
@@ -26,18 +30,23 @@ class KnowledgeService:
     """
     Durable user-scoped knowledge-base ingestion and retrieval.
 
-    This first RAG foundation accepts normalized plain text.
-    Parsing external files or URLs is intentionally kept outside
-    this service until the storage and retrieval boundary is stable.
+    Supports normalized text ingestion plus URL-based web-page
+    ingestion through the dedicated web parser.
     """
 
     def __init__(
         self,
         embedding_service: EmbeddingService | None = None,
+        web_parser_service: WebPageParserService | None = None,
     ):
         self.embedding_service = (
             embedding_service
             or EmbeddingService()
+        )
+
+        self.web_parser_service = (
+            web_parser_service
+            or WebPageParserService()
         )
 
     @staticmethod
@@ -264,6 +273,23 @@ class KnowledgeService:
                 document,
                 chunk_count=len(chunks),
             )
+
+    def create_document_from_url(
+        self,
+        *,
+        user_id: str,
+        url: str,
+    ) -> dict:
+        parsed: ParsedWebPage = (
+            self.web_parser_service.fetch(url)
+        )
+
+        return self.create_document(
+            user_id=user_id,
+            title=parsed.title,
+            content=parsed.text,
+            source=parsed.url,
+        )
 
     def list_documents(
         self,
