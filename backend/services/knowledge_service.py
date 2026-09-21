@@ -9,6 +9,7 @@ from database.connection import engine
 from models.knowledge_chunk import KnowledgeChunk
 from models.knowledge_document import KnowledgeDocument
 from services.embedding_service import EmbeddingService
+from services.reranker_service import RerankerService
 from services.url_parser_service import (
     ParsedWebPage,
     WebPageParserService,
@@ -24,6 +25,7 @@ CHUNK_OVERLAP = 200
 
 DEFAULT_SEARCH_THRESHOLD = 0.65
 DEFAULT_SEARCH_LIMIT = 8
+DEFAULT_RERANK_CANDIDATE_LIMIT = 24
 
 
 class KnowledgeService:
@@ -38,6 +40,7 @@ class KnowledgeService:
         self,
         embedding_service: EmbeddingService | None = None,
         web_parser_service: WebPageParserService | None = None,
+        reranker_service: RerankerService | None = None,
     ):
         self.embedding_service = (
             embedding_service
@@ -47,6 +50,11 @@ class KnowledgeService:
         self.web_parser_service = (
             web_parser_service
             or WebPageParserService()
+        )
+
+        self.reranker_service = (
+            reranker_service
+            or RerankerService()
         )
 
     @staticmethod
@@ -390,6 +398,8 @@ class KnowledgeService:
         query: str,
         threshold: float = DEFAULT_SEARCH_THRESHOLD,
         limit: int = DEFAULT_SEARCH_LIMIT,
+        rerank: bool = False,
+        candidate_limit: int | None = None,
     ) -> list[dict]:
         normalized_query = self._normalize_text(
             query,
@@ -406,6 +416,23 @@ class KnowledgeService:
             raise ValueError(
                 "limit must be greater than 0"
             )
+
+        if candidate_limit is not None and candidate_limit < 1:
+            raise ValueError(
+                "candidate_limit must be greater than 0"
+            )
+
+        retrieval_limit = (
+            max(
+                candidate_limit
+                or (
+                    limit * 3
+                ),
+                limit,
+            )
+            if rerank
+            else limit
+        )
 
         vector = (
             self.embedding_service.create_embedding(
@@ -453,7 +480,7 @@ class KnowledgeService:
             .order_by(
                 distance_expression
             )
-            .limit(limit)
+            .limit(retrieval_limit)
         )
 
         with Session(engine) as session:
@@ -485,4 +512,11 @@ class KnowledgeService:
                     }
                 )
 
-            return matches
+            if not rerank or not matches:
+                return matches[:limit]
+
+            return self.reranker_service.rerank(
+                normalized_query,
+                matches,
+                top_k=limit,
+            )
