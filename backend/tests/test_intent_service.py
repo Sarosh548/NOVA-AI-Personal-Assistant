@@ -193,3 +193,47 @@ def test_validate_goal_change_does_not_create_tool_fields():
     assert validated["reminder_reference"] is None
     assert validated["reminder_id"] is None
     assert validated["requires_tool"] is False
+
+def test_validate_web_search_request():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "web",
+        "web_action": "search",
+        "web_topic": "news",
+        "web_time_range": "day",
+        "query": "latest AI news",
+        "max_results": 5,
+        "requires_tool": True,
+    }
+
+    validated = service._validate_result(result)
+
+    assert validated["intent"] == "web"
+    assert validated["web_action"] == "search"
+    assert validated["web_topic"] == "news"
+    assert validated["web_time_range"] == "day"
+    assert validated["query"] == "latest AI news"
+    assert validated["max_results"] == 5
+    assert validated["requires_tool"] is True
+
+
+def test_validate_invalid_web_action_defaults_to_search():
+    service = make_service_without_llm()
+
+    result = {
+        "intent": "web",
+        "web_action": "crawl",
+        "web_topic": "invalid",
+        "web_time_range": "hour",
+        "query": "AI",
+        "requires_tool": False,
+    }
+
+    validated = service._validate_result(result)
+
+    assert validated["intent"] == "web"
+    assert validated["web_action"] == "search"
+    assert validated["web_topic"] == "general"
+    assert validated["web_time_range"] is None
+    assert validated["requires_tool"] is True
