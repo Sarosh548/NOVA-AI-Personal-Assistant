@@ -22,6 +22,14 @@ class ReminderService:
             else default_engine
         )
 
+    @staticmethod
+    def _utc_now_naive() -> datetime:
+        return datetime.now(
+            timezone.utc
+        ).replace(
+            tzinfo=None
+        )
+
     def _normalize_datetime(
         self,
         reminder_time: datetime,
@@ -73,7 +81,7 @@ class ReminderService:
             )
         )
 
-        if reminder_time_utc <= datetime.utcnow():
+        if reminder_time_utc <= self._utc_now_naive():
             raise ValueError(
                 "Reminder time must be in the future."
             )
@@ -283,7 +291,7 @@ class ReminderService:
                 )
             )
 
-            if normalized_time <= datetime.utcnow():
+            if normalized_time <= self._utc_now_naive():
                 raise ValueError(
                     "Reminder time must be in the future."
                 )
@@ -305,7 +313,7 @@ class ReminderService:
             if normalized_time is not None:
                 reminder.reminder_time = normalized_time
 
-            reminder.updated_at = datetime.utcnow()
+            reminder.updated_at = self._utc_now_naive()
 
             session.commit()
 
@@ -329,7 +337,7 @@ class ReminderService:
         current_time = (
             now
             if now is not None
-            else datetime.utcnow()
+            else self._utc_now_naive()
         )
 
         if current_time.tzinfo is not None:
@@ -423,7 +431,7 @@ class ReminderService:
                 "claim_token cannot be empty."
             )
 
-        now = datetime.utcnow()
+        now = self._utc_now_naive()
 
         with Session(self.engine) as session:
             result = session.execute(
@@ -468,7 +476,7 @@ class ReminderService:
                 "claim_token cannot be empty."
             )
 
-        now = datetime.utcnow()
+        now = self._utc_now_naive()
 
         with Session(self.engine) as session:
             result = session.execute(
@@ -498,7 +506,7 @@ class ReminderService:
         Compatibility helper.
         """
 
-        current_time = datetime.utcnow()
+        current_time = self._utc_now_naive()
 
         with Session(self.engine) as session:
             statement = (
@@ -548,7 +556,7 @@ class ReminderService:
             reminder.status = "completed"
             reminder.claim_token = None
             reminder.lease_until = None
-            reminder.updated_at = datetime.utcnow()
+            reminder.updated_at = self._utc_now_naive()
 
             session.commit()
 
@@ -574,7 +582,7 @@ class ReminderService:
             reminder.status = "cancelled"
             reminder.claim_token = None
             reminder.lease_until = None
-            reminder.updated_at = datetime.utcnow()
+            reminder.updated_at = self._utc_now_naive()
 
             session.commit()
 
