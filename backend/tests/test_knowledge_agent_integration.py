@@ -115,6 +115,15 @@ def test_agent_node_retrieves_user_knowledge_for_conversational_request(
     assert result["response"] == "Grounded test response."
     assert "Python Guide" in result["knowledge_context"]
     assert "Python is useful for AI development." in result["knowledge_context"]
+    assert result["knowledge_sources"] == [
+        {
+            "document_id": 7,
+            "title": "Python Guide",
+            "source": "manual",
+            "chunk_index": 0,
+            "similarity": 0.91,
+        }
+    ]
 
     assert knowledge_service.calls == [
         {
@@ -127,6 +136,9 @@ def test_agent_node_retrieves_user_knowledge_for_conversational_request(
 
     assert len(llm_service.prompts) == 1
     assert "Relevant knowledge from NOVA's personal knowledge base:" in llm_service.prompts[0]
+    assert "[Source 1]" in llm_service.prompts[0]
+    assert "Knowledge sources:" in llm_service.prompts[0]
+    assert "cite the supporting source inline" in llm_service.prompts[0]
     assert "Python is useful for AI development." in llm_service.prompts[0]
 
 
@@ -182,6 +194,7 @@ def test_agent_node_skips_knowledge_for_tool_requests(
     assert result["knowledge_context"] == (
         "Knowledge retrieval was not used for this request."
     )
+    assert result["knowledge_sources"] == []
     assert result["response"] == "Grounded test response."
 
 
@@ -248,4 +261,5 @@ def test_agent_node_continues_when_knowledge_retrieval_fails(
     assert result["knowledge_context"] == (
         "Knowledge retrieval is temporarily unavailable."
     )
+    assert result["knowledge_sources"] == []
     assert result["response"] == "Grounded test response."
