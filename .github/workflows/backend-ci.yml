@@ -64,6 +64,11 @@ jobs:
         run: |
           python -c "import os, psycopg; url=os.environ['DATABASE_URL'].replace('postgresql+psycopg://', 'postgresql://', 1); conn=psycopg.connect(url); conn.execute('CREATE EXTENSION IF NOT EXISTS vector'); conn.commit(); conn.close()"
 
+      - name: Bootstrap legacy migration baseline
+        working-directory: backend
+        run: |
+          python -c "import os, psycopg, pathlib; url=os.environ['DATABASE_URL'].replace('postgresql+psycopg://', 'postgresql://', 1); sql=pathlib.Path('migrations/legacy_schema.sql').read_text(encoding='utf-8'); conn=psycopg.connect(url); conn.execute(sql); conn.commit(); conn.close()"
+
       - name: Apply database migrations
         working-directory: backend
         run: python -m alembic upgrade head
