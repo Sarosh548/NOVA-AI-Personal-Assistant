@@ -2116,6 +2116,7 @@ Response rules:
         **state,
         "knowledge_context": knowledge_context,
         "knowledge_sources": knowledge_sources,
+        "web_sources": web_sources,
         "response": response,
     }
 
