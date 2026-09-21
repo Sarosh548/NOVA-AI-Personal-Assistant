@@ -498,6 +498,11 @@ def chat(
         {},
     )
 
+    knowledge_sources = result.get(
+        "knowledge_sources",
+        [],
+    )
+
     conversation_service.save_message(
         user_id=current_user_id,
         conversation_id=conversation_id,
@@ -547,4 +552,5 @@ def chat(
         "tool_result": tool_result,
         "workflow_result": workflow_result,
         "memory_action": memory_action,
+        "knowledge_sources": knowledge_sources,
     }
