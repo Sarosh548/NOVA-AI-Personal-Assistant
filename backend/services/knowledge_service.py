@@ -449,15 +449,11 @@ class KnowledgeService:
             else list(vector)
         )
 
-        user_chunks = (
+        user_chunk_ids = (
             select(
                 KnowledgeChunk.id.label(
                     "chunk_id"
                 ),
-                KnowledgeChunk.document_id,
-                KnowledgeChunk.chunk_index,
-                KnowledgeChunk.content,
-                KnowledgeChunk.embedding,
             )
             .where(
                 KnowledgeChunk.user_id
@@ -467,29 +463,34 @@ class KnowledgeService:
                 ),
             )
             .cte(
-                "user_knowledge_chunks"
+                "user_knowledge_chunk_ids"
             )
             .prefix_with("MATERIALIZED")
         )
 
         distance_expression = (
-            user_chunks.c.embedding.cosine_distance(
+            KnowledgeChunk.embedding.cosine_distance(
                 query_embedding
             )
         )
 
         statement = (
             select(
-                user_chunks,
+                KnowledgeChunk,
                 KnowledgeDocument,
                 distance_expression.label(
                     "distance"
                 ),
             )
             .join(
+                user_chunk_ids,
+                user_chunk_ids.c.chunk_id
+                == KnowledgeChunk.id,
+            )
+            .join(
                 KnowledgeDocument,
                 KnowledgeDocument.id
-                == user_chunks.c.document_id,
+                == KnowledgeChunk.document_id,
             )
             .where(
                 KnowledgeDocument.user_id
