@@ -10,6 +10,8 @@ if not database_url:
 engine = create_engine(
     database_url,
     echo=False,
+    pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
 
