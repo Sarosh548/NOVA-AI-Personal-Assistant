@@ -43,6 +43,8 @@ class ProactiveActivityScheduler:
     - bypass durable delivery protection
     """
 
+    MAX_CYCLE_BACKOFF_SECONDS = 60
+
     DEFAULT_TIMEZONE = "Asia/Karachi"
     DEFAULT_DELIVERY_HOUR = 21
     DEFAULT_DELIVERY_MINUTE = 0
@@ -393,21 +395,54 @@ class ProactiveActivityScheduler:
             self.ACTIVITY_DISCOVERY_LOOKBACK_HOURS,
         )
 
+        consecutive_cycle_failures = 0
+        cycle_backoff_seconds = self.interval_seconds
+
         try:
             while self._running:
                 try:
                     await self.process_daily_activity_digests()
 
                 except Exception:
-                    logger.exception(
-                        "Unexpected proactive activity scheduler cycle failure."
+                    consecutive_cycle_failures += 1
+                    cycle_backoff_seconds = max(
+                        self.interval_seconds,
+                        min(
+                            self.MAX_CYCLE_BACKOFF_SECONDS,
+                            self.interval_seconds
+                            * (
+                                2
+                                ** min(
+                                    consecutive_cycle_failures - 1,
+                                    10,
+                                )
+                            ),
+                        ),
                     )
+                    logger.exception(
+                        "Unexpected proactive activity scheduler cycle "
+                        "failure (consecutive_failures=%s, "
+                        "next_retry_in=%ss).",
+                        consecutive_cycle_failures,
+                        cycle_backoff_seconds,
+                    )
+
+                else:
+                    if consecutive_cycle_failures:
+                        logger.info(
+                            "NOVA proactive activity scheduler recovered "
+                            "after %s consecutive cycle failures.",
+                            consecutive_cycle_failures,
+                        )
+
+                    consecutive_cycle_failures = 0
+                    cycle_backoff_seconds = self.interval_seconds
 
                 if not self._running:
                     break
 
                 await asyncio.sleep(
-                    self.interval_seconds
+                    cycle_backoff_seconds
                 )
 
         finally:

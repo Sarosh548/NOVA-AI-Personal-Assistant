@@ -39,6 +39,8 @@ class AutonomousWorkflowScheduler:
     The persistent workflow remains the source of truth.
     """
 
+    MAX_CYCLE_BACKOFF_SECONDS = 60
+
     TERMINAL_STATUSES = {
         "completed",
         "partial",
@@ -343,21 +345,54 @@ class AutonomousWorkflowScheduler:
             self.batch_size,
         )
 
+        consecutive_cycle_failures = 0
+        cycle_backoff_seconds = self.interval_seconds
+
         try:
             while self._running:
                 try:
                     await self.process_due_workflows()
 
                 except Exception:
-                    logger.exception(
-                        "Unexpected autonomous workflow scheduler cycle failure."
+                    consecutive_cycle_failures += 1
+                    cycle_backoff_seconds = max(
+                        self.interval_seconds,
+                        min(
+                            self.MAX_CYCLE_BACKOFF_SECONDS,
+                            self.interval_seconds
+                            * (
+                                2
+                                ** min(
+                                    consecutive_cycle_failures - 1,
+                                    10,
+                                )
+                            ),
+                        ),
                     )
+                    logger.exception(
+                        "Unexpected autonomous workflow scheduler cycle "
+                        "failure (consecutive_failures=%s, "
+                        "next_retry_in=%ss).",
+                        consecutive_cycle_failures,
+                        cycle_backoff_seconds,
+                    )
+
+                else:
+                    if consecutive_cycle_failures:
+                        logger.info(
+                            "NOVA autonomous workflow scheduler recovered "
+                            "after %s consecutive cycle failures.",
+                            consecutive_cycle_failures,
+                        )
+
+                    consecutive_cycle_failures = 0
+                    cycle_backoff_seconds = self.interval_seconds
 
                 if not self._running:
                     break
 
                 await asyncio.sleep(
-                    self.interval_seconds
+                    cycle_backoff_seconds
                 )
 
         finally:
