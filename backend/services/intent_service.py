@@ -999,7 +999,10 @@ Return exactly:
         )
 
         has_fresh_marker = any(
-            marker in normalized
+            re.search(
+                rf"\\b{re.escape(marker)}\\b",
+                normalized,
+            )
             for marker in fresh_markers
         )
 
