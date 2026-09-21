@@ -252,6 +252,22 @@ def test_scheduler_rejects_invalid_interval():
             ),
         )
 
+    with pytest.raises(
+        ValueError,
+        match="interval_seconds must not exceed MAX_CYCLE_BACKOFF_SECONDS",
+    ):
+        ProactiveActivityScheduler(
+            interval_seconds=(
+                ProactiveActivityScheduler.MAX_CYCLE_BACKOFF_SECONDS + 1
+            ),
+            notification_service=(
+                FakeProactiveNotificationService()
+            ),
+            preferences_service=(
+                FakePreferencesService({})
+            ),
+        )
+
 
 def test_scheduler_uses_current_local_day_for_each_user():
     (
@@ -730,3 +746,60 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
         scheduler.interval_seconds
     ]
     assert scheduler._running is False
+
+
+@pytest.mark.asyncio
+async def test_scheduler_cycle_backoff_caps_and_resets_after_success(monkeypatch):
+    scheduler = ProactiveActivityScheduler()
+    calls = []
+    sleeps = []
+
+    async def flaky_cycle():
+        calls.append("cycle")
+
+        if len(calls) <= 5:
+            raise RuntimeError(
+                "simulated cycle failure"
+            )
+
+        if len(calls) == 7:
+            raise RuntimeError(
+                "simulated post-recovery failure"
+            )
+
+        if len(calls) == 8:
+            scheduler.stop()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    scheduler.process_daily_activity_digests = flaky_cycle
+
+    monkeypatch.setattr(
+        "services.proactive_activity_scheduler.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await scheduler.run()
+
+    assert calls == [
+        "cycle",
+        "cycle",
+        "cycle",
+        "cycle",
+        "cycle",
+        "cycle",
+        "cycle",
+        "cycle",
+    ]
+    assert sleeps == [
+        scheduler.interval_seconds,
+        scheduler.interval_seconds * 2,
+        scheduler.interval_seconds * 4,
+        scheduler.interval_seconds * 8,
+        scheduler.MAX_CYCLE_BACKOFF_SECONDS,
+        scheduler.interval_seconds,
+        scheduler.interval_seconds,
+    ]
+    assert scheduler._running is False
+
