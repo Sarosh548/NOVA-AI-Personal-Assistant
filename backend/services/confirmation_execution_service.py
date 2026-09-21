@@ -6,6 +6,8 @@ from typing import Any
 from services.autonomous_workflow_service import (
     AutonomousWorkflowService,
 )
+from services.permission_service import PermissionService
+from services.plan_permission_service import PlanPermissionService
 from services.confirmation_service import (
     ConfirmationService,
 )
@@ -80,6 +82,7 @@ class ConfirmationExecutionService:
         autonomous_workflow_service: (
             AutonomousWorkflowService | None
         ) = None,
+        permission_service: PermissionService | None = None,
     ):
         self.confirmation_service = (
             confirmation_service
@@ -105,6 +108,18 @@ class ConfirmationExecutionService:
             autonomous_workflow_service
             if autonomous_workflow_service is not None
             else AutonomousWorkflowService()
+        )
+
+        self.permission_service = (
+            permission_service
+            if permission_service is not None
+            else PermissionService()
+        )
+
+        self.plan_permission_service = (
+            PlanPermissionService(
+                permission_service=self.permission_service
+            )
         )
 
     def execute_approved_confirmation(
@@ -238,6 +253,59 @@ class ConfirmationExecutionService:
         )
 
 
+    def _check_tool_safety(
+        self,
+        *,
+        user_id: str,
+        tool: str,
+        action: str,
+        data: dict[str, Any],
+    ) -> str | None:
+        decision = self.permission_service.check(
+            user_id=user_id,
+            tool=tool,
+            action=action,
+            user_requested=True,
+            data=data,
+        )
+
+        if (
+            not decision.allowed
+            and not decision.requires_confirmation
+        ):
+            return (
+                "The action is no longer permitted under "
+                "the current authorization policy."
+            )
+
+        return None
+
+    def _check_workflow_safety(
+        self,
+        *,
+        user_id: str,
+        steps: Any,
+    ) -> str | None:
+        if not isinstance(steps, list):
+            return None
+
+        decision = self.plan_permission_service.check(
+            user_id=user_id,
+            steps=list(steps),
+            user_requested=True,
+        )
+
+        if (
+            not decision.allowed
+            and not decision.requires_confirmation
+        ):
+            return (
+                "The workflow is no longer permitted under "
+                "the current authorization policy."
+            )
+
+        return None
+
     def _execute_tool(
         self,
         *,
@@ -272,6 +340,21 @@ class ConfirmationExecutionService:
                 error="The saved confirmation action is missing.",
             )
 
+        safety_error = self._check_tool_safety(
+            user_id=user_id,
+            tool=tool_name,
+            action=action,
+            data=data,
+        )
+
+        if safety_error is not None:
+            return self._finish_failure(
+                user_id=user_id,
+                confirmation_id=confirmation_id,
+                claimed=claimed,
+                error=safety_error,
+            )
+
         try:
             tool_result = self.tool_router.execute(
                 intent=tool_name,
@@ -298,6 +381,7 @@ class ConfirmationExecutionService:
                 user_id=user_id,
                 confirmation_id=confirmation_id,
                 success=success,
+                claim_token=claimed.get("claim_token"),
             )
         )
 
@@ -345,6 +429,19 @@ class ConfirmationExecutionService:
             "steps",
             [],
         )
+
+        safety_error = self._check_workflow_safety(
+            user_id=user_id,
+            steps=steps,
+        )
+
+        if safety_error is not None:
+            return self._finish_workflow_failure(
+                user_id=user_id,
+                confirmation_id=confirmation_id,
+                claimed=claimed,
+                error=safety_error,
+            )
 
         if execution_mode == "autonomous":
             return self._schedule_autonomous_workflow(
@@ -427,6 +524,7 @@ class ConfirmationExecutionService:
                 user_id=user_id,
                 confirmation_id=confirmation_id,
                 success=execution.success,
+                claim_token=claimed.get("claim_token"),
             )
         )
 
@@ -542,6 +640,7 @@ class ConfirmationExecutionService:
                 user_id=user_id,
                 confirmation_id=confirmation_id,
                 success=True,
+                claim_token=claimed.get("claim_token"),
             )
         )
 
@@ -575,6 +674,7 @@ class ConfirmationExecutionService:
                 user_id=user_id,
                 confirmation_id=confirmation_id,
                 success=False,
+                claim_token=claimed.get("claim_token"),
             )
         )
 
