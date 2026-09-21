@@ -19,5 +19,6 @@ class NOVAState(TypedDict):
     memory_context: str
     knowledge_context: NotRequired[str]
     knowledge_sources: NotRequired[list[dict[str, Any]]]
+    web_sources: NotRequired[list[dict[str, Any]]]
     response: str
     activity_report: NotRequired[dict[str, Any]]
