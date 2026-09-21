@@ -670,6 +670,7 @@ class ConfirmationService:
                     Confirmation.id == confirmation_id,
                     Confirmation.user_id == user_id,
                     Confirmation.status == "approved",
+                    Confirmation.expires_at > now,
                 )
                 .values(
                     status="processing",
@@ -688,6 +689,7 @@ class ConfirmationService:
                         Confirmation.id == confirmation_id,
                         Confirmation.user_id == user_id,
                         Confirmation.status == "processing",
+                        Confirmation.expires_at > now,
                         Confirmation.lease_until.is_not(None),
                         Confirmation.lease_until <= now,
                     )
@@ -701,6 +703,30 @@ class ConfirmationService:
                 claim_reason = "reclaimed"
 
             if result.rowcount != 1:
+                confirmation = session.scalar(
+                    select(Confirmation).where(
+                        Confirmation.id == confirmation_id,
+                        Confirmation.user_id == user_id,
+                    )
+                )
+
+                if (
+                    confirmation is not None
+                    and confirmation.status == "approved"
+                    and confirmation.expires_at <= now
+                ):
+                    confirmation.status = "expired"
+                    confirmation.resolved_at = now
+                    session.commit()
+                    self._record_audit(
+                        user_id=user_id,
+                        action="claim",
+                        status="failure",
+                        confirmation=self._to_dict(confirmation),
+                        metadata={"reason": "expired"},
+                    )
+                    return None
+
                 self._record_audit(
                     user_id=user_id,
                     action="claim",
@@ -762,13 +788,16 @@ class ConfirmationService:
             if confirmation.status != "processing":
                 return self._to_dict(confirmation)
 
+            now = self._utc_now_naive()
+
             if (
-                claim_token is not None
-                and confirmation.claim_token != claim_token
+                claim_token is None
+                or confirmation.claim_token != claim_token
+                or confirmation.lease_until is None
+                or confirmation.lease_until <= now
             ):
                 return None
 
-            now = self._utc_now_naive()
             confirmation.status = (
                 "consumed"
                 if success
