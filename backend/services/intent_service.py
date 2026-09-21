@@ -1391,25 +1391,18 @@ Return exactly:
             subject = None
             body = None
 
-        if intent != "calendar" and intent != "web":
+        if intent != "calendar":
             calendar_action = None
             calendar_id = None
             event_id = None
             event = None
             time_min = None
             time_max = None
-            query = None
-            max_results = None
             page_token = None
             single_events = None
             order_by = None
             show_deleted = None
             send_updates = None
-
-        if intent == "calendar":
-            web_action = None
-            web_topic = None
-            web_time_range = None
 
         if intent != "web":
             web_action = None
@@ -1435,7 +1428,7 @@ Return exactly:
             }:
                 web_time_range = None
 
-                # -------------------------------------------------
+        # -------------------------------------------------
         # For reminder creation, default action is create.
         # -------------------------------------------------
 
@@ -1451,6 +1444,7 @@ Return exactly:
             "action",
             "email",
             "calendar",
+            "web",
         }
 
         return {
