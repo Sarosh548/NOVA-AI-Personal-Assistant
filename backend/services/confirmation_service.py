@@ -500,6 +500,7 @@ class ConfirmationService:
                 return None
 
             result_dict = self._to_dict(confirmation)
+            result_dict["claim_token"] = confirmation.claim_token
 
         self._record_audit(
             user_id=user_id,
@@ -713,6 +714,7 @@ class ConfirmationService:
                 return None
 
             result_dict = self._to_dict(confirmation)
+            result_dict["claim_token"] = confirmation.claim_token
 
         self._record_audit(
             user_id=user_id,
@@ -801,7 +803,6 @@ class ConfirmationService:
             "created_at": confirmation.created_at,
             "expires_at": confirmation.expires_at,
             "resolved_at": confirmation.resolved_at,
-            "claim_token": confirmation.claim_token,
             "lease_until": confirmation.lease_until,
             "attempt_count": confirmation.attempt_count,
         }
