@@ -509,8 +509,6 @@ def memory_node(state: NOVAState) -> NOVAState:
             new_memory=user_message,
             threshold=0.65,
             limit=8,
-            rerank=True,
-            candidate_limit=DEFAULT_RERANK_CANDIDATE_LIMIT,
         )
     )
 
