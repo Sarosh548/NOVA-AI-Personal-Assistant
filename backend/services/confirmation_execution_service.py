@@ -716,6 +716,7 @@ class ConfirmationExecutionService:
                 user_id=user_id,
                 confirmation_id=confirmation_id,
                 success=False,
+                claim_token=claimed.get("claim_token"),
             )
         )
 
