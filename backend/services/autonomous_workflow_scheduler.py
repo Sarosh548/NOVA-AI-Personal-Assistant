@@ -345,7 +345,17 @@ class AutonomousWorkflowScheduler:
 
         try:
             while self._running:
-                await self.process_due_workflows()
+                try:
+                    await self.process_due_workflows()
+
+                except Exception:
+                    logger.exception(
+                        "Unexpected autonomous workflow scheduler cycle failure."
+                    )
+
+                if not self._running:
+                    break
+
                 await asyncio.sleep(
                     self.interval_seconds
                 )

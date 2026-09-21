@@ -293,7 +293,16 @@ class ReminderScheduler:
 
         try:
             while self._running:
-                await self.process_due_reminders()
+                try:
+                    await self.process_due_reminders()
+
+                except Exception:
+                    logger.exception(
+                        "Unexpected reminder scheduler cycle failure."
+                    )
+
+                if not self._running:
+                    break
 
                 await asyncio.sleep(
                     self.interval_seconds

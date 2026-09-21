@@ -395,7 +395,16 @@ class ProactiveActivityScheduler:
 
         try:
             while self._running:
-                await self.process_daily_activity_digests()
+                try:
+                    await self.process_daily_activity_digests()
+
+                except Exception:
+                    logger.exception(
+                        "Unexpected proactive activity scheduler cycle failure."
+                    )
+
+                if not self._running:
+                    break
 
                 await asyncio.sleep(
                     self.interval_seconds

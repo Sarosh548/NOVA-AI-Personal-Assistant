@@ -257,3 +257,42 @@ def test_scheduler_rejects_invalid_interval():
         ReminderScheduler(
             interval_seconds=0,
         )
+
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_survives_cycle_failure(monkeypatch):
+    scheduler = ReminderScheduler()
+    calls = []
+    sleeps = []
+
+    async def flaky_cycle():
+        calls.append("cycle")
+
+        if len(calls) == 1:
+            raise RuntimeError(
+                "simulated cycle failure"
+            )
+
+        scheduler.stop()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    scheduler.process_due_reminders = flaky_cycle
+
+    monkeypatch.setattr(
+        "services.reminder_scheduler.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await scheduler.run()
+
+    assert calls == [
+        "cycle",
+        "cycle",
+    ]
+    assert sleeps == [
+        scheduler.interval_seconds
+    ]
+    assert scheduler._running is False
