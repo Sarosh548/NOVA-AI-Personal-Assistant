@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Hashable, Iterable, Sequence
+from typing import Any, Callable, Hashable, Iterable, Mapping, Sequence
 
 
 RetrievalId = Hashable
+RetrievalResult = Mapping[str, Any]
+Retriever = Callable[
+    [str, int],
+    Sequence[RetrievalResult],
+]
+ResultIdGetter = Callable[
+    [RetrievalResult],
+    RetrievalId | None,
+]
 
 
 @dataclass(frozen=True)
@@ -224,4 +233,57 @@ class RAGEvaluationService:
                 )
                 for result in case_results
             )
+        }
+
+    @classmethod
+    def evaluate_retriever(
+        cls,
+        cases: Sequence[RAGEvaluationCase],
+        retriever: Retriever,
+        result_id_getter: ResultIdGetter,
+        *,
+        k_values: Sequence[int] = (1, 3, 5, 8),
+    ) -> dict[str, Any]:
+        normalized_k_values = sorted(
+            set(k_values)
+        )
+
+        if not normalized_k_values:
+            raise ValueError(
+                "k_values cannot be empty"
+            )
+
+        max_k = max(normalized_k_values)
+        case_results: list[dict[str, float | str]] = []
+
+        for case in cases:
+            results = retriever(
+                case.query,
+                max_k,
+            )
+
+            retrieved_ids = [
+                result_id
+                for result in results
+                if (
+                    result_id := result_id_getter(
+                        result
+                    )
+                )
+                is not None
+            ]
+
+            case_results.append(
+                cls.evaluate_case(
+                    case,
+                    retrieved_ids,
+                    k_values=normalized_k_values,
+                )
+            )
+
+        return {
+            "cases": case_results,
+            "aggregate": cls.aggregate(
+                case_results
+            ),
         }
