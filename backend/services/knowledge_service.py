@@ -515,8 +515,11 @@ class KnowledgeService:
             if not rerank or not matches:
                 return matches[:limit]
 
-            return self.reranker_service.rerank(
-                normalized_query,
-                matches,
-                top_k=limit,
-            )
+            try:
+                return self.reranker_service.rerank(
+                    normalized_query,
+                    matches,
+                    top_k=limit,
+                )
+            except Exception:
+                return matches[:limit]
