@@ -315,18 +315,18 @@ def test_authenticated_users_are_isolated_for_workflows_and_activity():
         )
         assert workflow_a_payload["status"] == "cancelled"
 
-        activity_b = client.get(
+        activity_response_b = client.get(
             "/activity",
             headers=headers_b,
         )
-        assert activity_b.status_code == 200
+        assert activity_response_b.status_code == 200
         activity_ids_b = {
             item["id"]
-            for item in activity_b.json()
+            for item in activity_response_b.json()
         }
         activity_workflow_ids_b = {
             item["workflow_id"]
-            for item in activity_b.json()
+            for item in activity_response_b.json()
         }
         assert activity_b in activity_ids_b
         assert activity_a not in activity_ids_b
