@@ -24,6 +24,11 @@ from services.audit_service import AuditService
 from services.auth_service import AuthService
 from services.token_service import TokenService
 from services.user_service import UserService
+from services.request_context import (
+    normalize_request_id,
+    reset_request_id,
+    set_request_id,
+)
 
 
 TEST_SECRET = (
@@ -109,6 +114,26 @@ def test_authentication_lifecycle_writes_audit_events(
         )
 
         app = FastAPI()
+
+        @app.middleware("http")
+        async def request_id_middleware(
+            request,
+            call_next,
+        ):
+            request_id = normalize_request_id(
+                request.headers.get("X-Request-ID")
+            )
+            request.state.request_id = request_id
+            token = set_request_id(request_id)
+
+            try:
+                response = await call_next(request)
+            finally:
+                reset_request_id(token)
+
+            response.headers["X-Request-ID"] = request_id
+            return response
+
         app.include_router(
             auth_router
         )
