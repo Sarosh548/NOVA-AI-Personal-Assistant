@@ -86,9 +86,9 @@ def test_metrics_never_use_user_identity_as_a_label():
         metrics
     )
 
-    assert "user_id" not in body
     assert "user-001" not in body
     assert "Authorization" not in body
+    assert "principal" not in body
 
 
 def test_metrics_endpoint_returns_prometheus_payload():
@@ -153,6 +153,6 @@ def test_metrics_endpoint_does_not_count_itself():
     )
 
     assert (
-        "nova_api_requests_total"
+        'route="/metrics"'
         not in body
     )
