@@ -1,11 +1,17 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from database.connection import engine
 from models.confirmation import Confirmation
+from services.audit_service import AuditService
+
+
+audit_service = AuditService()
+DEFAULT_LEASE_SECONDS = 900
 
 
 class ConfirmationService:
@@ -58,6 +64,48 @@ class ConfirmationService:
         "nahin",
         "nahi",
     }
+
+    def _record_audit(
+        self,
+        *,
+        user_id: str,
+        action: str,
+        status: str,
+        confirmation: dict | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            event_metadata = dict(metadata or {})
+
+            if confirmation is not None:
+                event_metadata.update(
+                    {
+                        "tool": confirmation.get("tool"),
+                        "action": confirmation.get("action"),
+                        "confirmation_status": confirmation.get("status"),
+                        "attempt_count": confirmation.get("attempt_count"),
+                    }
+                )
+
+            audit_service.record_event(
+                event_type="confirmation",
+                action=action,
+                status=status,
+                user_id=user_id,
+                resource_type="confirmation",
+                resource_id=(
+                    confirmation.get("id")
+                    if confirmation is not None
+                    else None
+                ),
+                metadata=event_metadata,
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _new_claim_token() -> str:
+        return uuid4().hex
 
     def _utc_now_naive(self) -> datetime:
         """
