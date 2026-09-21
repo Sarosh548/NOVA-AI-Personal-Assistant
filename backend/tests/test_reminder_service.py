@@ -334,13 +334,7 @@ def test_pending_transition_requires_current_claim(
 def test_mark_completion_rejects_expired_current_lease(
     reminder_service,
 ):
-    now = datetime(
-        2030,
-        1,
-        1,
-        12,
-        0,
-    )
+    now = datetime.utcnow()
 
     reminder_id = seed_reminder(
         reminder_service,
