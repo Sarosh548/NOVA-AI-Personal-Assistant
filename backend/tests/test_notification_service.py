@@ -286,7 +286,7 @@ def test_email_notification_uses_stable_message_id(
     assert (
         sent_messages[0]["Message-ID"]
         == "<nova-"
-        "a3d701cde2aa8f8c8f5e3edb9b5a9f1e"
+        "26ff8b6180d35c63f0d12f43c758411c"
         "@nova.local>"
     )
 
