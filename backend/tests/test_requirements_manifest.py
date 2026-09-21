@@ -7,6 +7,7 @@ REQUIRED_RUNTIME_DISTRIBUTIONS = {
     "fastapi",
     "langgraph",
     "openai",
+    "PyJWT",
     "pgvector",
     "psycopg",
     "pydantic",
