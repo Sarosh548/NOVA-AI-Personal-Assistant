@@ -61,20 +61,47 @@ class FakeConfirmationService:
         user_id,
         confirmation_id,
         success,
+        claim_token=None,
     ):
-        self.finish_calls.append(
-            {
-                "user_id": user_id,
-                "confirmation_id": confirmation_id,
-                "success": success,
-            }
-        )
+        call = {
+            "user_id": user_id,
+            "confirmation_id": confirmation_id,
+            "success": success,
+        }
+
+        if claim_token is not None:
+            call["claim_token"] = claim_token
+
+        self.finish_calls.append(call)
 
         if self.finished is None:
             return None
 
         return dict(
             self.finished
+        )
+
+
+class AllowPermissionService:
+    def check(
+        self,
+        *,
+        user_id,
+        tool,
+        action,
+        user_requested,
+        data,
+    ):
+        from services.permission_service import (
+            PermissionDecision,
+        )
+
+        return PermissionDecision(
+            allowed=True,
+            requires_confirmation=False,
+            reason="Test permission granted.",
+            risk_level="low",
+            risk_flags=(),
         )
 
 
@@ -252,6 +279,7 @@ def _build_service(
             if autonomous_workflow_service is not None
             else FakeAutonomousWorkflowService()
         ),
+        permission_service=AllowPermissionService(),
     )
 
     return service, confirmation_service

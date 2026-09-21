@@ -132,6 +132,7 @@ def test_consumed_confirmation_cannot_be_claimed_again(
                 user_id="test-user",
                 confirmation_id=confirmation_id,
                 success=True,
+                claim_token=claimed["claim_token"],
             )
         )
 
@@ -181,6 +182,7 @@ def test_failed_confirmation_cannot_be_claimed_again(
                 user_id="test-user",
                 confirmation_id=confirmation_id,
                 success=False,
+                claim_token=claimed["claim_token"],
             )
         )
 

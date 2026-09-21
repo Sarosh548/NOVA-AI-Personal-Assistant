@@ -90,3 +90,20 @@ class Confirmation(Base):
         DateTime,
         nullable=True,
     )
+
+    claim_token: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        index=True,
+    )
+
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )

@@ -1,11 +1,17 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from database.connection import engine
 from models.confirmation import Confirmation
+from services.audit_service import AuditService
+
+
+audit_service: AuditService | None = None
+DEFAULT_LEASE_SECONDS = 900
 
 
 class ConfirmationService:
@@ -58,6 +64,56 @@ class ConfirmationService:
         "nahin",
         "nahi",
     }
+
+    def _record_audit(
+        self,
+        *,
+        user_id: str,
+        action: str,
+        status: str,
+        confirmation: dict | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            event_metadata = dict(metadata or {})
+
+            if confirmation is not None:
+                event_metadata.update(
+                    {
+                        "tool": confirmation.get("tool"),
+                        "action": confirmation.get("action"),
+                        "confirmation_status": confirmation.get("status"),
+                        "attempt_count": confirmation.get("attempt_count"),
+                    }
+                )
+
+            current_audit_service = (
+                audit_service
+                if audit_service is not None
+                else AuditService(
+                    db_engine=engine
+                )
+            )
+
+            current_audit_service.record_event(
+                event_type="confirmation",
+                action=action,
+                status=status,
+                user_id=user_id,
+                resource_type="confirmation",
+                resource_id=(
+                    confirmation.get("id")
+                    if confirmation is not None
+                    else None
+                ),
+                metadata=event_metadata,
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _new_claim_token() -> str:
+        return uuid4().hex
 
     def _utc_now_naive(self) -> datetime:
         """
@@ -171,6 +227,9 @@ class ConfirmationService:
                 )
             ),
             resolved_at=None,
+            claim_token=None,
+            lease_until=None,
+            attempt_count=0,
         )
 
         with Session(engine) as session:
@@ -178,7 +237,18 @@ class ConfirmationService:
             session.commit()
             session.refresh(confirmation)
 
-            return confirmation.id
+            created = self._to_dict(
+                confirmation
+            )
+
+        self._record_audit(
+            user_id=user_id,
+            action="create",
+            status="success",
+            confirmation=created,
+        )
+
+        return created["id"]
 
     def _expire_if_needed(
         self,
@@ -359,24 +429,30 @@ class ConfirmationService:
         self,
         user_id: str,
         confirmation_id: int,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ) -> dict | None:
         """
         Atomically approve and claim a pending confirmation.
 
-        The database transition is:
-
-            pending -> processing
-
-        Only an unexpired pending confirmation can make this
-        transition. A second caller cannot claim the same
-        confirmation because the SQL WHERE clause requires the
-        current status to still be pending.
+        The transition is pending -> processing and receives a
+        unique execution claim token plus a durable lease.
         """
+        if lease_seconds <= 0:
+            raise ValueError(
+                "Confirmation lease must be greater than zero."
+            )
 
         with Session(engine) as session:
             now = self._utc_now_naive()
+            claim_token = self._new_claim_token()
+            lease_until = (
+                now
+                + timedelta(
+                    seconds=lease_seconds
+                )
+            )
 
-            statement = (
+            result = session.execute(
                 update(Confirmation)
                 .where(
                     Confirmation.id == confirmation_id,
@@ -387,11 +463,10 @@ class ConfirmationService:
                 .values(
                     status="processing",
                     resolved_at=now,
+                    claim_token=claim_token,
+                    lease_until=lease_until,
+                    attempt_count=Confirmation.attempt_count + 1,
                 )
-            )
-
-            result = session.execute(
-                statement
             )
 
             if result.rowcount != 1:
@@ -410,6 +485,13 @@ class ConfirmationService:
                     confirmation.status = "expired"
                     confirmation.resolved_at = now
                     session.commit()
+                    self._record_audit(
+                        user_id=user_id,
+                        action="approve",
+                        status="failure",
+                        confirmation=self._to_dict(confirmation),
+                        metadata={"reason": "expired"},
+                    )
 
                 return None
 
@@ -425,9 +507,23 @@ class ConfirmationService:
             if confirmation is None:
                 return None
 
-            return self._to_dict(
-                confirmation
-            )
+            result_dict = self._to_dict(confirmation)
+            result_dict["claim_token"] = confirmation.claim_token
+
+        self._record_audit(
+            user_id=user_id,
+            action="approve",
+            status="success",
+            confirmation=result_dict,
+        )
+        self._record_audit(
+            user_id=user_id,
+            action="claim",
+            status="success",
+            confirmation=result_dict,
+        )
+
+        return result_dict
 
 
     def approve_confirmation(
@@ -475,9 +571,18 @@ class ConfirmationService:
             session.commit()
             session.refresh(confirmation)
 
-            return self._to_dict(
+            result = self._to_dict(
                 confirmation
             )
+
+        self._record_audit(
+            user_id=user_id,
+            action="approve",
+            status="success",
+            confirmation=result,
+        )
+
+        return result
 
     def reject_confirmation(
         self,
@@ -521,43 +626,113 @@ class ConfirmationService:
             session.commit()
             session.refresh(confirmation)
 
-            return self._to_dict(
+            result = self._to_dict(
                 confirmation
             )
+
+        self._record_audit(
+            user_id=user_id,
+            action="reject",
+            status="success",
+            confirmation=result,
+        )
+
+        return result
 
     def claim_confirmation(
         self,
         user_id: str,
         confirmation_id: int,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ) -> dict | None:
         """
-        Atomically claim an approved confirmation for
-        one-time execution.
-
-        Only an approved confirmation can be claimed.
-
-        Returns the claimed confirmation or None when the
-        confirmation is no longer executable.
+        Atomically claim an approved confirmation or reclaim an
+        expired processing lease.
         """
+        if lease_seconds <= 0:
+            raise ValueError(
+                "Confirmation lease must be greater than zero."
+            )
 
         with Session(engine) as session:
-            statement = (
+            now = self._utc_now_naive()
+            claim_token = self._new_claim_token()
+            lease_until = (
+                now
+                + timedelta(
+                    seconds=lease_seconds
+                )
+            )
+
+            result = session.execute(
                 update(Confirmation)
                 .where(
                     Confirmation.id == confirmation_id,
                     Confirmation.user_id == user_id,
                     Confirmation.status == "approved",
+                    Confirmation.expires_at > now,
                 )
                 .values(
                     status="processing",
+                    claim_token=claim_token,
+                    lease_until=lease_until,
+                    attempt_count=Confirmation.attempt_count + 1,
                 )
             )
 
-            result = session.execute(
-                statement
-            )
+            claim_reason = "approved"
 
             if result.rowcount != 1:
+                result = session.execute(
+                    update(Confirmation)
+                    .where(
+                        Confirmation.id == confirmation_id,
+                        Confirmation.user_id == user_id,
+                        Confirmation.status == "processing",
+                        Confirmation.expires_at > now,
+                        Confirmation.lease_until.is_not(None),
+                        Confirmation.lease_until <= now,
+                    )
+                    .values(
+                        status="processing",
+                        claim_token=claim_token,
+                        lease_until=lease_until,
+                        attempt_count=Confirmation.attempt_count + 1,
+                    )
+                )
+                claim_reason = "reclaimed"
+
+            if result.rowcount != 1:
+                confirmation = session.scalar(
+                    select(Confirmation).where(
+                        Confirmation.id == confirmation_id,
+                        Confirmation.user_id == user_id,
+                    )
+                )
+
+                if (
+                    confirmation is not None
+                    and confirmation.status == "approved"
+                    and confirmation.expires_at <= now
+                ):
+                    confirmation.status = "expired"
+                    confirmation.resolved_at = now
+                    session.commit()
+                    self._record_audit(
+                        user_id=user_id,
+                        action="claim",
+                        status="failure",
+                        confirmation=self._to_dict(confirmation),
+                        metadata={"reason": "expired"},
+                    )
+                    return None
+
+                self._record_audit(
+                    user_id=user_id,
+                    action="claim",
+                    status="failure",
+                    metadata={"reason": "unavailable"},
+                )
                 return None
 
             session.commit()
@@ -572,28 +747,33 @@ class ConfirmationService:
             if confirmation is None:
                 return None
 
-            return self._to_dict(
-                confirmation
-            )
+            result_dict = self._to_dict(confirmation)
+            result_dict["claim_token"] = confirmation.claim_token
+
+        self._record_audit(
+            user_id=user_id,
+            action="claim",
+            status="success",
+            confirmation=result_dict,
+            metadata={"reason": claim_reason},
+        )
+
+        return result_dict
+
 
     def finish_confirmation(
         self,
         user_id: str,
         confirmation_id: int,
         success: bool,
+        claim_token: str | None = None,
     ) -> dict | None:
         """
-        Finalize a claimed confirmation.
+        Finalize a processing confirmation.
 
-        Successful execution:
-            processing -> consumed
-
-        Failed execution:
-            processing -> failed
-
-        Neither state can be claimed again.
+        When a claim token is supplied, only the worker holding
+        that token may finalize the confirmation.
         """
-
         with Session(engine) as session:
             confirmation = session.scalar(
                 select(Confirmation).where(
@@ -606,26 +786,41 @@ class ConfirmationService:
                 return None
 
             if confirmation.status != "processing":
-                return self._to_dict(
-                    confirmation
-                )
+                return self._to_dict(confirmation)
+
+            now = self._utc_now_naive()
+
+            if (
+                claim_token is None
+                or confirmation.claim_token != claim_token
+                or confirmation.lease_until is None
+                or confirmation.lease_until <= now
+            ):
+                return None
 
             confirmation.status = (
                 "consumed"
                 if success
                 else "failed"
             )
-
-            confirmation.resolved_at = (
-                self._utc_now_naive()
-            )
+            confirmation.resolved_at = now
+            confirmation.lease_until = None
+            confirmation.claim_token = None
 
             session.commit()
             session.refresh(confirmation)
 
-            return self._to_dict(
-                confirmation
-            )
+            result = self._to_dict(confirmation)
+
+        self._record_audit(
+            user_id=user_id,
+            action="finish",
+            status="success" if success else "failure",
+            confirmation=result,
+        )
+
+        return result
+
 
     def _to_dict(
         self,
@@ -645,4 +840,6 @@ class ConfirmationService:
             "created_at": confirmation.created_at,
             "expires_at": confirmation.expires_at,
             "resolved_at": confirmation.resolved_at,
+            "lease_until": confirmation.lease_until,
+            "attempt_count": confirmation.attempt_count,
         }

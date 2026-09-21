@@ -18,12 +18,16 @@ from api.schemas.permission import (
     PermissionSetRequest,
 )
 from services.permission_service import PermissionService
+from services.audit_service import AuditService
 
 
 router = APIRouter(
     prefix="/permissions",
     tags=["permissions"],
 )
+
+
+audit_service = AuditService()
 
 
 def get_permission_service() -> PermissionService:
@@ -36,6 +40,34 @@ def _permission_response(
     return PermissionResponse.model_validate(
         permission
     )
+
+
+def _record_permission_audit(
+    *,
+    user_id: str,
+    action: str,
+    status: str,
+    tool: str,
+    permission_action: str,
+    mode: str | None = None,
+    resource_id: int | None = None,
+) -> None:
+    try:
+        audit_service.record_event(
+            event_type="authorization",
+            action=action,
+            status=status,
+            user_id=user_id,
+            resource_type="permission",
+            resource_id=resource_id,
+            metadata={
+                "tool": tool,
+                "permission_action": permission_action,
+                "mode": mode,
+            },
+        )
+    except Exception:
+        return
 
 
 _VALID_PERMISSION_ACTIONS = frozenset(
@@ -100,6 +132,15 @@ def set_permission(
             user_id=current_user_id,
             tool=tool,
             action=action,
+            mode=request.mode,
+        )
+
+        _record_permission_audit(
+            user_id=current_user_id,
+            action="set",
+            status="success",
+            tool=normalized_tool,
+            permission_action=normalized_action,
             mode=request.mode,
         )
 
@@ -170,6 +211,14 @@ def delete_permission(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Permission not found.",
         )
+
+    _record_permission_audit(
+        user_id=current_user_id,
+        action="delete",
+        status="success",
+        tool=tool.strip().lower(),
+        permission_action=action.strip().lower(),
+    )
 
     return Response(
         status_code=status.HTTP_204_NO_CONTENT,

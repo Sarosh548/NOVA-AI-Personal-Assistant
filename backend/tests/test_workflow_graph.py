@@ -170,6 +170,7 @@ class FakeConfirmationService:
         user_id,
         confirmation_id,
         success,
+        claim_token=None,
     ):
         self.finished.append(
             {
