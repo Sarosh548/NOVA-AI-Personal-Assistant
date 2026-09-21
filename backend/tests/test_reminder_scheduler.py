@@ -317,7 +317,8 @@ async def test_scheduler_cycle_backoff_caps_and_resets_after_success(monkeypatch
                 "simulated post-recovery failure"
             )
 
-        scheduler.stop()
+        if len(calls) == 8:
+            scheduler.stop()
 
     async def fake_sleep(seconds):
         sleeps.append(seconds)
