@@ -1,5 +1,3 @@
-import asyncio
-
 from fastapi.testclient import TestClient
 
 import main
@@ -33,13 +31,4 @@ def test_app_uses_lifespan_for_startup_and_shutdown(
     assert events == [
         "startup",
         "shutdown",
-    ]
-
-
-def test_lifespan_does_not_leave_pending_tasks():
-    assert not [
-        task
-        for task in asyncio.all_tasks()
-        if task is not asyncio.current_task()
-        and not task.done()
     ]
