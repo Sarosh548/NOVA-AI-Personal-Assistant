@@ -131,6 +131,8 @@ def test_agent_node_retrieves_user_knowledge_for_conversational_request(
             "query": "What does my Python guide say about AI development?",
             "threshold": 0.65,
             "limit": 8,
+            "rerank": True,
+            "candidate_limit": 24,
         }
     ]
 
