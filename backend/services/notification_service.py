@@ -12,6 +12,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from services.notification_delivery_service import (
+    NotificationDeliveryService,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -844,6 +848,7 @@ class NotificationService:
         destination_service: (
             NotificationDestinationResolver | None
         ) = None,
+        delivery_service: NotificationDeliveryService | None = None,
     ):
         self.channel_registry = (
             channel_registry
@@ -887,6 +892,8 @@ class NotificationService:
         self.destination_service = (
             destination_service
         )
+
+        self.delivery_service = delivery_service
 
     def send_email(
         self,
@@ -1083,8 +1090,28 @@ class NotificationService:
             ),
         )
 
+        delivery_claim = None
+
+        if (
+            normalized_idempotency_key is not None
+            and self.delivery_service is not None
+        ):
+            delivery_claim = (
+                self.delivery_service.claim_delivery(
+                    user_id=cleaned_user_id,
+                    channel=selected_channel,
+                    idempotency_key=normalized_idempotency_key,
+                )
+            )
+
+            if not delivery_claim["claimed"]:
+                if delivery_claim["reason"] == "already_sent":
+                    return True
+
+                return False
+
         try:
-            return bool(
+            delivery_result = bool(
                 delivery_channel.send(
                     notification
                 )
@@ -1097,5 +1124,31 @@ class NotificationService:
                 cleaned_user_id,
                 selected_channel,
             )
+            delivery_result = False
 
-            return False
+        if (
+            delivery_claim is not None
+            and delivery_claim.get("claim_token")
+        ):
+            try:
+                if delivery_result:
+                    self.delivery_service.mark_sent(
+                        delivery_id=delivery_claim["delivery_id"],
+                        claim_token=delivery_claim["claim_token"],
+                    )
+                else:
+                    self.delivery_service.mark_failed(
+                        delivery_id=delivery_claim["delivery_id"],
+                        claim_token=delivery_claim["claim_token"],
+                        error=(
+                            "Notification channel reported delivery failure."
+                        ),
+                    )
+            except Exception:
+                logger.exception(
+                    "Could not persist notification delivery state "
+                    "for user=%s.",
+                    cleaned_user_id,
+                )
+
+        return delivery_result
