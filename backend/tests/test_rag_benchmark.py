@@ -75,3 +75,38 @@ def test_benchmark_covers_multi_document_queries():
     ]
 
     assert len(multi_source_cases) >= 2
+
+def test_rerank_benchmark_candidate_limit_matches_production_configuration():
+    from scripts.run_rag_benchmark import (
+        RERANK_BENCHMARK_CANDIDATE_LIMIT,
+    )
+
+    assert RERANK_BENCHMARK_CANDIDATE_LIMIT == 24
+
+
+def test_rerank_benchmark_metric_deltas_are_reranked_minus_baseline():
+    from scripts.run_rag_benchmark import (
+        _calculate_metric_deltas,
+    )
+
+    baseline = {
+        "aggregate": {
+            "mrr": 0.5,
+            "precision_at_1": 0.4,
+        }
+    }
+    reranked = {
+        "aggregate": {
+            "mrr": 0.75,
+            "precision_at_1": 0.6,
+        }
+    }
+
+    assert _calculate_metric_deltas(
+        baseline,
+        reranked,
+    ) == {
+        "mrr": 0.25,
+        "precision_at_1": 0.2,
+    }
+
