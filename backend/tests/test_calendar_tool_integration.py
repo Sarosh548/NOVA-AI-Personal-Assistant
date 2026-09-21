@@ -146,20 +146,28 @@ def test_tool_router_registers_calendar_only_when_injected():
 
     tools = router.get_available_tools()
 
-    assert tools[-1] == {
-        "name": "calendar",
-        "description": (
-            "List, retrieve, create, update, and delete "
-            "Google Calendar events."
-        ),
-        "actions": [
-            "list",
-            "get",
-            "create",
-            "update",
-            "delete",
-        ],
-    }
+    calendar_tools = [
+        item
+        for item in tools
+        if item["name"] == "calendar"
+    ]
+
+    assert calendar_tools == [
+        {
+            "name": "calendar",
+            "description": (
+                "List, retrieve, create, update, and delete "
+                "Google Calendar events."
+            ),
+            "actions": [
+                "list",
+                "get",
+                "create",
+                "update",
+                "delete",
+            ],
+        }
+    ]
 
 
 def test_tool_router_executes_calendar_and_logs_safe_activity():
