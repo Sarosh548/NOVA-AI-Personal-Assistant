@@ -92,6 +92,7 @@ Choose exactly one intent:
 - "action"     = asking NOVA to perform an external action
 - "email"      = asking NOVA to send an email
 - "calendar"   = asking NOVA to view, create, update, or delete a Google Calendar event
+- "web"        = asking NOVA to search the live public web for current or external information
 
 Choose exactly one emotion:
 
@@ -280,6 +281,52 @@ Calendar rules:
 - send_updates:
     "all", "externalOnly", or "none" when explicitly requested,
     otherwise null
+
+Web search rules:
+
+- web_action:
+    "search" or null when not a web request
+
+- web_topic:
+    "general", "news", or "finance", or null when not a web request
+
+- web_time_range:
+    "day", "week", "month", "year", or null when not requested
+
+- query:
+    the concise search question to send to the live web
+
+- max_results:
+    an integer from 1 to 10 for web search when explicitly
+    requested, otherwise null
+
+Use intent = "web" whenever answering requires fresh external
+information such as current events, latest software/library
+changes, current prices, live schedules, recent announcements,
+or explicit web research.
+
+Web examples:
+
+User:
+"Search the web for the latest FastAPI release."
+
+Return:
+intent = "web"
+web_action = "search"
+web_topic = "general"
+query = "latest FastAPI release"
+requires_tool = true
+
+User:
+"What are today's AI news headlines?"
+
+Return:
+intent = "web"
+web_action = "search"
+web_topic = "news"
+web_time_range = "day"
+query = "AI news headlines"
+requires_tool = true
 
 Calendar examples:
 
@@ -959,6 +1006,9 @@ Return exactly:
             "order_by": None,
             "show_deleted": None,
             "send_updates": None,
+            "web_action": None,
+            "web_topic": None,
+            "web_time_range": None,
             "requires_tool": False,
         }
 
@@ -1017,6 +1067,7 @@ Return exactly:
             "action",
             "email",
             "calendar",
+            "web",
         }
 
         valid_emotions = {
@@ -1188,6 +1239,9 @@ Return exactly:
         order_by = result.get("order_by")
         show_deleted = result.get("show_deleted")
         send_updates = result.get("send_updates")
+        web_action = result.get("web_action")
+        web_topic = result.get("web_topic")
+        web_time_range = result.get("web_time_range")
 
         if scheduled_at is not None:
             scheduled_at = (
@@ -1337,7 +1391,7 @@ Return exactly:
             subject = None
             body = None
 
-        if intent != "calendar":
+        if intent != "calendar" and intent != "web":
             calendar_action = None
             calendar_id = None
             event_id = None
@@ -1352,7 +1406,36 @@ Return exactly:
             show_deleted = None
             send_updates = None
 
-        # -------------------------------------------------
+        if intent == "calendar":
+            web_action = None
+            web_topic = None
+            web_time_range = None
+
+        if intent != "web":
+            web_action = None
+            web_topic = None
+            web_time_range = None
+
+        if intent == "web":
+            if web_action != "search":
+                web_action = "search"
+
+            if web_topic not in {
+                "general",
+                "news",
+                "finance",
+            }:
+                web_topic = "general"
+
+            if web_time_range not in {
+                "day",
+                "week",
+                "month",
+                "year",
+            }:
+                web_time_range = None
+
+                # -------------------------------------------------
         # For reminder creation, default action is create.
         # -------------------------------------------------
 
@@ -1405,5 +1488,8 @@ Return exactly:
             "order_by": order_by,
             "show_deleted": show_deleted,
             "send_updates": send_updates,
+            "web_action": web_action,
+            "web_topic": web_topic,
+            "web_time_range": web_time_range,
             "requires_tool": requires_tool,
         }
