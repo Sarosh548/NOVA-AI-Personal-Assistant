@@ -459,6 +459,7 @@ class EmailNotificationChannel:
         body: str,
         cc: str | list[str] | tuple[str, ...] | None = None,
         bcc: str | list[str] | tuple[str, ...] | None = None,
+        message_id: str | None = None,
     ) -> bool:
         normalized_subject = str(
             subject
