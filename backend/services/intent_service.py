@@ -346,18 +346,18 @@ User:
 Return:
 intent = "calendar"
 calendar_action = "create"
-event = {
+event = {{
   "summary": "Team meeting",
-  "start": {"dateTime": "calculated ISO datetime with timezone"},
-  "end": {"dateTime": "calculated ISO datetime with timezone"}
-}
+  "start": {{"dateTime": "calculated ISO datetime with timezone"}},
+  "end": {{"dateTime": "calculated ISO datetime with timezone"}}
+}}
 requires_tool = true
 
 User:
 "Create a client meeting tomorrow at 4 PM and invite client@example.com."
 
 Return a create event with summary, start, end, and:
-attendees = [{"email": "client@example.com"}]
+attendees = [{{"email": "client@example.com"}}]
 
 User:
 "Move event abc123 to tomorrow at 6 PM."
@@ -366,10 +366,10 @@ Return:
 intent = "calendar"
 calendar_action = "update"
 event_id = "abc123"
-event = {
-  "start": {"dateTime": "calculated ISO datetime with timezone"},
-  "end": {"dateTime": "calculated ISO datetime with timezone"}
-}
+event = {{
+  "start": {{"dateTime": "calculated ISO datetime with timezone"}},
+  "end": {{"dateTime": "calculated ISO datetime with timezone"}}
+}}
 
 User:
 "Delete calendar event abc123."
@@ -1007,6 +1007,18 @@ Return exactly:
         )
 
         if not has_fresh_marker:
+            return result
+
+        personal_current_patterns = (
+            r"\bwhat(?:'s| is) my current (?:task|tasks|reminder|reminders|calendar|schedule)\b",
+            r"\bwhat(?:'s| is) my (?:task|tasks|reminder|reminders|calendar|schedule)\b",
+            r"\bshow me my current (?:task|tasks|reminder|reminders|calendar|schedule)\b",
+        )
+
+        if any(
+            re.search(pattern, normalized)
+            for pattern in personal_current_patterns
+        ):
             return result
 
         information_markers = (
