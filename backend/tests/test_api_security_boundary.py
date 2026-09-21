@@ -269,13 +269,13 @@ def test_request_body_size_limit_rejects_invalid_values(
 def test_request_body_size_limit_rejects_large_requests():
     client = _client_for(
         SecuritySettings(
-            api_max_request_body_bytes=8
+            api_max_request_body_bytes=1024
         )
     )
 
     response = client.post(
         "/probe",
-        content=b"123456789",
+        content=b"a" * 1025,
     )
 
     assert response.status_code == 413
@@ -287,18 +287,18 @@ def test_request_body_size_limit_rejects_large_requests():
 def test_request_body_size_limit_allows_requests_within_limit():
     client = _client_for(
         SecuritySettings(
-            api_max_request_body_bytes=8
+            api_max_request_body_bytes=1024
         )
     )
 
     response = client.post(
         "/probe",
-        content=b"12345678",
+        content=b"a" * 1024,
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "size": 8
+        "size": 1024
     }
 
 
