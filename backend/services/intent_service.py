@@ -964,10 +964,10 @@ Return exactly:
 
         protected_patterns = (
             r"\bremind me\b",
-            r"\b(?:create|add|make)\\s+(?:a\\s+)?(?:high\\s+|medium\\s+|low\\s+)?priority\\s+task\b",
-            r"\b(?:create|add|make)\\s+(?:a\\s+)?task\b",
-            r"\b(?:show|list|view)\\s+(?:my\\s+)?(?:tasks?|reminders?|calendar|schedule)\b",
-            r"\b(?:complete|start|cancel|delete|update|move|reschedule)\\s+(?:my\\s+)?(?:task|reminder|event)\b",
+            r"\b(?:create|add|make)\s+(?:a\s+)?(?:high\s+|medium\s+|low\s+)?priority\s+task\b",
+            r"\b(?:create|add|make)\s+(?:a\s+)?task\b",
+            r"\b(?:show|list|view)\s+(?:my\s+)?(?:tasks?|reminders?|calendar|schedule)\b",
+            r"\b(?:complete|start|cancel|delete|update|move|reschedule)\s+(?:my\s+)?(?:task|reminder|event)\b",
         )
 
         if any(
