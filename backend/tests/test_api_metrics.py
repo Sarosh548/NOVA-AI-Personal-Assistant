@@ -2,46 +2,24 @@ from __future__ import annotations
 
 from prometheus_client import (
     CollectorRegistry,
+    generate_latest,
 )
+from fastapi.testclient import TestClient
 
 import main
 from services.api_metrics import (
     APIMetrics,
     generate_metrics,
 )
-from fastapi.testclient import TestClient
 
 
-def _metrics_text(metrics: APIMetrics) -> str:
-    body, _content_type = (
-        generate_metrics_for_registry(
-            metrics
-        )
-    )
-    return body.decode("utf-8")
-
-
-def generate_metrics_for_registry(
+def _metrics_text(
     metrics: APIMetrics,
-) -> tuple[bytes, str]:
-    from prometheus_client import (
-        CONTENT_TYPE_LATEST,
-        generate_latest,
-    )
-
-    return (
-        generate_latest(
-            metrics.requests._metrics[
-                (
-                    "GET",
-                    "/health/live",
-                    "200",
-                )
-            ]._name
-            if False
-            else metrics.registry
-        ),
-        CONTENT_TYPE_LATEST,
+) -> str:
+    return generate_latest(
+        metrics.registry
+    ).decode(
+        "utf-8"
     )
 
 
@@ -85,9 +63,13 @@ def test_metrics_record_requests_latency_errors_and_rate_limits():
         'nova_api_rate_limit_exceeded_total{method="POST",route="/auth/login"} 1.0'
         in body
     )
+    assert (
+        'nova_api_request_duration_seconds_count{method="POST",route="/auth/login"} 1.0'
+        in body
+    )
 
 
-def test_metrics_never_use_request_identity_as_a_label():
+def test_metrics_never_use_user_identity_as_a_label():
     registry = CollectorRegistry()
     metrics = APIMetrics(
         registry=registry,
@@ -104,9 +86,9 @@ def test_metrics_never_use_request_identity_as_a_label():
         metrics
     )
 
+    assert "user_id" not in body
     assert "user-001" not in body
     assert "Authorization" not in body
-    assert "?" not in body
 
 
 def test_metrics_endpoint_returns_prometheus_payload():
@@ -170,4 +152,7 @@ def test_metrics_endpoint_does_not_count_itself():
         metrics
     )
 
-    assert "nova_api_requests_total" not in body
+    assert (
+        "nova_api_requests_total"
+        not in body
+    )

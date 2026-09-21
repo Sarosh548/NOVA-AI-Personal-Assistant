@@ -37,6 +37,8 @@ class APIMetrics:
             else REGISTRY
         )
 
+        self.registry = active_registry
+
         self.requests = Counter(
             "nova_api_requests_total",
             "Total number of API requests.",
