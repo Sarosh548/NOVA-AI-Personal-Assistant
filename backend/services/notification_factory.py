@@ -4,6 +4,9 @@ from config import Settings, get_settings
 from services.notification_destination_service import (
     NotificationDestinationService,
 )
+from services.notification_delivery_service import (
+    NotificationDeliveryService,
+)
 from services.notification_service import (
     ConsoleNotificationChannel,
     EmailNotificationChannel,
@@ -176,4 +179,5 @@ def build_notification_service(
             if destination_service is not None
             else NotificationDestinationService()
         ),
+        delivery_service=NotificationDeliveryService(),
     )
