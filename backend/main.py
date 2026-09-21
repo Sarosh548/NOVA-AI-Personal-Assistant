@@ -1,7 +1,5 @@
 import asyncio
 from datetime import datetime
-from uuid import uuid4
-
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
