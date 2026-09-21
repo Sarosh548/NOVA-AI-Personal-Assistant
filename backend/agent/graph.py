@@ -26,9 +26,13 @@ from services.google_calendar_tool_service import (
 )
 from services.intent_service import IntentService
 from services.llm_service import LLMService
-from services.knowledge_service import KnowledgeService
+from services.knowledge_service import (
+    DEFAULT_RERANK_CANDIDATE_LIMIT,
+    KnowledgeService,
+)
 from services.memory_service import MemoryService
 from services.permission_service import PermissionService
+from services.reranker_service import RerankerService
 from services.plan_execution_service import (
     PlanExecutionService,
 )
@@ -43,6 +47,7 @@ llm_service = LLMService()
 memory_service = MemoryService(llm_service)
 knowledge_service = KnowledgeService(
     embedding_service=memory_service.embedding_service,
+    reranker_service=RerankerService(),
 )
 intent_service = IntentService()
 planner_service = PlannerService()
@@ -1606,6 +1611,8 @@ def _get_knowledge_retrieval(
             query=user_message,
             threshold=0.65,
             limit=8,
+            rerank=True,
+            candidate_limit=DEFAULT_RERANK_CANDIDATE_LIMIT,
         )
     except Exception:
         return (
