@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from typing import Annotated
 
 from fastapi import (
@@ -18,6 +19,7 @@ from fastapi.security import (
 
 from models.user import User
 from models.user_session import UserSession
+from services.audit_service import AuditService
 from services.auth_service import AuthService
 from services.token_service import TokenService
 from services.user_service import UserService
@@ -29,6 +31,10 @@ from api.schemas.auth import (
     UserResponse,
 )
 
+
+logger = logging.getLogger(__name__)
+
+audit_service = AuditService()
 
 router = APIRouter(
     prefix="/auth",
@@ -52,6 +58,36 @@ def get_token_service() -> TokenService:
 
 def get_user_service() -> UserService:
     return UserService()
+
+
+def _record_auth_audit(
+    *,
+    action: str,
+    status_value: str,
+    user_id: str | None = None,
+    resource_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """
+    Best-effort security audit recording.
+
+    Authentication must remain available even if the audit
+    subsystem is temporarily unavailable.
+    """
+    try:
+        audit_service.record_event(
+            event_type="authentication",
+            action=action,
+            status=status_value,
+            user_id=user_id,
+            resource_type="session",
+            resource_id=resource_id,
+            metadata=metadata,
+        )
+    except Exception:
+        logger.exception(
+            "Could not persist authentication audit event."
+        )
 
 
 def _utc_now_naive() -> datetime:
@@ -206,10 +242,24 @@ def register(
         )
 
     except ValueError as exc:
+        _record_auth_audit(
+            action="register",
+            status_value="failure",
+            metadata={
+                "reason": "registration_failed"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    _record_auth_audit(
+        action="register",
+        status_value="success",
+        user_id=user.id,
+        resource_id=user_session.id,
+    )
 
     access_token = (
         token_service.create_access_token(
@@ -263,12 +313,26 @@ def login(
             )
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="login",
+            status_value="failure",
+            metadata={
+                "reason": "invalid_login_request"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
 
     if user is None:
+        _record_auth_audit(
+            action="login",
+            status_value="failure",
+            metadata={
+                "reason": "invalid_credentials"
+            },
+        )
         raise _unauthorized(
             "Incorrect username or password."
         )
@@ -280,10 +344,25 @@ def login(
             )
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="login",
+            status_value="failure",
+            user_id=user.id,
+            metadata={
+                "reason": "session_creation_failed"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    _record_auth_audit(
+        action="login",
+        status_value="success",
+        user_id=user.id,
+        resource_id=user_session.id,
+    )
 
     access_token = (
         token_service.create_access_token(
@@ -337,6 +416,13 @@ def refresh(
             )
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="refresh",
+            status_value="failure",
+            metadata={
+                "reason": "invalid_or_expired_refresh_token"
+            },
+        )
         raise _unauthorized(
             str(exc)
         ) from exc
@@ -346,15 +432,38 @@ def refresh(
             user_id=user_session.user_id
         )
     except ValueError as exc:
+        _record_auth_audit(
+            action="refresh",
+            status_value="failure",
+            metadata={
+                "reason": "user_lookup_failed"
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
 
     if user is None or not user.is_active:
+        _record_auth_audit(
+            action="refresh",
+            status_value="failure",
+            user_id=user_session.user_id,
+            resource_id=user_session.id,
+            metadata={
+                "reason": "user_unavailable"
+            },
+        )
         raise _unauthorized(
             "Authenticated user is unavailable."
         )
+
+    _record_auth_audit(
+        action="refresh",
+        status_value="success",
+        user_id=user.id,
+        resource_id=user_session.id,
+    )
 
     access_token = (
         token_service.create_access_token(
@@ -401,9 +510,25 @@ def logout(
     )
 
     if not revoked:
+        _record_auth_audit(
+            action="logout",
+            status_value="failure",
+            user_id=context.user.id,
+            resource_id=context.session.id,
+            metadata={
+                "reason": "session_already_inactive"
+            },
+        )
         raise _unauthorized(
             "Authentication session is no longer active."
         )
+
+    _record_auth_audit(
+        action="logout",
+        status_value="success",
+        user_id=context.user.id,
+        resource_id=context.session.id,
+    )
 
     return Response(
         status_code=status.HTTP_204_NO_CONTENT

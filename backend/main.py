@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 from agent.graph import build_graph
@@ -17,6 +17,9 @@ from api.calendar import (
 )
 from api.memories import (
     router as memories_router,
+)
+from api.health import (
+    router as health_router,
 )
 from api.dependencies import (
     CurrentUserId,
@@ -55,6 +58,9 @@ from services.execution_context import (
 from services.execution_service import (
     NOVAExecutionService,
 )
+from services.idempotency_service import (
+    IdempotencyService,
+)
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
 from services.notification_destination_service import (
@@ -65,6 +71,11 @@ from services.notification_factory import (
 )
 from services.notification_service import (
     NotificationService,
+)
+from services.request_context import (
+    normalize_request_id,
+    reset_request_id,
+    set_request_id,
 )
 from services.proactive_activity_notification_service import (
     ProactiveActivityNotificationService,
@@ -86,6 +97,7 @@ from services.user_notification_preferences_service import (
 app = FastAPI()
 
 app.include_router(auth_router)
+app.include_router(health_router)
 app.include_router(conversations_router)
 app.include_router(calendar_router)
 app.include_router(memories_router)
@@ -159,6 +171,8 @@ user_notification_preferences_service = (
     UserNotificationPreferencesService()
 )
 
+idempotency_service = IdempotencyService()
+
 scheduler_task: asyncio.Task | None = None
 
 autonomous_workflow_scheduler_task: (
@@ -211,6 +225,37 @@ def _notification_preferences_payload(
         "created_at": preferences.created_at,
         "updated_at": preferences.updated_at,
     }
+
+
+@app.middleware("http")
+async def request_id_middleware(
+    request: Request,
+    call_next,
+):
+    incoming_request_id = request.headers.get(
+        "X-Request-ID"
+    )
+
+    request_id = normalize_request_id(
+        incoming_request_id
+    )
+
+    request.state.request_id = request_id
+    token = set_request_id(
+        request_id
+    )
+
+    try:
+        response = await call_next(
+            request
+        )
+    finally:
+        reset_request_id(
+            token
+        )
+
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.on_event("startup")
@@ -415,11 +460,11 @@ def update_notification_preferences(
     )
 
 
-@app.post("/chat")
-def chat(
+def _execute_chat(
+    *,
     request: ChatRequest,
-    current_user_id: CurrentUserId,
-):
+    current_user_id: str,
+) -> dict:
     user_message = request.message.strip()
 
     if not user_message:
@@ -554,3 +599,98 @@ def chat(
         "memory_action": memory_action,
         "knowledge_sources": knowledge_sources,
     }
+
+
+@app.post("/chat")
+def chat(
+    request: ChatRequest,
+    current_user_id: CurrentUserId,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+):
+    normalized_message = request.message.strip()
+
+    if not normalized_message:
+        return {
+            "error": "message cannot be empty"
+        }
+
+    claim = None
+
+    if idempotency_key is not None:
+        request_hash = (
+            IdempotencyService.build_request_hash(
+                {
+                    "message": normalized_message,
+                    "conversation_id": request.conversation_id,
+                }
+            )
+        )
+
+        claim = idempotency_service.claim_or_replay(
+            user_id=current_user_id,
+            endpoint="/chat",
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+        if claim["status"] == "conflict":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Idempotency-Key was already used "
+                    "for a different request."
+                ),
+            )
+
+        if claim["status"] == "in_progress":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This request is already being processed."
+                ),
+                headers={
+                    "Retry-After": "1",
+                },
+            )
+
+        if claim["status"] == "replay":
+            return claim["response_body"]
+
+    try:
+        response_payload = _execute_chat(
+            request=ChatRequest(
+                message=normalized_message,
+                conversation_id=request.conversation_id,
+            ),
+            current_user_id=current_user_id,
+        )
+    except Exception:
+        if claim is not None and claim.get("claim_token"):
+            try:
+                idempotency_service.fail(
+                    record_id=claim["record_id"],
+                    claim_token=claim["claim_token"],
+                    error="Chat request processing failed.",
+                )
+            except Exception:
+                pass
+
+        raise
+
+    if claim is not None and claim.get("claim_token"):
+        try:
+            idempotency_service.complete(
+                record_id=claim["record_id"],
+                claim_token=claim["claim_token"],
+                response_status=200,
+                response_body=jsonable_encoder(
+                    response_payload
+                ),
+            )
+        except Exception:
+            pass
+
+    return response_payload

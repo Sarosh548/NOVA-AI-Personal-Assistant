@@ -36,6 +36,9 @@ from models.calendar_connection import (
 from models.oauth_state import OAuthState
 from models.knowledge_document import KnowledgeDocument
 from models.knowledge_chunk import KnowledgeChunk
+from models.audit_event import AuditEvent
+from models.notification_delivery import NotificationDelivery
+from models.idempotency_record import IdempotencyRecord
 
 # Alembic Config object
 config = context.config
