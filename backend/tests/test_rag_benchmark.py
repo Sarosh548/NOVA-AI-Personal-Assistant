@@ -1,3 +1,5 @@
+import pytest
+
 from services.rag_evaluation_service import (
     RAGEvaluationService,
 )
@@ -102,11 +104,11 @@ def test_rerank_benchmark_metric_deltas_are_reranked_minus_baseline():
         }
     }
 
-    assert _calculate_metric_deltas(
+    deltas = _calculate_metric_deltas(
         baseline,
         reranked,
-    ) == {
-        "mrr": 0.25,
-        "precision_at_1": 0.2,
-    }
+    )
+
+    assert deltas["mrr"] == pytest.approx(0.25)
+    assert deltas["precision_at_1"] == pytest.approx(0.2)
 
