@@ -2,13 +2,14 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from database.connection import engine
 from models.auth_identity import AuthIdentity
 from models.user import User
 from models.user_session import UserSession
+from models.refresh_token_history import RefreshTokenHistory
 from services.auth_service import AuthService
 
 
@@ -297,6 +298,26 @@ def test_rotate_session_replaces_refresh_token(
 
         assert found is not None
         assert found.id == user_session.id
+
+        with Session(engine) as session:
+            history = session.scalar(
+                select(RefreshTokenHistory)
+                .where(
+                    RefreshTokenHistory.token_hash
+                    == auth_service._hash_refresh_token(
+                        old_refresh_token,
+                    )
+                )
+            )
+
+            assert history is not None
+            assert history.session_id == user_session.id
+            assert (
+                history.replaced_by_token_hash
+                == auth_service._hash_refresh_token(
+                    new_refresh_token,
+                )
+            )
     finally:
         with Session(engine) as session:
             session.delete(
@@ -325,10 +346,23 @@ def test_reusing_rotated_refresh_token_is_rejected(
             old_refresh_token,
         )
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as exc_info:
             auth_service.rotate_session(
                 old_refresh_token,
             )
+
+        assert str(exc_info.value) == (
+            "Refresh token replay detected."
+        )
+
+        with Session(engine) as session:
+            persisted = session.get(
+                UserSession,
+                user_session.id,
+            )
+
+            assert persisted is not None
+            assert persisted.revoked_at is not None
     finally:
         with Session(engine) as session:
             session.delete(
