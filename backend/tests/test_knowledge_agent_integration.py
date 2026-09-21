@@ -234,6 +234,7 @@ def test_agent_node_skips_knowledge_for_rejected_confirmation(
     assert result["knowledge_context"] == (
         "Knowledge retrieval was not used for this request."
     )
+    assert result["knowledge_sources"] == []
 
 
 def test_agent_node_continues_when_knowledge_retrieval_fails(
