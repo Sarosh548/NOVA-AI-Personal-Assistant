@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 import services.confirmation_service as confirmation_module
 from models.audit_event import AuditEvent
 from models.confirmation import Confirmation
+from database.connection import engine as default_engine
 from models.user import User
 from services.audit_service import AuditService
 from services.confirmation_execution_service import (
@@ -55,6 +56,8 @@ def teardown_runtime(db_engine):
         bind=db_engine
     )
     db_engine.dispose()
+    confirmation_module.engine = default_engine
+    confirmation_module.audit_service = None
 
 
 def test_approval_claim_creates_execution_lease_and_token(
@@ -89,6 +92,14 @@ def test_approval_claim_creates_execution_lease_and_token(
         assert len(claimed["claim_token"]) == 32
         assert claimed["lease_until"] is not None
         assert claimed["attempt_count"] == 1
+
+        public = service.get_confirmation(
+            user_id="lease-user",
+            confirmation_id=confirmation_id,
+        )
+
+        assert public is not None
+        assert "claim_token" not in public
 
     finally:
         teardown_runtime(db_engine)
@@ -143,6 +154,58 @@ def test_expired_processing_confirmation_is_reclaimed_once():
         )
 
         assert active_retry is None
+
+    finally:
+        teardown_runtime(db_engine)
+
+
+def test_expired_approved_confirmation_cannot_be_reclaimed():
+    db_engine = build_runtime()
+
+    try:
+        service = confirmation_module.ConfirmationService()
+        now = service._utc_now_naive()
+
+        confirmation = Confirmation(
+            user_id="lease-user",
+            conversation_id=None,
+            tool="task",
+            action="create",
+            data={"title": "Expired"},
+            reason="Create task?",
+            status="approved",
+            created_at=now - timedelta(minutes=10),
+            expires_at=now - timedelta(seconds=1),
+            resolved_at=now - timedelta(minutes=9),
+            claim_token=None,
+            lease_until=None,
+            attempt_count=1,
+        )
+
+        with confirmation_module.Session(
+            db_engine
+        ) as session:
+            session.add(confirmation)
+            session.commit()
+            session.refresh(confirmation)
+            confirmation_id = confirmation.id
+
+        claimed = service.claim_confirmation(
+            user_id="lease-user",
+            confirmation_id=confirmation_id,
+            lease_seconds=120,
+        )
+
+        assert claimed is None
+
+        stored = service.get_confirmation(
+            user_id="lease-user",
+            confirmation_id=confirmation_id,
+        )
+
+        assert stored is not None
+        assert stored["status"] == "expired"
+        assert stored["claim_token"] is None if "claim_token" in stored else True
 
     finally:
         teardown_runtime(db_engine)
