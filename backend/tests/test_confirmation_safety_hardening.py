@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 
@@ -11,6 +13,14 @@ from models.confirmation import Confirmation
 from database.connection import engine as default_engine
 from models.user import User
 from services.audit_service import AuditService
+from api.auth import (
+    get_current_auth_context,
+)
+from api.confirmations import (
+    get_confirmation_service,
+    router as confirmation_router,
+)
+from api.auth import AuthenticatedContext
 from services.confirmation_execution_service import (
     ConfirmationExecutionService,
 )
@@ -205,7 +215,7 @@ def test_expired_approved_confirmation_cannot_be_reclaimed():
 
         assert stored is not None
         assert stored["status"] == "expired"
-        assert stored["claim_token"] is None if "claim_token" in stored else True
+        assert "claim_token" not in stored
 
     finally:
         teardown_runtime(db_engine)
@@ -295,6 +305,95 @@ def test_stale_worker_cannot_finalize_reclaimed_confirmation():
 
     finally:
         teardown_runtime(db_engine)
+
+
+class OwnershipConfirmationService:
+    def get_confirmation(
+        self,
+        *,
+        user_id,
+        confirmation_id,
+    ):
+        if user_id != "owner-user":
+            return None
+
+        return {
+            "id": confirmation_id,
+            "user_id": "owner-user",
+            "conversation_id": None,
+            "tool": "task",
+            "action": "create",
+            "data": {},
+            "reason": "Create task?",
+            "status": "pending",
+            "created_at": datetime(
+                2026,
+                9,
+                21,
+                10,
+                0,
+            ),
+            "expires_at": datetime(
+                2026,
+                9,
+                21,
+                10,
+                5,
+            ),
+            "resolved_at": None,
+            "lease_until": None,
+            "attempt_count": 0,
+        }
+
+
+def test_confirmation_api_cannot_cross_user_boundary():
+    app = FastAPI()
+    app.include_router(confirmation_router)
+
+    now = datetime.now().astimezone().replace(
+        tzinfo=None
+    )
+
+    context = AuthenticatedContext(
+        user=type(
+            "FakeUser",
+            (),
+            {
+                "id": "attacker-user",
+                "is_active": True,
+            },
+        )(),
+        session=type(
+            "FakeSession",
+            (),
+            {
+                "id": "attacker-session",
+                "expires_at": now.replace(
+                    year=now.year + 1
+                ),
+                "revoked_at": None,
+            },
+        )(),
+    )
+
+    app.dependency_overrides[
+        get_current_auth_context
+    ] = lambda: context
+
+    app.dependency_overrides[
+        get_confirmation_service
+    ] = lambda: OwnershipConfirmationService()
+
+    client = TestClient(app)
+
+    response = client.get(
+        "/confirmations/42"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "Confirmation not found."
+    )
 
 
 def test_confirmation_lifecycle_writes_audit_events():
