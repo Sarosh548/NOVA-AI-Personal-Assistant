@@ -61,10 +61,13 @@ class FakeSession:
         chunk_count=1,
         duplicate=None,
         visible_user_id=None,
+        search_rows=None,
     ):
         self.engine = engine
         self.document = document
         self.visible_user_id = visible_user_id
+        self.search_rows = list(search_rows or [])
+        self.last_statement = None
         self.chunk_count = chunk_count
         self.duplicate = duplicate
         self.added = []
@@ -161,11 +164,49 @@ class FakeSession:
         return Result()
 
     def execute(self, statement):
+        self.last_statement = statement
+
         class Result:
             def all(inner_self):
-                return []
+                return list(self.search_rows)
 
         return Result()
+
+
+class FakeReranker:
+    def __init__(self):
+        self.calls = []
+
+    def rerank(
+        self,
+        query,
+        candidates,
+        *,
+        top_k,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "candidates": list(candidates),
+                "top_k": top_k,
+            }
+        )
+
+        ranked = [
+            dict(candidates[index])
+            for index in reversed(
+                range(len(candidates))
+            )
+        ]
+
+        for index, candidate in enumerate(
+            ranked
+        ):
+            candidate["rerank_score"] = (
+                1.0 - (index * 0.1)
+            )
+
+        return ranked[:top_k]
 
 
 def make_service():
@@ -411,6 +452,203 @@ def test_search_query_contains_user_ownership_filters():
 
     assert "knowledge_chunks.user_id" in sql
     assert "knowledge_documents.user_id" in sql
+
+
+def test_search_can_rerank_candidates_after_similarity_filter(
+    monkeypatch,
+):
+    document_a = FakeDocument(
+        id=7,
+        user_id="user-001",
+        title="A",
+        content="Alpha passage",
+    )
+    document_b = FakeDocument(
+        id=8,
+        user_id="user-001",
+        title="B",
+        content="Beta passage",
+    )
+    document_c = FakeDocument(
+        id=9,
+        user_id="user-001",
+        title="C",
+        content="Low similarity passage",
+    )
+
+    session = FakeSession(
+        None,
+        search_rows=[
+            (
+                FakeChunk(
+                    document_id=7,
+                    content="Alpha passage",
+                ),
+                document_a,
+                0.10,
+            ),
+            (
+                FakeChunk(
+                    document_id=8,
+                    content="Beta passage",
+                    chunk_index=1,
+                ),
+                document_b,
+                0.20,
+            ),
+            (
+                FakeChunk(
+                    document_id=9,
+                    content="Low similarity passage",
+                    chunk_index=2,
+                ),
+                document_c,
+                0.50,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        knowledge_module,
+        "Session",
+        lambda engine: session,
+    )
+
+    reranker = FakeReranker()
+    service = KnowledgeService(
+        embedding_service=FakeEmbedding(),
+        reranker_service=reranker,
+    )
+
+    result = service.search(
+        user_id="user-001",
+        query="passage",
+        threshold=0.65,
+        limit=2,
+        rerank=True,
+        candidate_limit=24,
+    )
+
+    assert [
+        item["document_id"]
+        for item in result
+    ] == [
+        8,
+        7,
+    ]
+
+    assert [
+        item["rerank_score"]
+        for item in result
+    ] == [
+        1.0,
+        0.9,
+    ]
+
+    assert len(reranker.calls) == 1
+    assert reranker.calls[0]["query"] == "passage"
+    assert reranker.calls[0]["top_k"] == 2
+    assert [
+        item["document_id"]
+        for item in reranker.calls[0]["candidates"]
+    ] == [
+        7,
+        8,
+    ]
+
+    params = session.last_statement.compile().params
+
+    assert 24 in params.values()
+
+
+def test_search_without_rerank_returns_similarity_order(
+    monkeypatch,
+):
+    session = FakeSession(
+        None,
+        search_rows=[
+            (
+                FakeChunk(
+                    document_id=7,
+                    content="Alpha passage",
+                ),
+                FakeDocument(
+                    id=7,
+                    content="Alpha passage",
+                ),
+                0.10,
+            ),
+            (
+                FakeChunk(
+                    document_id=8,
+                    content="Beta passage",
+                    chunk_index=1,
+                ),
+                FakeDocument(
+                    id=8,
+                    content="Beta passage",
+                ),
+                0.20,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        knowledge_module,
+        "Session",
+        lambda engine: session,
+    )
+
+    reranker = FakeReranker()
+    service = KnowledgeService(
+        embedding_service=FakeEmbedding(),
+        reranker_service=reranker,
+    )
+
+    result = service.search(
+        user_id="user-001",
+        query="passage",
+        threshold=0.65,
+        limit=2,
+    )
+
+    assert [
+        item["document_id"]
+        for item in result
+    ] == [
+        7,
+        8,
+    ]
+
+    assert reranker.calls == []
+
+
+def test_search_rejects_invalid_candidate_limit(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        knowledge_module,
+        "Session",
+        lambda engine: FakeSession(None),
+    )
+
+    service = KnowledgeService(
+        embedding_service=FakeEmbedding(),
+        reranker_service=FakeReranker(),
+    )
+
+    try:
+        service.search(
+            user_id="user-001",
+            query="python",
+            candidate_limit=0,
+        )
+    except ValueError as exc:
+        assert "candidate_limit" in str(exc)
+    else:
+        raise AssertionError(
+            "Expected candidate limit validation"
+        )
 
 
 def test_search_validates_threshold(
