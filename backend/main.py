@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from agent.graph import build_graph
@@ -95,6 +97,84 @@ from services.user_notification_preferences_service import (
 
 
 app = FastAPI()
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(
+    request: Request,
+    exc: HTTPException,
+):
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": jsonable_encoder(
+                exc.detail
+            )
+        },
+        headers=exc.headers,
+    )
+
+    request_id = getattr(
+        request.state,
+        "request_id",
+        None,
+    )
+
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+):
+    response = JSONResponse(
+        status_code=422,
+        content={
+            "detail": jsonable_encoder(
+                exc.errors()
+            )
+        },
+    )
+
+    request_id = getattr(
+        request.state,
+        "request_id",
+        None,
+    )
+
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(
+    request: Request,
+    exc: Exception,
+):
+    response = JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal Server Error"
+        },
+    )
+
+    request_id = getattr(
+        request.state,
+        "request_id",
+        None,
+    )
+
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+
+    return response
+
 
 app.include_router(auth_router)
 app.include_router(health_router)
