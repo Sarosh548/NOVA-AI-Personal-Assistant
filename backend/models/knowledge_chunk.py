@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
@@ -13,6 +13,20 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.base import Base
+
+
+def _utc_now_naive() -> datetime:
+    """
+    Return current UTC time as a naive datetime for NOVA's
+    existing naive-UTC database timestamp columns.
+    """
+
+    return datetime.now(
+        timezone.utc
+    ).replace(
+        tzinfo=None
+    )
+
 
 
 class KnowledgeChunk(Base):
@@ -54,7 +68,7 @@ class KnowledgeChunk(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
+        default=_utc_now_naive,
         nullable=False,
     )
 
