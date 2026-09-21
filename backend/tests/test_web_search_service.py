@@ -142,3 +142,75 @@ def test_web_search_rejects_invalid_time_range(
             query="AI",
             time_range=time_range,
         )
+
+
+def test_web_search_filters_unsafe_result_urls(
+    monkeypatch,
+):
+    service = WebSearchService(
+        api_key="tvly-test"
+    )
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse(
+            {
+                "results": [
+                    {
+                        "title": "Unsafe JavaScript",
+                        "url": "javascript:alert(1)",
+                        "content": "ignored",
+                    },
+                    {
+                        "title": "Unsafe Data",
+                        "url": "data:text/plain,ignored",
+                        "content": "ignored",
+                    },
+                    {
+                        "title": "Unsafe Credentials",
+                        "url": "https://user:password@example.com/private",
+                        "content": "ignored",
+                    },
+                    {
+                        "title": "Unsafe Missing Host",
+                        "url": "https:///missing-host",
+                        "content": "ignored",
+                    },
+                    {
+                        "title": "Safe HTTP",
+                        "url": "http://example.com/article",
+                        "content": "accepted",
+                    },
+                    {
+                        "title": "Safe HTTPS",
+                        "url": "https://example.com/article",
+                        "content": "accepted",
+                    },
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        "services.web_search_service.urlopen",
+        fake_urlopen,
+    )
+
+    results = service.search(
+        query="AI safety"
+    )
+
+    assert results == [
+        {
+            "title": "Safe HTTP",
+            "url": "http://example.com/article",
+            "content": "accepted",
+            "score": None,
+            "published_date": None,
+        },
+        {
+            "title": "Safe HTTPS",
+            "url": "https://example.com/article",
+            "content": "accepted",
+            "score": None,
+            "published_date": None,
+        },
+    ]
