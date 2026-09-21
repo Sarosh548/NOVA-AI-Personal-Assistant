@@ -264,7 +264,7 @@ class WebSearchService:
 
         results: list[dict] = []
 
-        for raw_result in raw_results[:normalized_max_results]:
+        for raw_result in raw_results:
             if not isinstance(raw_result, dict):
                 continue
 
@@ -314,5 +314,8 @@ class WebSearchService:
                     ),
                 ).to_dict()
             )
+
+            if len(results) >= normalized_max_results:
+                break
 
         return results
