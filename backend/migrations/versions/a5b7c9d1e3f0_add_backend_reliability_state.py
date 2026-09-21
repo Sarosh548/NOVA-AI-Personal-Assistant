@@ -1,7 +1,7 @@
 """add backend reliability state
 
 Revision ID: a5b7c9d1e3f0
-Revises: f7c2a91d4e63
+Revises: b8e3c7d1a492
 Create Date: 2026-09-21 10:00:00.000000
 
 """
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 revision: str = "a5b7c9d1e3f0"
 down_revision: Union[str, Sequence[str], None] = (
-    "f7c2a91d4e63"
+    "b8e3c7d1a492"
 )
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
