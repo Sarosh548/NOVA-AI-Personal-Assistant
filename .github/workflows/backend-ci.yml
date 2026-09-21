@@ -26,7 +26,7 @@ jobs:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/nova_db
       GROQ_API_KEY: ci-test-key
       AUTH_JWT_SECRET_KEY: ci-test-auth-jwt-secret-key-32-characters-min
-      INTEGRATION_TOKEN_ENCRYPTION_KEY: ZmFrZS1jaS1mb3JtLWtleS1yZXBsYWNlLW1lLQ==
+      INTEGRATION_TOKEN_ENCRYPTION_KEY: bm92YS1jaS1mZXJuZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ==
 
     services:
       postgres:
