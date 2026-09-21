@@ -439,6 +439,17 @@ def test_refresh_rotates_refresh_token(
         )
 
         assert reused.status_code == 401
+
+        revoked_access = client.get(
+            "/auth/me",
+            headers={
+                "Authorization": (
+                    f"Bearer {rotated['access_token']}"
+                )
+            },
+        )
+
+        assert revoked_access.status_code == 401
     finally:
         _cleanup_user(user_id)
 

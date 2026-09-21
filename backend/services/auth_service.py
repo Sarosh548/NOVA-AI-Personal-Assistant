@@ -6,7 +6,7 @@ import secrets
 from typing import Any
 
 from pwdlib import PasswordHash
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,21 @@ from database.connection import engine as default_engine
 from models.auth_identity import AuthIdentity
 from models.user import User
 from models.user_session import UserSession
+from models.refresh_token_history import RefreshTokenHistory
+
+
+class RefreshTokenReplayDetected(ValueError):
+    """Raised when a previously rotated refresh token is replayed."""
+
+    def __init__(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ):
+        self.user_id = user_id
+        self.session_id = session_id
+        super().__init__("Refresh token replay detected.")
 
 
 class AuthService:
@@ -363,10 +378,48 @@ class AuthService:
                     UserSession.refresh_token_hash
                     == old_hash,
                 )
+                .with_for_update()
             )
 
             if user_session is None:
-                raise ValueError("Invalid refresh token.")
+                history = session.scalar(
+                    select(RefreshTokenHistory)
+                    .where(
+                        RefreshTokenHistory.token_hash
+                        == old_hash,
+                    )
+                    .with_for_update()
+                )
+
+                if history is None:
+                    raise ValueError(
+                        "Invalid refresh token."
+                    )
+
+                replay_session = session.scalar(
+                    select(UserSession)
+                    .where(
+                        UserSession.id
+                        == history.session_id,
+                    )
+                    .with_for_update()
+                )
+
+                if replay_session is None:
+                    raise ValueError(
+                        "Invalid refresh token."
+                    )
+
+                if replay_session.revoked_at is None:
+                    replay_session.revoked_at = now
+                    replay_session.updated_at = now
+
+                    session.commit()
+
+                raise RefreshTokenReplayDetected(
+                    user_id=replay_session.user_id,
+                    session_id=replay_session.id,
+                )
 
             if user_session.revoked_at is not None:
                 raise ValueError("Session has been revoked.")
@@ -388,30 +441,28 @@ class AuthService:
             )
             new_expires_at = now + timedelta(days=days)
 
-            result = session.execute(
-                update(UserSession)
-                .where(
-                    UserSession.id
-                    == user_session.id,
-                    UserSession.refresh_token_hash
-                    == old_hash,
-                    UserSession.revoked_at.is_(None),
-                )
-                .values(
-                    refresh_token_hash=new_hash,
-                    expires_at=new_expires_at,
-                    last_used_at=now,
-                    updated_at=now,
-                )
+            history = RefreshTokenHistory(
+                session_id=user_session.id,
+                token_hash=old_hash,
+                replaced_by_token_hash=new_hash,
+                replaced_at=now,
             )
 
-            if result.rowcount != 1:
+            session.add(history)
+
+            user_session.refresh_token_hash = new_hash
+            user_session.expires_at = new_expires_at
+            user_session.last_used_at = now
+            user_session.updated_at = now
+
+            try:
+                session.commit()
+            except IntegrityError as exc:
                 session.rollback()
                 raise ValueError(
                     "Refresh token was already rotated."
-                )
+                ) from exc
 
-            session.commit()
             session.refresh(user_session)
 
             return user_session, new_refresh_token
