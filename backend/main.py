@@ -548,6 +548,11 @@ def _execute_chat(
         [],
     )
 
+    web_sources = result.get(
+        "web_sources",
+        [],
+    )
+
     conversation_service.save_message(
         user_id=current_user_id,
         conversation_id=conversation_id,
@@ -598,6 +603,7 @@ def _execute_chat(
         "workflow_result": workflow_result,
         "memory_action": memory_action,
         "knowledge_sources": knowledge_sources,
+        "web_sources": web_sources,
     }
 
 
