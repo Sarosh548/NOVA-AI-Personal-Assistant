@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+import api.permissions as permissions_module
 
 from api.auth import (
     AuthenticatedContext,
@@ -52,6 +53,14 @@ def _authenticated_context(
         user=user,
         session=session,
     )
+
+
+class FakeAuditService:
+    def record_event(self, **kwargs):
+        return {
+            "id": 1,
+            **kwargs,
+        }
 
 
 class FakePermissionService:
@@ -171,8 +180,14 @@ class FakePermissionService:
 
 
 @pytest.fixture
-def authenticated_client():
+def authenticated_client(monkeypatch):
     service = FakePermissionService()
+
+    monkeypatch.setattr(
+        permissions_module,
+        "audit_service",
+        FakeAuditService(),
+    )
 
     main.app.dependency_overrides[
         get_current_auth_context
