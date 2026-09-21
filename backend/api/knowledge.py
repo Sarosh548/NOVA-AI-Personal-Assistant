@@ -18,6 +18,7 @@ from api.schemas.knowledge import (
     KnowledgeDocumentDetailResponse,
     KnowledgeDocumentResponse,
     KnowledgeSearchResponse,
+    KnowledgeUrlCreateRequest,
 )
 from services.knowledge_service import KnowledgeService
 
@@ -75,6 +76,35 @@ def create_document(
             title=request.title,
             content=request.content,
             source=request.source,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return _document_response(
+        document
+    )
+
+
+@router.post(
+    "/urls",
+    response_model=KnowledgeDocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_document_from_url(
+    request: KnowledgeUrlCreateRequest,
+    current_user_id: CurrentUserId,
+    service: Annotated[
+        KnowledgeService,
+        Depends(get_knowledge_service),
+    ],
+) -> KnowledgeDocumentResponse:
+    try:
+        document = service.create_document_from_url(
+            user_id=current_user_id,
+            url=request.url,
         )
     except ValueError as exc:
         raise HTTPException(
