@@ -17,8 +17,12 @@ class ReminderScheduler:
     Lightweight NOVA reminder scheduler.
 
     It checks PostgreSQL periodically for due reminders,
-    claims them atomically, delivers a notification, and
-    marks the reminder completed only after successful delivery.
+    claims them atomically with durable leases, delivers a
+    notification, and marks the reminder completed only after
+    successful delivery.
+
+    Durable leases allow a later scheduler cycle to recover a
+    reminder whose worker crashed while processing it.
 
     Durable activity events record meaningful background outcomes.
     Activity recording is best-effort and never changes reminder
@@ -59,7 +63,7 @@ class ReminderScheduler:
 
     async def process_due_reminders(self) -> None:
         """
-        Find and process all reminders that are currently due.
+        Find and process all due reminders.
 
         A reminder is completed only after the notification
         service confirms successful delivery.
@@ -74,6 +78,7 @@ class ReminderScheduler:
             reminder_id = reminder["id"]
             user_id = reminder["user_id"]
             title = reminder["title"]
+            claim_token = reminder["claim_token"]
 
             try:
                 delivered = (
@@ -120,7 +125,8 @@ class ReminderScheduler:
                     )
 
                     self.reminder_service.mark_reminder_pending(
-                        reminder_id
+                        reminder_id,
+                        claim_token=claim_token,
                     )
 
                     continue
@@ -128,7 +134,8 @@ class ReminderScheduler:
                 completed = (
                     self.reminder_service
                     .mark_reminder_completed(
-                        reminder_id
+                        reminder_id,
+                        claim_token=claim_token,
                     )
                 )
 
@@ -218,9 +225,17 @@ class ReminderScheduler:
                     },
                 )
 
-                self.reminder_service.mark_reminder_pending(
-                    reminder_id
-                )
+                try:
+                    self.reminder_service.mark_reminder_pending(
+                        reminder_id,
+                        claim_token=claim_token,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not return reminder %s to pending after "
+                        "processing failure.",
+                        reminder_id,
+                    )
 
     def _record_activity_event(
         self,
