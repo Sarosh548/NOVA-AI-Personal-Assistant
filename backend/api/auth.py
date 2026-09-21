@@ -20,7 +20,10 @@ from fastapi.security import (
 from models.user import User
 from models.user_session import UserSession
 from services.audit_service import AuditService
-from services.auth_service import AuthService
+from services.auth_service import (
+    AuthService,
+    RefreshTokenReplayDetected,
+)
 from services.token_service import TokenService
 from services.user_service import UserService
 
@@ -415,6 +418,19 @@ def refresh(
                 request.refresh_token,
             )
         )
+    except RefreshTokenReplayDetected as exc:
+        _record_auth_audit(
+            action="refresh",
+            status_value="failure",
+            user_id=exc.user_id,
+            resource_id=exc.session_id,
+            metadata={
+                "reason": "refresh_token_replay"
+            },
+        )
+        raise _unauthorized(
+            "Invalid or expired refresh token."
+        ) from exc
     except ValueError as exc:
         _record_auth_audit(
             action="refresh",
