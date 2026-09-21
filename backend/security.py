@@ -28,6 +28,10 @@ API_ALLOWED_HEADERS = [
 ]
 
 
+class RequestBodySizeLimitExceeded(Exception):
+    pass
+
+
 def _build_hsts_value(
     settings: SecuritySettings,
 ) -> str:
@@ -54,12 +58,6 @@ def configure_api_security(
         if settings is not None
         else get_security_settings()
     )
-
-
-
-class RequestBodySizeLimitExceeded(Exception):
-    pass
-
 
     app.add_middleware(
         TrustedHostMiddleware,
@@ -144,7 +142,6 @@ class RequestBodySizeLimitExceeded(Exception):
             )
         finally:
             request._receive = original_receive
-
 
     @app.middleware("http")
     async def security_headers_middleware(
