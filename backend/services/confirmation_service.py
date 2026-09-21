@@ -10,7 +10,7 @@ from models.confirmation import Confirmation
 from services.audit_service import AuditService
 
 
-audit_service = AuditService()
+audit_service: AuditService | None = None
 DEFAULT_LEASE_SECONDS = 900
 
 
@@ -87,7 +87,15 @@ class ConfirmationService:
                     }
                 )
 
-            audit_service.record_event(
+            current_audit_service = (
+                audit_service
+                if audit_service is not None
+                else AuditService(
+                    db_engine=engine
+                )
+            )
+
+            current_audit_service.record_event(
                 event_type="confirmation",
                 action=action,
                 status=status,
