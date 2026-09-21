@@ -449,6 +449,25 @@ class KnowledgeService:
             else list(vector)
         )
 
+        user_chunk_ids = (
+            select(
+                KnowledgeChunk.id.label(
+                    "chunk_id"
+                ),
+            )
+            .where(
+                KnowledgeChunk.user_id
+                == user_id,
+                KnowledgeChunk.embedding.is_not(
+                    None
+                ),
+            )
+            .cte(
+                "user_knowledge_chunk_ids"
+            )
+            .prefix_with("MATERIALIZED")
+        )
+
         distance_expression = (
             KnowledgeChunk.embedding.cosine_distance(
                 query_embedding
@@ -464,18 +483,18 @@ class KnowledgeService:
                 ),
             )
             .join(
+                user_chunk_ids,
+                user_chunk_ids.c.chunk_id
+                == KnowledgeChunk.id,
+            )
+            .join(
                 KnowledgeDocument,
                 KnowledgeDocument.id
                 == KnowledgeChunk.document_id,
             )
             .where(
-                KnowledgeChunk.user_id
-                == user_id,
                 KnowledgeDocument.user_id
                 == user_id,
-                KnowledgeChunk.embedding.is_not(
-                    None
-                ),
             )
             .order_by(
                 distance_expression
