@@ -1785,6 +1785,30 @@ def _get_web_search_grounding(
     )
 
 
+def _emit_response_delta(
+    state: NOVAState,
+    delta: str,
+) -> None:
+    """
+    Deliver an assistant response delta to an optional transport callback.
+
+    Streaming output is an observational side effect: a callback failure
+    must never change NOVA's authoritative final response.
+    """
+
+    callback = state.get(
+        "response_delta_callback"
+    )
+
+    if not callable(callback):
+        return
+
+    try:
+        callback(delta)
+    except Exception:
+        return
+
+
 def agent_node(state: NOVAState) -> NOVAState:
     """
     Generate NOVA's final response.
@@ -2108,9 +2132,31 @@ Response rules:
 37. If retrieved knowledge does not support a claim, do not cite it as support.
 """
 
-    response = llm_service.generate_response(
-        prompt
+    response_delta_callback = state.get(
+        "response_delta_callback"
     )
+
+    if callable(response_delta_callback):
+        response_parts: list[str] = []
+
+        for delta in llm_service.generate_response_stream(
+            prompt
+        ):
+            response_parts.append(
+                delta
+            )
+            _emit_response_delta(
+                state,
+                delta,
+            )
+
+        response = "".join(
+            response_parts
+        ).strip()
+    else:
+        response = llm_service.generate_response(
+            prompt
+        )
 
     return {
         **state,
