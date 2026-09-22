@@ -149,6 +149,86 @@ class FakeVoiceSTTOrchestrator:
             yield item
 
 
+class FakeVoiceTTSOrchestrator:
+    instances = []
+
+    def __init__(
+        self,
+        *,
+        adapter,
+        settings,
+    ):
+        self.adapter = adapter
+        self.settings = settings
+        self.turn_id = None
+        self.stream_id = "fake-tts-stream-1"
+        self.events_queue = asyncio.Queue()
+        self.instances.append(self)
+
+    async def start_turn(
+        self,
+        *,
+        user_id,
+        session_id,
+        turn_id,
+        voice,
+        audio_format,
+    ):
+        self.user_id = user_id
+        self.session_id = session_id
+        self.turn_id = turn_id
+        self.voice = voice
+        self.audio_format = audio_format
+        return self.stream_id
+
+    async def send_text(
+        self,
+        text,
+    ):
+        self.text = text
+        await self.events_queue.put(
+            SimpleNamespace(
+                type="audio",
+                stream_id=self.stream_id,
+                turn_id=self.turn_id,
+                sequence=1,
+                audio=b"tts-audio",
+                created_at=SimpleNamespace(
+                    isoformat=lambda: "2026-01-01T00:00:00+00:00"
+                ),
+            )
+        )
+
+    async def finish_turn(self):
+        await self.events_queue.put(
+            SimpleNamespace(
+                type="final",
+                stream_id=self.stream_id,
+                turn_id=self.turn_id,
+                sequence=2,
+                audio=b"",
+                created_at=SimpleNamespace(
+                    isoformat=lambda: "2026-01-01T00:00:00+00:00"
+                ),
+            )
+        )
+
+    async def cancel_turn(self):
+        await self.events_queue.put(None)
+
+    async def close_session(self):
+        await self.events_queue.put(None)
+
+    async def events(self):
+        while True:
+            item = await self.events_queue.get()
+
+            if item is None:
+                return
+
+            yield item
+
+
 def _patch_auth(
     monkeypatch,
 ):
@@ -161,6 +241,31 @@ def _patch_auth(
     )
 
     return voice_module
+
+
+def _patch_fake_tts(
+    monkeypatch,
+):
+    import api.voice as voice_module
+
+    FakeVoiceTTSOrchestrator.instances = []
+
+    monkeypatch.setattr(
+        voice_module,
+        "_build_voice_tts_orchestrator",
+        lambda _settings: FakeVoiceTTSOrchestrator(
+            adapter=object(),
+            settings=_settings,
+        ),
+    )
+
+    monkeypatch.setattr(
+        voice_module,
+        "get_tts_provider_settings",
+        lambda: SimpleNamespace(
+            elevenlabs_voice_id="voice/example",
+        ),
+    )
 
 
 def _patch_fake_stt(
@@ -656,3 +761,144 @@ def test_voice_websocket_rejects_unauthorized_origin(
             pass
 
     assert exc_info.value.code == 1008
+
+
+def test_voice_websocket_streams_assistant_audio(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-tts-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(
+            b"input-audio"
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-tts-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+
+        assistant = websocket.receive_json()
+        assert assistant["type"] == "assistant.response"
+        assert assistant["response"] == "Sure, done."
+
+        started = websocket.receive_json()
+        assert started == {
+            "type": "assistant.audio.started",
+            "stream_id": "fake-tts-stream-1",
+            "turn_id": "turn-tts-1",
+            "audio_format": {
+                "encoding": "pcm_s16le",
+                "sample_rate_hz": 16_000,
+                "channels": 1,
+            },
+        }
+
+        audio = websocket.receive()
+        assert audio["type"] == "websocket.receive"
+        assert audio["bytes"] == b"tts-audio"
+
+        final = websocket.receive_json()
+        assert final["type"] == "assistant.audio.final"
+        assert final["stream_id"] == "fake-tts-stream-1"
+        assert final["turn_id"] == "turn-tts-1"
+        assert final["sequence"] == 2
+
+    fake_tts = FakeVoiceTTSOrchestrator.instances[0]
+    assert fake_tts.voice == "voice/example"
+    assert fake_tts.text == "Sure, done."
+
+
+def test_voice_websocket_audio_output_failure_does_not_break_session(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    async def failing_send_text(self, _text):
+        raise RuntimeError("tts unavailable")
+
+    monkeypatch.setattr(
+        FakeVoiceTTSOrchestrator,
+        "send_text",
+        failing_send_text,
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-tts-failure",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(
+            b"input-audio"
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-tts-failure",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.response"
+
+        started = websocket.receive_json()
+        assert started["type"] == "assistant.audio.started"
+
+        error = websocket.receive_json()
+        assert error["type"] == "error"
+        assert error["code"] == "assistant_audio_failed"
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+        pong = websocket.receive_json()
+        assert pong["type"] == "session.pong"
