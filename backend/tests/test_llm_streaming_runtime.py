@@ -153,6 +153,7 @@ def test_execution_service_propagates_response_delta_callback():
     graph = _FakeAgentGraph()
     service = NOVAExecutionService(graph)
     deltas = []
+    callback = deltas.append
 
     result = service.execute(
         user_id="user-001",
@@ -160,13 +161,13 @@ def test_execution_service_propagates_response_delta_callback():
         user_message="Hello NOVA",
         history=[],
         execution_context=ExecutionContext.interactive(),
-        on_response_delta=deltas.append,
+        on_response_delta=callback,
     )
 
     assert result["response"] == "Graph response."
     assert (
         graph.calls[0]["response_delta_callback"]
-        is deltas.append
+        is callback
     )
 
 
