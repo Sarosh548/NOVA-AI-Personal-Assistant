@@ -348,6 +348,130 @@ def get_stt_provider_settings() -> STTProviderSettings:
     return STTProviderSettings()
 
 
+class TTSProviderSettings(BaseSettings):
+    """
+    Concrete realtime TTS provider configuration.
+
+    Provider credentials remain environment-driven and are never placed
+    in WebSocket URLs or application logs.
+    """
+
+    elevenlabs_api_key: str | None = Field(
+        default=None,
+        min_length=1,
+    )
+
+    elevenlabs_ws_url: str = (
+        "wss://api.elevenlabs.io/v1/text-to-speech"
+    )
+
+    elevenlabs_model: str = "eleven_flash_v2_5"
+
+    elevenlabs_stability: float = Field(
+        default=0.5,
+        ge=0,
+        le=1,
+    )
+
+    elevenlabs_similarity_boost: float = Field(
+        default=0.8,
+        ge=0,
+        le=1,
+    )
+
+    elevenlabs_speed: float = Field(
+        default=1.0,
+        gt=0,
+        le=2,
+    )
+
+    elevenlabs_use_speaker_boost: bool = False
+
+    elevenlabs_chunk_length_schedule: str = (
+        "120,160,250,290"
+    )
+
+    tts_connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=60,
+    )
+
+    tts_ping_interval_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=300,
+    )
+
+    tts_ping_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=300,
+    )
+
+    tts_close_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=60,
+    )
+
+    tts_provider_max_message_bytes: int = Field(
+        default=1_048_576,
+        ge=16_384,
+        le=10_485_760,
+    )
+
+    tts_provider_max_queue_items: int = Field(
+        default=16,
+        ge=1,
+        le=1024,
+    )
+
+    tts_event_queue_max_items: int = Field(
+        default=64,
+        ge=1,
+        le=4096,
+    )
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+    def chunk_length_schedule(self) -> tuple[int, ...]:
+        values = tuple(
+            int(item.strip())
+            for item in str(
+                self.elevenlabs_chunk_length_schedule
+            ).split(",")
+            if item.strip()
+        )
+
+        if not values:
+            raise ValueError(
+                "elevenlabs_chunk_length_schedule cannot be empty."
+            )
+
+        if any(value < 1 for value in values):
+            raise ValueError(
+                "elevenlabs_chunk_length_schedule values must be positive."
+            )
+
+        if len(values) > 16:
+            raise ValueError(
+                "elevenlabs_chunk_length_schedule cannot exceed 16 values."
+            )
+
+        return values
+
+
+@lru_cache
+def get_tts_provider_settings() -> TTSProviderSettings:
+    """
+    Return cached concrete realtime TTS provider settings.
+    """
+    return TTSProviderSettings()
+
+
 class DatabaseSettings(BaseSettings):
     """
     Database connection reliability configuration.
