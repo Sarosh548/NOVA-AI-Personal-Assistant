@@ -606,6 +606,14 @@ async def voice_websocket(
                 )
                 return
 
+            if tts_task is not None and tts_task.done():
+                try:
+                    await tts_task
+                except asyncio.CancelledError:
+                    pass
+
+                tts_task = None
+
             message_type = message.get(
                 "type"
             )
@@ -692,7 +700,10 @@ async def voice_websocket(
 
                 try:
                     if control.type == "turn.start":
-                        if tts_task is not None:
+                        if (
+                            tts_task is not None
+                            and not tts_task.done()
+                        ):
                             tts_task.cancel()
 
                             try:
@@ -707,6 +718,8 @@ async def voice_websocket(
                                     "type": "assistant.audio.cancelled",
                                 }
                             )
+                        elif tts_task is not None:
+                            tts_task = None
 
                         if session.active_turn is not None:
                             raise VoiceProtocolError(
@@ -968,7 +981,10 @@ async def voice_websocket(
                         continue
 
                     if control.type == "turn.cancel":
-                        if tts_task is not None:
+                        if (
+                            tts_task is not None
+                            and not tts_task.done()
+                        ):
                             tts_task.cancel()
 
                             try:
@@ -983,6 +999,8 @@ async def voice_websocket(
                                     "type": "assistant.audio.cancelled",
                                 }
                             )
+                        elif tts_task is not None:
+                            tts_task = None
 
                         active_turn = session.active_turn
 
@@ -1030,7 +1048,10 @@ async def voice_websocket(
                         continue
 
                     if control.type == "session.close":
-                        if tts_task is not None:
+                        if (
+                            tts_task is not None
+                            and not tts_task.done()
+                        ):
                             tts_task.cancel()
 
                             try:
@@ -1038,6 +1059,8 @@ async def voice_websocket(
                             except asyncio.CancelledError:
                                 pass
 
+                            tts_task = None
+                        elif tts_task is not None:
                             tts_task = None
 
                         if tts_orchestrator is not None:
