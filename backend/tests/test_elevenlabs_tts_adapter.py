@@ -386,11 +386,6 @@ async def test_cancel_stops_receiver_and_closes_socket() -> None:
             channels=1,
         ),
         TTSAudioFormat(
-            encoding="pcm_s16le",
-            sample_rate_hz=16_000,
-            channels=2,
-        ),
-        TTSAudioFormat(
             encoding="opus",
             sample_rate_hz=48_000,
             channels=1,
@@ -419,6 +414,24 @@ async def test_unsupported_audio_format_is_rejected(
         await adapter.start_stream(
             request
         )
+
+
+@pytest.mark.asyncio
+async def test_stereo_audio_is_rejected_with_specific_error() -> None:
+    adapter = ElevenLabsTTSAdapter(
+        make_settings()
+    )
+
+    with pytest.raises(
+        TTSAdapterError,
+        match="currently requires mono audio",
+    ):
+        await adapter.start_stream(
+            make_request(
+                channels=2
+            )
+        )
+
 
 
 @pytest.mark.asyncio
