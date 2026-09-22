@@ -266,6 +266,12 @@ class STTRuntimeService:
                     item,
                     Exception,
                 ):
+                    await self._cancel_and_cleanup(
+                        session_id,
+                        turn_id,
+                        turn,
+                    )
+
                     if isinstance(
                         item,
                         STTRuntimeError,
