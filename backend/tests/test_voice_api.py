@@ -743,6 +743,132 @@ def test_voice_websocket_cancel_interrupts_active_turn(
         }
 
 
+def test_voice_websocket_cancel_interrupts_in_flight_assistant_response(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.cancel",
+                "turn_id": "turn-1",
+            }
+        )
+
+        cancelled_audio = websocket.receive_json()
+        assert cancelled_audio == {
+            "type": "assistant.audio.cancelled",
+        }
+
+        cancelled_turn = websocket.receive_json()
+        assert cancelled_turn == {
+            "type": "turn.cancelled",
+            "turn_id": "turn-1",
+        }
+
+        core_service.release_first_execution.set()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+            }
+        )
+
+        second_started = websocket.receive_json()
+        assert second_started["type"] == "turn.started"
+        assert second_started["turn_id"] == "turn-2"
+
+        websocket.send_bytes(b"second")
+        assert websocket.receive_json()["type"] == "transcript.partial"
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-2",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        assistant = None
+
+        while assistant is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(
+                message["text"]
+            )
+
+            if payload["type"] == "assistant.response":
+                assistant = payload
+                continue
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert assistant["turn_id"] == "turn-2"
+        assert assistant["conversation_id"] == 42
+
+    assert len(core_service.calls) == 2
+
+    fake_tts = FakeVoiceTTSOrchestrator.instances[0]
+    assert fake_tts.texts == [
+        "Sure, ",
+        "done.",
+    ]
+
+
 def test_voice_websocket_rejects_missing_auth():
     client = TestClient(
         _build_app()
