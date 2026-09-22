@@ -1210,19 +1210,12 @@ async def voice_websocket(
                                         assistant_response_bridge
                                     ),
                                     is_execution_current=(
-                                        lambda (
-                                            response_turn_id=turn_id,
-                                            response_generation=(
-                                                assistant_response_generation
-                                            ),
-                                        ): (
+                                        lambda response_turn_id=turn_id, response_generation=assistant_response_generation: (
                                             session_service
                                             .is_response_current(
                                                 session,
                                                 turn_id=response_turn_id,
-                                                generation=(
-                                                    response_generation
-                                                ),
+                                                generation=response_generation,
                                             )
                                         )
                                     ),
