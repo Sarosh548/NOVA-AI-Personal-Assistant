@@ -108,7 +108,6 @@ def get_security_settings() -> SecuritySettings:
     return SecuritySettings()
 
 
-
 class RateLimitSettings(BaseSettings):
     """
     API rate limiting and quota configuration.
@@ -184,6 +183,39 @@ def get_database_settings() -> DatabaseSettings:
     return DatabaseSettings()
 
 
+class LLMSettings(BaseSettings):
+    """
+    External LLM provider reliability configuration.
+
+    Timeout and retry bounds are explicit so provider calls cannot
+    inherit an unexpectedly long SDK default in production.
+    """
+
+    llm_request_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=120,
+    )
+
+    llm_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+    )
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+
+@lru_cache
+def get_llm_settings() -> LLMSettings:
+    """
+    Return cached LLM provider reliability settings.
+    """
+    return LLMSettings()
+
+
 class ObservabilitySettings(BaseSettings):
     """
     API observability and logging configuration.
@@ -216,7 +248,6 @@ def get_observability_settings() -> ObservabilitySettings:
     Return cached API observability settings.
     """
     return ObservabilitySettings()
-
 
 
 class Settings(BaseSettings):

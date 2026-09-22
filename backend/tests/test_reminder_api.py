@@ -8,6 +8,63 @@ from api.auth import get_current_auth_context
 from api.reminders import get_reminder_service
 
 
+class FakeIdempotencyService:
+    def __init__(self):
+        self.claims = []
+        self.completed = []
+        self.failed = []
+
+    def claim_or_replay(
+        self,
+        *,
+        user_id,
+        endpoint,
+        idempotency_key,
+        request_hash,
+    ):
+        self.claims.append({
+            "user_id": user_id,
+            "endpoint": endpoint,
+            "idempotency_key": idempotency_key,
+            "request_hash": request_hash,
+        })
+        return {
+            "status": "claimed",
+            "record_id": 1,
+            "claim_token": "claim-token",
+        }
+
+    def complete(
+        self,
+        *,
+        record_id,
+        claim_token,
+        response_status,
+        response_body,
+    ):
+        self.completed.append({
+            "record_id": record_id,
+            "claim_token": claim_token,
+            "response_status": response_status,
+            "response_body": response_body,
+        })
+        return True
+
+    def fail(
+        self,
+        *,
+        record_id,
+        claim_token,
+        error,
+    ):
+        self.failed.append({
+            "record_id": record_id,
+            "claim_token": claim_token,
+            "error": error,
+        })
+        return True
+
+
 class FakeReminderService:
     def __init__(self):
         self.created = []
@@ -565,3 +622,103 @@ def test_delete_missing_reminder_returns_404(
     assert response.json() == {
         "detail": "Reminder not found."
     }
+
+def test_create_reminder_idempotency_key_is_persisted(
+    authenticated_api,
+    monkeypatch,
+):
+    client, service = authenticated_api
+    import api.reminders as reminder_module
+
+    fake_idempotency = FakeIdempotencyService()
+    monkeypatch.setattr(
+        reminder_module,
+        "idempotency_service",
+        fake_idempotency,
+    )
+
+    response = client.post(
+        "/reminders",
+        headers={"Idempotency-Key": "reminder-create-1"},
+        json={
+            "title": "Submit CV",
+            "reminder_time": "2030-01-01T10:00:00+00:00",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {"id": 301}
+    assert len(fake_idempotency.claims) == 1
+    assert fake_idempotency.claims[0]["endpoint"] == "/reminders"
+    assert fake_idempotency.claims[0]["idempotency_key"] == "reminder-create-1"
+    assert len(fake_idempotency.completed) == 1
+    assert fake_idempotency.completed[0]["response_status"] == 201
+    assert fake_idempotency.completed[0]["response_body"] == {"id": 301}
+
+
+def test_create_reminder_idempotency_replay_does_not_create_again(
+    authenticated_api,
+    monkeypatch,
+):
+    client, service = authenticated_api
+    import api.reminders as reminder_module
+
+    class ReplayService(FakeIdempotencyService):
+        def claim_or_replay(self, **kwargs):
+            return {
+                "status": "replay",
+                "record_id": 1,
+                "response_body": {"id": 888},
+            }
+
+    monkeypatch.setattr(
+        reminder_module,
+        "idempotency_service",
+        ReplayService(),
+    )
+
+    response = client.post(
+        "/reminders",
+        headers={"Idempotency-Key": "reminder-create-replay"},
+        json={
+            "title": "Repeated reminder",
+            "reminder_time": "2030-01-01T10:00:00+00:00",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {"id": 888}
+    assert service.created == []
+
+
+def test_create_reminder_idempotency_conflict_returns_409(
+    authenticated_api,
+    monkeypatch,
+):
+    client, service = authenticated_api
+    import api.reminders as reminder_module
+
+    class ConflictService(FakeIdempotencyService):
+        def claim_or_replay(self, **kwargs):
+            return {"status": "conflict", "record_id": 1}
+
+    monkeypatch.setattr(
+        reminder_module,
+        "idempotency_service",
+        ConflictService(),
+    )
+
+    response = client.post(
+        "/reminders",
+        headers={"Idempotency-Key": "reminder-create-conflict"},
+        json={
+            "title": "Conflict",
+            "reminder_time": "2030-01-01T10:00:00+00:00",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"].startswith(
+        "Idempotency-Key was already used"
+    )
+    assert service.created == []
