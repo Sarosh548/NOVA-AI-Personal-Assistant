@@ -266,6 +266,12 @@ class STTRuntimeService:
                     item,
                     Exception,
                 ):
+                    if isinstance(
+                        item,
+                        STTRuntimeError,
+                    ):
+                        raise item
+
                     raise STTRuntimeError(
                         "STT stream event pump failed."
                     ) from item
