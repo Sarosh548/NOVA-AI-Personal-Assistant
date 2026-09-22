@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from fastapi import (
     APIRouter,
-    HTTPException,
-    Response,
     WebSocket,
     WebSocketDisconnect,
+    WebSocketException,
+    status,
 )
 from pydantic import ValidationError
 
@@ -21,6 +22,7 @@ from api.schemas.voice import (
 from config import (
     RateLimitSettings,
     get_rate_limit_settings,
+    get_security_settings,
     get_voice_settings,
 )
 from services.auth_service import (
@@ -49,16 +51,13 @@ router = APIRouter(
 
 def _extract_bearer_token(
     websocket: WebSocket,
-) -> str:
+) -> str | None:
     authorization = websocket.headers.get(
         "authorization"
     )
 
     if not authorization:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required.",
-        )
+        return None
 
     scheme, separator, credentials = (
         authorization.partition(" ")
@@ -69,20 +68,42 @@ def _extract_bearer_token(
         or scheme.lower() != "bearer"
         or not credentials.strip()
     ):
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required.",
-        )
+        return None
 
     return credentials.strip()
 
 
-def _resolve_authenticated_context(
+def _validate_origin(
     websocket: WebSocket,
-):
-    token = _extract_bearer_token(
-        websocket
+) -> None:
+    origin = websocket.headers.get(
+        "origin"
     )
+
+    if origin is None:
+        return
+
+    allowed_origins = (
+        get_security_settings()
+        .cors_allowed_origins()
+    )
+
+    if (
+        not allowed_origins
+        or origin not in allowed_origins
+    ):
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION
+        )
+
+
+def _resolve_authenticated_context(
+    token: str,
+):
+    if not token.strip():
+        raise ValueError(
+            "Authentication required."
+        )
 
     # Reuse NOVA's existing authenticated HTTP
     # boundary rather than duplicating JWT/session logic.
@@ -91,7 +112,7 @@ def _resolve_authenticated_context(
         token_service=TokenService(),
         auth_service=AuthService(),
         user_service=UserService(),
-        response=Response(),
+        response=None,
         rate_limit_service=RateLimitService(),
         rate_limit_settings=(
             get_rate_limit_settings()
@@ -114,39 +135,155 @@ async def _send_error(
     )
 
 
-@router.websocket("/ws")
-async def voice_websocket(
+async def _authenticate_after_connect(
     websocket: WebSocket,
-) -> None:
-    voice_settings = get_voice_settings()
-
+    voice_settings,
+):
     try:
-        context = (
-            _resolve_authenticated_context(
-                websocket
-            )
+        message = await asyncio.wait_for(
+            websocket.receive(),
+            timeout=(
+                voice_settings
+                .voice_authentication_timeout_seconds
+            ),
         )
-    except Exception:
-        # Do not expose token/session internals
-        # over the realtime transport.
-        await websocket.accept()
+    except asyncio.TimeoutError:
+        await _send_error(
+            websocket,
+            code="authentication_timeout",
+            message="Authentication was not completed in time.",
+        )
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION
+        )
+        return None
 
+    if message.get("type") != "websocket.receive":
+        return None
+
+    text_data = message.get("text")
+
+    if text_data is None:
         await _send_error(
             websocket,
             code="authentication_required",
             message="Authentication required.",
         )
-
         await websocket.close(
-            code=1008
+            code=status.WS_1008_POLICY_VIOLATION
         )
-        return
+        return None
 
-    await websocket.accept()
+    if (
+        len(
+            text_data.encode(
+                "utf-8"
+            )
+        )
+        > voice_settings.voice_control_message_max_bytes
+    ):
+        await websocket.close(
+            code=status.WS_1009_MESSAGE_TOO_BIG
+        )
+        return None
 
+    try:
+        control = VoiceControlMessage.model_validate(
+            json.loads(
+                text_data
+            )
+        )
+    except (
+        json.JSONDecodeError,
+        ValidationError,
+    ):
+        await _send_error(
+            websocket,
+            code="invalid_control_message",
+            message="Invalid voice control message.",
+        )
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION
+        )
+        return None
+
+    if (
+        control.type
+        != "session.authenticate"
+        or not control.access_token
+        or control.turn_id is not None
+    ):
+        await _send_error(
+            websocket,
+            code="authentication_required",
+            message="Authentication required.",
+        )
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION
+        )
+        return None
+
+    try:
+        return _resolve_authenticated_context(
+            control.access_token
+        )
+    except Exception:
+        await _send_error(
+            websocket,
+            code="authentication_required",
+            message="Authentication required.",
+        )
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION
+        )
+        return None
+
+
+@router.websocket("/ws")
+async def voice_websocket(
+    websocket: WebSocket,
+) -> None:
+    voice_settings = get_voice_settings()
     session_service = VoiceSessionService(
         settings=voice_settings
     )
+    session = None
+
+    _validate_origin(
+        websocket
+    )
+
+    header_token = _extract_bearer_token(
+        websocket
+    )
+
+    await websocket.accept()
+
+    if header_token is not None:
+        try:
+            context = (
+                _resolve_authenticated_context(
+                    header_token
+                )
+            )
+        except Exception:
+            await _send_error(
+                websocket,
+                code="authentication_required",
+                message="Authentication required.",
+            )
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION
+            )
+            return
+    else:
+        context = await _authenticate_after_connect(
+            websocket,
+            voice_settings,
+        )
+
+        if context is None:
+            return
 
     try:
         session = (
@@ -154,6 +291,8 @@ async def voice_websocket(
                 context.user.id
             )
         )
+
+        session_started_monotonic = time.monotonic()
 
         await websocket.send_json(
             {
@@ -167,26 +306,65 @@ async def voice_websocket(
         )
 
         while True:
+            session_elapsed = (
+                time.monotonic()
+                - session_started_monotonic
+            )
+
+            session_remaining = (
+                voice_settings
+                .voice_session_max_duration_seconds
+                - session_elapsed
+            )
+
+            if session_remaining <= 0:
+                await _send_error(
+                    websocket,
+                    code="session_max_duration",
+                    message=(
+                        "Voice session reached the maximum duration."
+                    ),
+                )
+                await websocket.close(
+                    code=status.WS_1000_NORMAL_CLOSURE
+                )
+                return
+
+            receive_timeout = min(
+                voice_settings
+                .voice_session_idle_timeout_seconds,
+                session_remaining,
+            )
+
             try:
                 message = await asyncio.wait_for(
                     websocket.receive(),
-                    timeout=(
-                        voice_settings
-                        .voice_session_idle_timeout_seconds
-                    ),
+                    timeout=receive_timeout,
                 )
             except asyncio.TimeoutError:
-                await _send_error(
-                    websocket,
-                    code="session_idle_timeout",
-                    message=(
-                        "Voice session closed after "
-                        "being idle too long."
-                    ),
-                )
+                if session_remaining <= (
+                    voice_settings
+                    .voice_session_idle_timeout_seconds
+                ):
+                    await _send_error(
+                        websocket,
+                        code="session_max_duration",
+                        message=(
+                            "Voice session reached the maximum duration."
+                        ),
+                    )
+                else:
+                    await _send_error(
+                        websocket,
+                        code="session_idle_timeout",
+                        message=(
+                            "Voice session closed after "
+                            "being idle too long."
+                        ),
+                    )
 
                 await websocket.close(
-                    code=1000
+                    code=status.WS_1000_NORMAL_CLOSURE
                 )
                 return
 
@@ -214,7 +392,7 @@ async def voice_websocket(
                     > voice_settings.voice_control_message_max_bytes
                 ):
                     await websocket.close(
-                        code=1009
+                        code=status.WS_1009_MESSAGE_TOO_BIG
                     )
                     return
 
@@ -235,6 +413,27 @@ async def voice_websocket(
                         code="invalid_control_message",
                         message=(
                             "Invalid voice control message."
+                        ),
+                    )
+                    continue
+
+                if control.type == "session.authenticate":
+                    await _send_error(
+                        websocket,
+                        code="already_authenticated",
+                        message=(
+                            "Voice session is already authenticated."
+                        ),
+                    )
+                    continue
+
+                if control.access_token is not None:
+                    await _send_error(
+                        websocket,
+                        code="invalid_control_message",
+                        message=(
+                            "access_token is only valid for "
+                            "session.authenticate."
                         ),
                     )
                     continue
@@ -316,7 +515,7 @@ async def voice_websocket(
                         )
 
                         await websocket.close(
-                            code=1000
+                            code=status.WS_1000_NORMAL_CLOSURE
                         )
                         return
 
@@ -339,7 +538,7 @@ async def voice_websocket(
                     .voice_audio_frame_max_bytes
                 ):
                     await websocket.close(
-                        code=1009
+                        code=status.WS_1009_MESSAGE_TOO_BIG
                     )
                     return
 
@@ -361,6 +560,7 @@ async def voice_websocket(
         return
 
     finally:
-        session_service.close_session(
-            session
-        )
+        if session is not None:
+            session_service.close_session(
+                session
+            )

@@ -199,6 +199,18 @@ class VoiceSettings(BaseSettings):
         le=3600,
     )
 
+    voice_authentication_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        le=60,
+    )
+
+    voice_session_max_duration_seconds: int = Field(
+        default=1800,
+        ge=60,
+        le=86400,
+    )
+
     voice_turn_max_duration_seconds: int = Field(
         default=120,
         ge=1,
