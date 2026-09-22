@@ -21,7 +21,6 @@ from api.schemas.voice import (
     VoiceControlMessage,
 )
 from config import (
-    RateLimitSettings,
     get_rate_limit_settings,
     get_security_settings,
     get_voice_settings,
@@ -29,8 +28,17 @@ from config import (
 from services.auth_service import (
     AuthService,
 )
+from services.deepgram_stt_adapter import (
+    DeepgramSTTAdapter,
+)
 from services.rate_limit_service import (
     RateLimitService,
+)
+from services.stt_adapter import (
+    STTAudioFormat,
+)
+from services.stt_runtime_service import (
+    STTRuntimeError,
 )
 from services.token_service import (
     TokenService,
@@ -41,6 +49,10 @@ from services.user_service import (
 from services.voice_session_service import (
     VoiceProtocolError,
     VoiceSessionService,
+)
+from services.voice_stt_orchestrator import (
+    VoiceSTTOrchestrator,
+    VoiceSTTOrchestratorError,
 )
 
 
@@ -106,8 +118,6 @@ def _resolve_authenticated_context(
             "Authentication required."
         )
 
-    # Reuse NOVA's existing authenticated HTTP
-    # boundary rather than duplicating JWT/session logic.
     return get_current_auth_context(
         token=token,
         token_service=TokenService(),
@@ -213,6 +223,7 @@ async def _authenticate_after_connect(
         != "session.authenticate"
         or not control.access_token
         or control.turn_id is not None
+        or control.audio_format is not None
     ):
         await _send_error(
             websocket,
@@ -240,6 +251,94 @@ async def _authenticate_after_connect(
         return None
 
 
+def _build_voice_stt_orchestrator(
+    voice_settings,
+) -> VoiceSTTOrchestrator:
+    return VoiceSTTOrchestrator(
+        adapter=DeepgramSTTAdapter(),
+        settings=voice_settings,
+    )
+
+
+def _audio_format_from_control(
+    control: VoiceControlMessage,
+    voice_settings,
+) -> STTAudioFormat:
+    supplied = control.audio_format
+
+    if supplied is None:
+        return STTAudioFormat(
+            encoding=(
+                voice_settings
+                .voice_default_audio_encoding
+            ),
+            sample_rate_hz=(
+                voice_settings
+                .voice_default_sample_rate_hz
+            ),
+            channels=(
+                voice_settings
+                .voice_default_channels
+            ),
+        )
+
+    return STTAudioFormat(
+        encoding=supplied.encoding,
+        sample_rate_hz=supplied.sample_rate_hz,
+        channels=supplied.channels,
+    )
+
+
+async def _relay_transcripts(
+    *,
+    websocket: WebSocket,
+    orchestrator: VoiceSTTOrchestrator,
+    session_service: VoiceSessionService,
+    session,
+    turn_id: str,
+    final_delivery: asyncio.Future[None],
+) -> None:
+    try:
+        async for event in orchestrator.events():
+            await websocket.send_json(
+                event
+            )
+
+            if (
+                event.get("type")
+                == "transcript.final"
+                and not final_delivery.done()
+            ):
+                final_delivery.set_result(
+                    None
+                )
+
+    except asyncio.CancelledError:
+        raise
+    except WebSocketDisconnect:
+        return
+    except VoiceSTTOrchestratorError as exc:
+        try:
+            session_service.cancel_turn(
+                session=session,
+                turn_id=turn_id,
+            )
+        except VoiceProtocolError:
+            pass
+
+        if not final_delivery.done():
+            final_delivery.cancel()
+
+        try:
+            await _send_error(
+                websocket,
+                code="stt_error",
+                message=str(exc),
+            )
+        except WebSocketDisconnect:
+            pass
+
+
 @router.websocket("/ws")
 async def voice_websocket(
     websocket: WebSocket,
@@ -248,6 +347,9 @@ async def voice_websocket(
     session_service = VoiceSessionService(
         settings=voice_settings
     )
+    stt_orchestrator: VoiceSTTOrchestrator | None = None
+    transcript_task: asyncio.Task[None] | None = None
+    final_delivery: asyncio.Future[None] | None = None
     session = None
 
     _validate_origin(
@@ -291,6 +393,9 @@ async def voice_websocket(
             session_service.create_session(
                 context.user.id
             )
+        )
+        stt_orchestrator = _build_voice_stt_orchestrator(
+            voice_settings
         )
 
         session_started_monotonic = time.monotonic()
@@ -439,59 +544,167 @@ async def voice_websocket(
                     )
                     continue
 
+                if (
+                    control.audio_format is not None
+                    and control.type != "turn.start"
+                ):
+                    await _send_error(
+                        websocket,
+                        code="invalid_control_message",
+                        message=(
+                            "audio_format is only valid for "
+                            "turn.start."
+                        ),
+                    )
+                    continue
+
                 try:
-                    if (
-                        control.type
-                        == "turn.start"
-                    ):
-                        event = (
-                            session_service.start_turn(
-                                session=session,
-                                turn_id=control.turn_id,
+                    if control.type == "turn.start":
+                        if session.active_turn is not None:
+                            raise VoiceProtocolError(
+                                "turn_already_active",
+                                "A voice turn is already active.",
                             )
+
+                        event = session_service.start_turn(
+                            session=session,
+                            turn_id=control.turn_id,
                         )
+
+                        try:
+                            audio_format = _audio_format_from_control(
+                                control,
+                                voice_settings,
+                            )
+
+                            stream_id = (
+                                await stt_orchestrator.start_turn(
+                                    user_id=context.user.id,
+                                    session_id=session.session_id,
+                                    turn_id=event["turn_id"],
+                                    audio_format=audio_format,
+                                )
+                            )
+                        except (
+                            VoiceSTTOrchestratorError,
+                            STTRuntimeError,
+                            ValueError,
+                        ) as exc:
+                            session_service.cancel_turn(
+                                session=session,
+                                turn_id=event["turn_id"],
+                            )
+                            await _send_error(
+                                websocket,
+                                code="stt_start_failed",
+                                message=str(exc),
+                            )
+                            continue
+
+                        event["stt_stream_id"] = stream_id
 
                         await websocket.send_json(
                             event
                         )
+
+                        loop = asyncio.get_running_loop()
+                        final_delivery = loop.create_future()
+
+                        transcript_task = asyncio.create_task(
+                            _relay_transcripts(
+                                websocket=websocket,
+                                orchestrator=stt_orchestrator,
+                                session_service=session_service,
+                                session=session,
+                                turn_id=event["turn_id"],
+                                final_delivery=final_delivery,
+                            )
+                        )
                         continue
 
-                    if (
-                        control.type
-                        == "turn.commit"
-                    ):
+                    if control.type == "turn.commit":
+                        active_turn = session.active_turn
+
+                        if active_turn is None:
+                            raise VoiceProtocolError(
+                                "no_active_turn",
+                                "There is no active voice turn to commit.",
+                            )
+
+                        final_event = (
+                            await stt_orchestrator.finish_turn()
+                        )
+
+                        if final_delivery is not None:
+                            await asyncio.wait_for(
+                                asyncio.shield(
+                                    final_delivery
+                                ),
+                                timeout=(
+                                    voice_settings
+                                    .voice_stt_finalization_timeout_seconds
+                                ),
+                            )
+
                         event, _audio_data = (
                             session_service.commit_turn(
                                 session=session,
-                                turn_id=control.turn_id,
+                                turn_id=active_turn.turn_id,
                             )
                         )
+                        event["transcript"] = final_event.text
+
+                        if transcript_task is not None:
+                            transcript_task.cancel()
+
+                            try:
+                                await transcript_task
+                            except asyncio.CancelledError:
+                                pass
+
+                        transcript_task = None
+                        final_delivery = None
+                        await websocket.send_json(
+                            event
+                        )
+                        continue
+
+                    if control.type == "turn.cancel":
+                        active_turn = session.active_turn
+
+                        if active_turn is None:
+                            raise VoiceProtocolError(
+                                "no_active_turn",
+                                "There is no active voice turn to cancel.",
+                            )
+
+                        turn_id = active_turn.turn_id
+
+                        await stt_orchestrator.cancel_turn()
+
+                        event = session_service.cancel_turn(
+                            session=session,
+                            turn_id=turn_id,
+                        )
+
+                        final_delivery = None
+
+                        if transcript_task is not None:
+                            transcript_task.cancel()
+
+                            try:
+                                await transcript_task
+                            except asyncio.CancelledError:
+                                pass
+
+                        transcript_task = None
 
                         await websocket.send_json(
                             event
                         )
                         continue
 
-                    if (
-                        control.type
-                        == "turn.cancel"
-                    ):
-                        event = (
-                            session_service.cancel_turn(
-                                session=session,
-                                turn_id=control.turn_id,
-                            )
-                        )
-
-                        await websocket.send_json(
-                            event
-                        )
-                        continue
-
-                    if (
-                        control.type
-                        == "session.ping"
-                    ):
+                    if control.type == "session.ping":
                         await websocket.send_json(
                             {
                                 "type": "session.pong",
@@ -502,10 +715,28 @@ async def voice_websocket(
                         )
                         continue
 
-                    if (
-                        control.type
-                        == "session.close"
-                    ):
+                    if control.type == "session.close":
+                        active_turn = session.active_turn
+
+                        if active_turn is not None:
+                            await stt_orchestrator.cancel_turn()
+                            session_service.cancel_turn(
+                                session=session,
+                                turn_id=active_turn.turn_id,
+                            )
+
+                        if transcript_task is not None:
+                            transcript_task.cancel()
+
+                            try:
+                                await transcript_task
+                            except asyncio.CancelledError:
+                                pass
+
+                            transcript_task = None
+
+                        await stt_orchestrator.close_session()
+
                         await websocket.send_json(
                             {
                                 "type": "session.closed",
@@ -520,11 +751,23 @@ async def voice_websocket(
                         )
                         return
 
-                except VoiceProtocolError as exc:
+                except (
+                    VoiceProtocolError,
+                    VoiceSTTOrchestratorError,
+                    STTRuntimeError,
+                ) as exc:
                     await _send_error(
                         websocket,
-                        code=exc.code,
-                        message=exc.message,
+                        code=getattr(
+                            exc,
+                            "code",
+                            "stt_error",
+                        ),
+                        message=getattr(
+                            exc,
+                            "message",
+                            str(exc),
+                        ),
                     )
 
                 continue
@@ -543,16 +786,73 @@ async def voice_websocket(
                     )
                     return
 
+                if session.active_turn is None:
+                    try:
+                        session_service.append_audio_frame(
+                            session=session,
+                            frame=binary_data,
+                        )
+                    except VoiceProtocolError as exc:
+                        await _send_error(
+                            websocket,
+                            code=exc.code,
+                            message=exc.message,
+                        )
+                    continue
+
                 try:
                     session_service.append_audio_frame(
                         session=session,
                         frame=binary_data,
                     )
-                except VoiceProtocolError as exc:
+
+                    await stt_orchestrator.send_audio(
+                        binary_data
+                    )
+                except (
+                    VoiceProtocolError,
+                    VoiceSTTOrchestratorError,
+                    STTRuntimeError,
+                ) as exc:
+                    code = getattr(
+                        exc,
+                        "code",
+                        "stt_error",
+                    )
+                    message = getattr(
+                        exc,
+                        "message",
+                        str(exc),
+                    )
+
+                    try:
+                        await stt_orchestrator.cancel_turn()
+                    except Exception:
+                        pass
+
+                    try:
+                        if session.active_turn is not None:
+                            session_service.cancel_turn(
+                                session=session,
+                                turn_id=session.active_turn.turn_id,
+                            )
+                    except VoiceProtocolError:
+                        pass
+
+                    if transcript_task is not None:
+                        transcript_task.cancel()
+
+                        try:
+                            await transcript_task
+                        except asyncio.CancelledError:
+                            pass
+
+                        transcript_task = None
+
                     await _send_error(
                         websocket,
-                        code=exc.code,
-                        message=exc.message,
+                        code=code,
+                        message=message,
                     )
 
                 continue
@@ -561,6 +861,20 @@ async def voice_websocket(
         return
 
     finally:
+        if transcript_task is not None:
+            transcript_task.cancel()
+
+            try:
+                await transcript_task
+            except asyncio.CancelledError:
+                pass
+
+        if stt_orchestrator is not None:
+            try:
+                await stt_orchestrator.close_session()
+            except Exception:
+                pass
+
         if session is not None:
             session_service.close_session(
                 session
