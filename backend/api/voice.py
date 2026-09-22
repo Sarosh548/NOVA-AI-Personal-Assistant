@@ -6,6 +6,7 @@ import time
 
 from fastapi import (
     APIRouter,
+    Response,
     WebSocket,
     WebSocketDisconnect,
     WebSocketException,
@@ -112,7 +113,7 @@ def _resolve_authenticated_context(
         token_service=TokenService(),
         auth_service=AuthService(),
         user_service=UserService(),
-        response=None,
+        response=Response(),
         rate_limit_service=RateLimitService(),
         rate_limit_settings=(
             get_rate_limit_settings()

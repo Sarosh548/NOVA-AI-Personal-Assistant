@@ -109,6 +109,16 @@ def test_voice_websocket_supports_browser_style_authentication(
         _build_app()
     )
 
+    monkeypatch.setattr(
+        voice_module,
+        "get_security_settings",
+        lambda: SimpleNamespace(
+            cors_allowed_origins=lambda: (
+                "https://app.example.com",
+            )
+        ),
+    )
+
     with client.websocket_connect(
         "/voice/ws",
         headers={
@@ -190,6 +200,13 @@ def test_voice_websocket_rejects_missing_auth():
     with client.websocket_connect(
         "/voice/ws"
     ) as websocket:
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+
         error = websocket.receive_json()
 
         assert error["type"] == "error"
