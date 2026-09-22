@@ -181,6 +181,12 @@ class VoiceSettings(BaseSettings):
         le=1_048_576,
     )
 
+    voice_stt_event_queue_max_items: int = Field(
+        default=64,
+        ge=1,
+        le=4096,
+    )
+
     voice_turn_audio_max_bytes: int = Field(
         default=10_485_760,
         ge=65_536,
