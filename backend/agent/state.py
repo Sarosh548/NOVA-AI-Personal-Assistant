@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any, NotRequired, TypedDict
 
 from services.execution_context import ExecutionContext
@@ -21,4 +22,5 @@ class NOVAState(TypedDict):
     knowledge_sources: NotRequired[list[dict[str, Any]]]
     web_sources: NotRequired[list[dict[str, Any]]]
     response: str
+    response_delta_callback: NotRequired[Callable[[str], None]]
     activity_report: NotRequired[dict[str, Any]]

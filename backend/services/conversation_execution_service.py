@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from services.conversation_service import ConversationService
@@ -73,6 +74,7 @@ class ConversationExecutionService:
         message: str,
         conversation_id: int | None = None,
         execution_context: ExecutionContext | None = None,
+        on_response_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         user_message = str(message).strip()
 
@@ -119,12 +121,21 @@ class ConversationExecutionService:
                 title=title,
             )
 
+        execution_kwargs = {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "user_message": user_message,
+            "history": history,
+            "execution_context": resolved_context,
+        }
+
+        if on_response_delta is not None:
+            execution_kwargs["on_response_delta"] = (
+                on_response_delta
+            )
+
         result = self.execution_service.execute(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            user_message=user_message,
-            history=history,
-            execution_context=resolved_context,
+            **execution_kwargs
         )
 
         response = result["response"]
