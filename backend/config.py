@@ -277,6 +277,18 @@ class VoiceSettings(BaseSettings):
         le=4_096,
     )
 
+    voice_response_delta_queue_max_items: int = Field(
+        default=64,
+        ge=1,
+        le=4_096,
+    )
+
+    voice_response_delta_enqueue_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+    )
+
     model_config = SettingsConfigDict(
         case_sensitive=False,
     )
