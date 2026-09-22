@@ -297,6 +297,7 @@ class VoiceSTTOrchestrator:
             "turn_id": event.turn_id,
             "sequence": event.sequence,
             "text": event.text,
+            "is_end_of_speech": event.is_end_of_speech,
             "created_at": event.created_at.isoformat(),
         }
 
