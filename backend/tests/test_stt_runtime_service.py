@@ -237,7 +237,7 @@ async def test_audio_frame_bounds_are_enforced_before_provider_call():
     runtime = STTRuntimeService(
         adapter=adapter,
         settings=_settings(
-            voice_audio_frame_max_bytes=4
+            voice_audio_frame_max_bytes=1024
         ),
     )
 
@@ -252,7 +252,7 @@ async def test_audio_frame_bounds_are_enforced_before_provider_call():
         await runtime.send_audio(
             session_id="session-1",
             turn_id="turn-1",
-            frame=b"12345",
+            frame=b"x" * 1025,
         )
 
     assert adapter.stream is not None
@@ -410,10 +410,9 @@ async def test_mismatched_stream_identity_fails_safely():
         ):
             pass
 
-    assert adapter.stream.cancelled is False
-    await runtime.close_session(
-        "session-1"
-    )
+    assert adapter.stream.cancelled is True
+    assert adapter.stream.closed is True
+    assert runtime._turns == {}
 
 
 @pytest.mark.asyncio
