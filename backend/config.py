@@ -161,6 +161,75 @@ def get_rate_limit_settings() -> RateLimitSettings:
     return RateLimitSettings()
 
 
+class VoiceSettings(BaseSettings):
+    """
+    Realtime voice transport and bounded session limits.
+
+    These settings protect the WebSocket boundary while keeping
+    the transport suitable for low-latency binary audio streaming.
+    """
+
+    voice_control_message_max_bytes: int = Field(
+        default=16_384,
+        ge=1024,
+        le=1_048_576,
+    )
+
+    voice_audio_frame_max_bytes: int = Field(
+        default=65_536,
+        ge=1024,
+        le=1_048_576,
+    )
+
+    voice_turn_audio_max_bytes: int = Field(
+        default=10_485_760,
+        ge=65_536,
+        le=52_428_800,
+    )
+
+    voice_turn_max_frames: int = Field(
+        default=4096,
+        ge=1,
+        le=100_000,
+    )
+
+    voice_session_idle_timeout_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=3600,
+    )
+
+    voice_authentication_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        le=60,
+    )
+
+    voice_session_max_duration_seconds: int = Field(
+        default=1800,
+        ge=60,
+        le=86400,
+    )
+
+    voice_turn_max_duration_seconds: int = Field(
+        default=120,
+        ge=1,
+        le=900,
+    )
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+
+@lru_cache
+def get_voice_settings() -> VoiceSettings:
+    """
+    Return cached realtime voice settings.
+    """
+    return VoiceSettings()
+
+
 class DatabaseSettings(BaseSettings):
     """
     Database connection reliability configuration.

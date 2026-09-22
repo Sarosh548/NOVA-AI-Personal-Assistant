@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     JSONResponse,
     Response,
-  )
+)
 from pydantic import BaseModel
 
 from security import configure_api_security
@@ -54,6 +54,9 @@ from api.workflows import (
 )
 from api.confirmations import (
     router as confirmations_router,
+)
+from api.voice import (
+    router as voice_router,
 )
 from services.autonomous_workflow_scheduler import (
     AutonomousWorkflowScheduler,
@@ -224,6 +227,9 @@ app.include_router(
 )
 app.include_router(
     permissions_router
+)
+app.include_router(
+    voice_router
 )
 
 llm_service = LLMService()
@@ -445,8 +451,6 @@ async def request_id_middleware(
 
     response.headers["X-Request-ID"] = request_id
     return response
-
-
 
 async def startup_event():
     configure_api_logging()
