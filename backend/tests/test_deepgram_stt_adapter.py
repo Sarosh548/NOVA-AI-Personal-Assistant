@@ -447,7 +447,10 @@ async def test_cancel_closes_provider_and_blocks_future_audio():
     assert websocket.closed is True
 
     with pytest.raises(
-        STTStreamClosedError | STTStreamNotActiveError
+        (
+            STTStreamClosedError,
+            STTStreamNotActiveError,
+        )
     ):
         await stream.send_audio(
             b"late"
