@@ -50,6 +50,7 @@ class FakeVoiceConversationExecutionService:
         conversation_id,
         execution_context,
         on_response_delta=None,
+        is_execution_current=None,
     ):
         self.calls.append(
             {
@@ -58,6 +59,7 @@ class FakeVoiceConversationExecutionService:
                 "conversation_id": conversation_id,
                 "execution_context": execution_context,
                 "on_response_delta": on_response_delta,
+                "is_execution_current": is_execution_current,
             }
         )
 
