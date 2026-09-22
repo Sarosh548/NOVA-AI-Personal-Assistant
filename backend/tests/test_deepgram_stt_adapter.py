@@ -335,6 +335,8 @@ async def test_stream_converts_partial_and_final_results():
         1,
         2,
     ]
+    assert events[0].is_end_of_speech is False
+    assert events[1].is_end_of_speech is True
     assert all(
         isinstance(
             event,
