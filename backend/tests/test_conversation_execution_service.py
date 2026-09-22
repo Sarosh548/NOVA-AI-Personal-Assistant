@@ -258,6 +258,56 @@ def test_execute_message_reuses_shared_core_and_persists_result():
     assert memory.calls[0]["user_message"] == "Hello NOVA"
 
 
+def test_execute_message_skips_persistence_when_execution_is_superseded():
+    service, conversation, execution, llm, memory = _service()
+
+    result = service.execute_message(
+        user_id="user-1",
+        message="Interrupted request",
+        is_execution_current=lambda: False,
+    )
+
+    assert result == {
+        "cancelled": True,
+        "conversation_id": 42,
+    }
+
+    assert execution.calls == []
+    assert conversation.saved_messages == []
+    assert conversation.title_updates == []
+    assert llm.title_calls == []
+    assert memory.calls == []
+
+
+def test_execute_message_skips_persistence_when_execution_becomes_stale():
+    service, conversation, execution, llm, memory = _service()
+
+    current_checks = iter([True, True, False])
+
+    result = service.execute_message(
+        user_id="user-1",
+        message="Superseded request",
+        is_execution_current=lambda: next(current_checks),
+    )
+
+    assert result == {
+        "cancelled": True,
+        "conversation_id": 42,
+    }
+
+    assert len(execution.calls) == 1
+    assert conversation.saved_messages == []
+    assert conversation.title_updates == [
+        (
+            42,
+            "user-1",
+            "Voice Conversation",
+        )
+    ]
+    assert llm.title_calls == ["Superseded request"]
+    assert memory.calls == []
+
+
 def test_execute_message_reuses_existing_conversation_and_history():
     service, conversation, execution, llm, memory = _service()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import threading
 import time
 from uuid import uuid4
 
@@ -42,6 +43,13 @@ class VoiceSession:
     connected_at: datetime
     conversation_id: int | None = None
     active_turn: VoiceTurn | None = None
+    response_generation: int = 0
+    active_response_turn_id: str | None = None
+    response_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        repr=False,
+        compare=False,
+    )
 
 
 class VoiceSessionService:
@@ -317,8 +325,57 @@ class VoiceSessionService:
             "turn_id": normalized_turn_id,
         }
 
+    def begin_response(
+        self,
+        session: VoiceSession,
+        turn_id: str,
+    ) -> int:
+        normalized_turn_id = (
+            self._normalize_turn_id(
+                turn_id
+            )
+        )
+
+        with session.response_lock:
+            session.response_generation += 1
+            session.active_response_turn_id = (
+                normalized_turn_id
+            )
+            return session.response_generation
+
+    def invalidate_response(
+        self,
+        session: VoiceSession,
+    ) -> None:
+        with session.response_lock:
+            session.response_generation += 1
+            session.active_response_turn_id = None
+
+    def is_response_current(
+        self,
+        session: VoiceSession,
+        *,
+        turn_id: str,
+        generation: int,
+    ) -> bool:
+        normalized_turn_id = (
+            self._normalize_turn_id(
+                turn_id
+            )
+        )
+
+        with session.response_lock:
+            return (
+                session.response_generation == generation
+                and session.active_response_turn_id
+                == normalized_turn_id
+            )
+
     def close_session(
         self,
         session: VoiceSession,
     ) -> None:
+        self.invalidate_response(
+            session
+        )
         session.active_turn = None

@@ -437,6 +437,7 @@ async def _run_voice_assistant_execution(
     message: str,
     turn_id: str,
     response_bridge: VoiceResponseStreamBridge | None,
+    is_execution_current,
 ) -> None:
     execution_kwargs = {
         "user_id": user_id,
@@ -448,6 +449,9 @@ async def _run_voice_assistant_execution(
     if response_bridge is not None:
         execution_kwargs["on_response_delta"] = response_bridge.on_delta
 
+    if is_execution_current is not None:
+        execution_kwargs["is_execution_current"] = is_execution_current
+
     try:
         response_payload = await asyncio.to_thread(
             conversation_execution_service.execute_message,
@@ -456,6 +460,12 @@ async def _run_voice_assistant_execution(
     except asyncio.CancelledError:
         raise
     except Exception:
+        if (
+            is_execution_current is not None
+            and not is_execution_current()
+        ):
+            return
+
         if response_bridge is not None:
             try:
                 await response_bridge.abort(
@@ -475,6 +485,17 @@ async def _run_voice_assistant_execution(
             )
         except WebSocketDisconnect:
             pass
+
+        return
+
+    if response_payload.get("cancelled"):
+        if response_bridge is not None:
+            try:
+                await response_bridge.abort(
+                    "Voice assistant response was superseded."
+                )
+            except Exception:
+                pass
 
         return
 
@@ -498,6 +519,19 @@ async def _run_voice_assistant_execution(
         except WebSocketDisconnect:
             pass
 
+        return
+
+    if (
+        is_execution_current is not None
+        and not is_execution_current()
+    ):
+        if response_bridge is not None:
+            try:
+                await response_bridge.abort(
+                    "Voice assistant response was superseded."
+                )
+            except Exception:
+                pass
         return
 
     session.conversation_id = response_payload[
@@ -634,6 +668,7 @@ async def voice_websocket(
     assistant_execution_task: asyncio.Task[None] | None = None
     assistant_response_bridge: VoiceResponseStreamBridge | None = None
     assistant_turn_id: str | None = None
+    assistant_response_generation: int | None = None
     final_delivery: asyncio.Future[None] | None = None
     conversation_execution_service = None
     session = None
@@ -788,6 +823,7 @@ async def voice_websocket(
                 assistant_execution_task = None
                 assistant_response_bridge = None
                 assistant_turn_id = None
+                assistant_response_generation = None
 
             message_type = message.get(
                 "type"
@@ -890,8 +926,13 @@ async def voice_websocket(
 
                         tts_task = None
                         assistant_execution_task = None
+                        session_service.invalidate_response(
+                            session
+                        )
+
                         assistant_response_bridge = None
                         assistant_turn_id = None
+                        assistant_response_generation = None
 
                         await _cancel_voice_response(
                             assistant_execution_task=(
@@ -1017,6 +1058,12 @@ async def voice_websocket(
                         )
 
                         turn_id = event["turn_id"]
+                        assistant_response_generation = (
+                            session_service.begin_response(
+                                session,
+                                turn_id,
+                            )
+                        )
 
                         if conversation_execution_service is None:
                             await _send_error(
@@ -1162,6 +1209,16 @@ async def voice_websocket(
                                     response_bridge=(
                                         assistant_response_bridge
                                     ),
+                                    is_execution_current=(
+                                        lambda response_turn_id=turn_id, response_generation=assistant_response_generation: (
+                                            session_service
+                                            .is_response_current(
+                                                session,
+                                                turn_id=response_turn_id,
+                                                generation=response_generation,
+                                            )
+                                        )
+                                    ),
                                 )
                             )
                         )
@@ -1211,8 +1268,13 @@ async def voice_websocket(
 
                             tts_task = None
                             assistant_execution_task = None
+                            session_service.invalidate_response(
+                                session
+                            )
+
                             assistant_response_bridge = None
                             assistant_turn_id = None
+                            assistant_response_generation = None
 
                             await _cancel_voice_response(
                                 assistant_execution_task=(
@@ -1283,9 +1345,15 @@ async def voice_websocket(
                             assistant_response_bridge
                         )
 
+                        session_service.invalidate_response(
+                            session
+                        )
+
                         tts_task = None
                         assistant_execution_task = None
                         assistant_response_bridge = None
+                        assistant_turn_id = None
+                        assistant_response_generation = None
 
                         await _cancel_voice_response(
                             assistant_execution_task=(
@@ -1450,10 +1518,15 @@ async def voice_websocket(
         previous_execution_task = assistant_execution_task
         previous_response_bridge = assistant_response_bridge
 
+        session_service.invalidate_response(
+            session
+        )
+
         tts_task = None
         assistant_execution_task = None
         assistant_response_bridge = None
         assistant_turn_id = None
+        assistant_response_generation = None
 
         await _cancel_voice_response(
             assistant_execution_task=(
