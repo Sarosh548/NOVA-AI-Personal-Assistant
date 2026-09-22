@@ -389,7 +389,14 @@ def test_voice_websocket_keeps_conversation_for_follow_up_turn(
                 "turn_id": "turn-2",
             }
         )
-        websocket.receive_json()
+
+        second_final = websocket.receive_json()
+        assert second_final["type"] == "transcript.final"
+        assert second_final["turn_id"] == "turn-2"
+
+        second_committed = websocket.receive_json()
+        assert second_committed["type"] == "turn.committed"
+        assert second_committed["turn_id"] == "turn-2"
 
         assistant = websocket.receive_json()
         assert assistant["type"] == "assistant.response"
