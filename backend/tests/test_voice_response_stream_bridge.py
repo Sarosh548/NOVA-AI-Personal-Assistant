@@ -180,6 +180,33 @@ async def test_bridge_abort_terminates_consumer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bridge_abort_discards_buffered_deltas() -> None:
+    bridge = VoiceResponseStreamBridge(
+        loop=asyncio.get_running_loop(),
+        max_queue_items=4,
+        enqueue_timeout_seconds=1.0,
+    )
+
+    await asyncio.to_thread(
+        bridge.on_delta,
+        "stale",
+    )
+
+    await bridge.abort(
+        "response interrupted",
+    )
+
+    with pytest.raises(
+        VoiceResponseStreamBridgeError,
+        match="response interrupted",
+    ):
+        async for _delta in bridge.text_deltas():
+            raise AssertionError(
+                "Aborted bridge yielded stale text."
+            )
+
+
+@pytest.mark.asyncio
 async def test_bridge_rejects_delta_after_abort() -> None:
     bridge = VoiceResponseStreamBridge(
         loop=asyncio.get_running_loop(),
