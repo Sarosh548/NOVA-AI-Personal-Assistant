@@ -391,6 +391,145 @@ async def _run_tts_output(
             pass
 
 
+async def _cancel_voice_response(
+    *,
+    assistant_execution_task: asyncio.Task[None] | None,
+    tts_task: asyncio.Task[None] | None,
+    response_bridge: VoiceResponseStreamBridge | None,
+) -> None:
+    if response_bridge is not None:
+        try:
+            await response_bridge.abort(
+                "Voice assistant response was interrupted."
+            )
+        except Exception:
+            pass
+
+    if (
+        tts_task is not None
+        and not tts_task.done()
+    ):
+        tts_task.cancel()
+
+        try:
+            await tts_task
+        except asyncio.CancelledError:
+            pass
+
+    if (
+        assistant_execution_task is not None
+        and not assistant_execution_task.done()
+    ):
+        assistant_execution_task.cancel()
+
+        try:
+            await assistant_execution_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _run_voice_assistant_execution(
+    *,
+    websocket: WebSocket,
+    conversation_execution_service: ConversationExecutionService,
+    session,
+    user_id: str,
+    message: str,
+    turn_id: str,
+    response_bridge: VoiceResponseStreamBridge | None,
+) -> None:
+    execution_kwargs = {
+        "user_id": user_id,
+        "message": message,
+        "conversation_id": session.conversation_id,
+        "execution_context": ExecutionContext.interactive(),
+    }
+
+    if response_bridge is not None:
+        execution_kwargs["on_response_delta"] = response_bridge.on_delta
+
+    try:
+        response_payload = await asyncio.to_thread(
+            conversation_execution_service.execute_message,
+            **execution_kwargs,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        if response_bridge is not None:
+            try:
+                await response_bridge.abort(
+                    "NOVA could not process the voice request."
+                )
+            except Exception:
+                pass
+
+        try:
+            await _send_error(
+                websocket,
+                code="assistant_execution_failed",
+                message=(
+                    "NOVA could not process the "
+                    "voice request."
+                ),
+            )
+        except WebSocketDisconnect:
+            pass
+
+        return
+
+    if response_payload.get("error"):
+        if response_bridge is not None:
+            try:
+                await response_bridge.abort(
+                    str(response_payload["error"])
+                )
+            except Exception:
+                pass
+
+        try:
+            await _send_error(
+                websocket,
+                code="assistant_execution_failed",
+                message=str(
+                    response_payload["error"]
+                ),
+            )
+        except WebSocketDisconnect:
+            pass
+
+        return
+
+    session.conversation_id = response_payload[
+        "conversation_id"
+    ]
+
+    try:
+        await websocket.send_json(
+            {
+                "type": "assistant.response",
+                "turn_id": turn_id,
+                "conversation_id": (
+                    session.conversation_id
+                ),
+                "response": (
+                    response_payload["response"]
+                ),
+                "confirmation": (
+                    response_payload.get(
+                        "confirmation",
+                        {},
+                    )
+                ),
+            }
+        )
+    except WebSocketDisconnect:
+        return
+
+    if response_bridge is not None:
+        await response_bridge.finish()
+
+
 def _get_voice_conversation_execution_service(
     websocket: WebSocket,
 ) -> ConversationExecutionService | None:
@@ -492,6 +631,8 @@ async def voice_websocket(
     tts_orchestrator: VoiceTTSOrchestrator | None = None
     transcript_task: asyncio.Task[None] | None = None
     tts_task: asyncio.Task[None] | None = None
+    assistant_execution_task: asyncio.Task[None] | None = None
+    assistant_response_bridge: VoiceResponseStreamBridge | None = None
     final_delivery: asyncio.Future[None] | None = None
     conversation_execution_service = None
     session = None
@@ -634,6 +775,18 @@ async def voice_websocket(
 
                 tts_task = None
 
+            if (
+                assistant_execution_task is not None
+                and assistant_execution_task.done()
+            ):
+                try:
+                    await assistant_execution_task
+                except asyncio.CancelledError:
+                    pass
+
+                assistant_execution_task = None
+                assistant_response_bridge = None
+
             message_type = message.get(
                 "type"
             )
@@ -720,26 +873,37 @@ async def voice_websocket(
 
                 try:
                     if control.type == "turn.start":
-                        if (
+                        had_active_audio = (
                             tts_task is not None
                             and not tts_task.done()
-                        ):
-                            tts_task.cancel()
+                        )
 
-                            try:
-                                await tts_task
-                            except asyncio.CancelledError:
-                                pass
+                        previous_tts_task = tts_task
+                        previous_execution_task = (
+                            assistant_execution_task
+                        )
+                        previous_response_bridge = (
+                            assistant_response_bridge
+                        )
 
-                            tts_task = None
+                        tts_task = None
+                        assistant_execution_task = None
+                        assistant_response_bridge = None
 
+                        await _cancel_voice_response(
+                            assistant_execution_task=(
+                                previous_execution_task
+                            ),
+                            tts_task=previous_tts_task,
+                            response_bridge=previous_response_bridge,
+                        )
+
+                        if had_active_audio:
                             await websocket.send_json(
                                 {
                                     "type": "assistant.audio.cancelled",
                                 }
                             )
-                        elif tts_task is not None:
-                            tts_task = None
 
                         if session.active_turn is not None:
                             raise VoiceProtocolError(
@@ -862,7 +1026,29 @@ async def voice_websocket(
                             )
                             continue
 
-                        response_bridge = None
+                        try:
+                            session.conversation_id = (
+                                await asyncio.to_thread(
+                                    conversation_execution_service
+                                    .prepare_conversation,
+                                    user_id=context.user.id,
+                                    conversation_id=(
+                                        session.conversation_id
+                                    ),
+                                )
+                            )
+                        except Exception:
+                            await _send_error(
+                                websocket,
+                                code="assistant_execution_failed",
+                                message=(
+                                    "NOVA could not prepare the "
+                                    "voice conversation."
+                                ),
+                            )
+                            continue
+
+                        assistant_response_bridge = None
 
                         if tts_orchestrator is not None:
                             tts_provider_settings = (
@@ -921,8 +1107,7 @@ async def voice_websocket(
                                         }
                                     )
 
-                                    response_bridge = (
-                                        VoiceResponseStreamBridge(
+                                    assistant_response_bridge = (\n                                        VoiceResponseStreamBridge(
                                             loop=(
                                                 asyncio.get_running_loop()
                                             ),
@@ -942,7 +1127,7 @@ async def voice_websocket(
                                             websocket=websocket,
                                             orchestrator=tts_orchestrator,
                                             response_bridge=(
-                                                response_bridge
+                                                assistant_response_bridge
                                             ),
                                         )
                                     )
@@ -951,7 +1136,7 @@ async def voice_websocket(
                                     TTSRuntimeError,
                                     ValueError,
                                 ) as exc:
-                                    response_bridge = None
+                                    assistant_response_bridge = None
 
                                     await _send_error(
                                         websocket,
@@ -959,94 +1144,23 @@ async def voice_websocket(
                                         message=str(exc),
                                     )
 
-                        execution_kwargs = {
-                            "user_id": context.user.id,
-                            "message": final_event.text,
-                            "conversation_id": (
-                                session.conversation_id
-                            ),
-                            "execution_context": (
-                                ExecutionContext.interactive()
-                            ),
-                        }
-
-                        if response_bridge is not None:
-                            execution_kwargs[
-                                "on_response_delta"
-                            ] = response_bridge.on_delta
-
-                        try:
-                            response_payload = (
-                                await asyncio.to_thread(
-                                    conversation_execution_service
-                                    .execute_message,
-                                    **execution_kwargs,
+                        assistant_execution_task = (
+                            asyncio.create_task(
+                                _run_voice_assistant_execution(
+                                    websocket=websocket,
+                                    conversation_execution_service=(
+                                        conversation_execution_service
+                                    ),
+                                    session=session,
+                                    user_id=context.user.id,
+                                    message=final_event.text,
+                                    turn_id=turn_id,
+                                    response_bridge=(
+                                        assistant_response_bridge
+                                    ),
                                 )
                             )
-                        except Exception:
-                            if response_bridge is not None:
-                                try:
-                                    await response_bridge.abort(
-                                        "NOVA could not process the voice request."
-                                    )
-                                except Exception:
-                                    pass
-
-                            await _send_error(
-                                websocket,
-                                code="assistant_execution_failed",
-                                message=(
-                                    "NOVA could not process the "
-                                    "voice request."
-                                ),
-                            )
-                            continue
-
-                        if response_payload.get("error"):
-                            if response_bridge is not None:
-                                try:
-                                    await response_bridge.abort(
-                                        str(
-                                            response_payload["error"]
-                                        )
-                                    )
-                                except Exception:
-                                    pass
-
-                            await _send_error(
-                                websocket,
-                                code="assistant_execution_failed",
-                                message=str(
-                                    response_payload["error"]
-                                ),
-                            )
-                            continue
-
-                        session.conversation_id = (
-                            response_payload["conversation_id"]
                         )
-
-                        await websocket.send_json(
-                            {
-                                "type": "assistant.response",
-                                "turn_id": turn_id,
-                                "conversation_id": (
-                                    session.conversation_id
-                                ),
-                                "response": (
-                                    response_payload["response"]
-                                ),
-                                "confirmation": (
-                                    response_payload.get(
-                                        "confirmation",
-                                        {},
-                                    )
-                                ),
-                            }
-                        )
-
-                        if response_bridge is not None:
-                            await response_bridge.finish()
 
                         continue
 
@@ -1118,20 +1232,25 @@ async def voice_websocket(
                         continue
 
                     if control.type == "session.close":
-                        if (
-                            tts_task is not None
-                            and not tts_task.done()
-                        ):
-                            tts_task.cancel()
+                        previous_tts_task = tts_task
+                        previous_execution_task = (
+                            assistant_execution_task
+                        )
+                        previous_response_bridge = (
+                            assistant_response_bridge
+                        )
 
-                            try:
-                                await tts_task
-                            except asyncio.CancelledError:
-                                pass
+                        tts_task = None
+                        assistant_execution_task = None
+                        assistant_response_bridge = None
 
-                            tts_task = None
-                        elif tts_task is not None:
-                            tts_task = None
+                        await _cancel_voice_response(
+                            assistant_execution_task=(
+                                previous_execution_task
+                            ),
+                            tts_task=previous_tts_task,
+                            response_bridge=previous_response_bridge,
+                        )
 
                         if tts_orchestrator is not None:
                             try:
@@ -1284,13 +1403,21 @@ async def voice_websocket(
         return
 
     finally:
-        if tts_task is not None:
-            tts_task.cancel()
+        previous_tts_task = tts_task
+        previous_execution_task = assistant_execution_task
+        previous_response_bridge = assistant_response_bridge
 
-            try:
-                await tts_task
-            except asyncio.CancelledError:
-                pass
+        tts_task = None
+        assistant_execution_task = None
+        assistant_response_bridge = None
+
+        await _cancel_voice_response(
+            assistant_execution_task=(
+                previous_execution_task
+            ),
+            tts_task=previous_tts_task,
+            response_bridge=previous_response_bridge,
+        )
 
         if tts_orchestrator is not None:
             try:
