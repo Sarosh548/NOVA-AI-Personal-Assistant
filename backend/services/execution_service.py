@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from agent.state import NOVAState
@@ -28,6 +29,7 @@ class NOVAExecutionService:
         user_message: str,
         history: list[dict[str, Any]],
         execution_context: ExecutionContext,
+        on_response_delta: Callable[[str], None] | None = None,
     ) -> NOVAState:
         """
         Build the standardized NOVA graph state.
@@ -41,7 +43,14 @@ class NOVAExecutionService:
                 "execution_context must be an ExecutionContext instance."
             )
 
-        return {
+        if on_response_delta is not None and not callable(
+            on_response_delta
+        ):
+            raise TypeError(
+                "on_response_delta must be callable when provided."
+            )
+
+        state: NOVAState = {
             "user_id": user_id,
             "conversation_id": conversation_id,
             "user_message": user_message,
@@ -83,6 +92,11 @@ class NOVAExecutionService:
             "response": "",
         }
 
+        if on_response_delta is not None:
+            state["response_delta_callback"] = on_response_delta
+
+        return state
+
     def execute(
         self,
         *,
@@ -91,6 +105,7 @@ class NOVAExecutionService:
         user_message: str,
         history: list[dict[str, Any]],
         execution_context: ExecutionContext,
+        on_response_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """
         Execute NOVA's graph using an explicit execution context.
@@ -102,6 +117,7 @@ class NOVAExecutionService:
             user_message=user_message,
             history=history,
             execution_context=execution_context,
+            on_response_delta=on_response_delta,
         )
 
         return self.agent_graph.invoke(
