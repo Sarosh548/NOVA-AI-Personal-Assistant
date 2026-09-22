@@ -5,7 +5,10 @@ import time
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import (
+    JSONResponse,
+    Response,
+  )
 from pydantic import BaseModel
 
 from security import configure_api_security
@@ -87,6 +90,10 @@ from services.api_observability import (
     configure_api_logging,
     log_api_exception,
     log_api_request,
+)
+from services.api_metrics import (
+    api_metrics,
+    generate_metrics,
 )
 from services.proactive_activity_notification_service import (
     ProactiveActivityNotificationService,
@@ -348,7 +355,7 @@ def _request_route_template(
     if isinstance(route_path, str) and route_path:
         return route_path
 
-    return request.url.path
+    return "__unmatched__"
 
 
 @app.middleware("http")
@@ -370,25 +377,57 @@ async def request_id_middleware(
     )
 
     started_at = time.perf_counter()
+    api_metrics.start_request()
 
     try:
         response = await call_next(
             request
         )
     except Exception:
+        duration_ms = (
+            time.perf_counter()
+            - started_at
+        ) * 1000
+
+        api_metrics.observe_request(
+            method=request.method,
+            route=_request_route_template(
+                request
+            ),
+            status_code=500,
+            duration_seconds=(
+                duration_ms
+                / 1000
+            ),
+        )
+
         log_api_exception(
             request_id=request_id,
             method=request.method,
             route=_request_route_template(
                 request
             ),
-            duration_ms=(
-                time.perf_counter()
-                - started_at
-            ) * 1000,
+            duration_ms=duration_ms,
         )
         raise
     else:
+        duration_ms = (
+            time.perf_counter()
+            - started_at
+        ) * 1000
+
+        api_metrics.observe_request(
+            method=request.method,
+            route=_request_route_template(
+                request
+            ),
+            status_code=response.status_code,
+            duration_seconds=(
+                duration_ms
+                / 1000
+            ),
+        )
+
         log_api_request(
             request_id=request_id,
             method=request.method,
@@ -396,12 +435,10 @@ async def request_id_middleware(
                 request
             ),
             status_code=response.status_code,
-            duration_ms=(
-                time.perf_counter()
-                - started_at
-            ) * 1000,
+            duration_ms=duration_ms,
         )
     finally:
+        api_metrics.end_request()
         reset_request_id(
             token
         )
@@ -540,6 +577,25 @@ def home():
     return {
         "message": "NOVA backend is running!"
     }
+
+
+@app.get(
+    "/metrics",
+    include_in_schema=False,
+)
+def metrics() -> Response:
+    """
+    Expose Prometheus-compatible application metrics.
+
+    The endpoint intentionally remains outside user authentication;
+    deployment/network policy should restrict scrape access.
+    """
+    body, content_type = generate_metrics()
+
+    return Response(
+        content=body,
+        media_type=content_type,
+    )
 
 
 @app.get(
