@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,9 @@ from services.voice_tts_orchestrator import (
 class FakeVoiceConversationExecutionService:
     def __init__(self):
         self.calls = []
+        self.block_first_execution = False
+        self.first_execution_started = threading.Event()
+        self.release_first_execution = threading.Event()
         self.response_payload = {
             "response": "Sure, done.",
             "conversation_id": 42,
@@ -29,6 +33,14 @@ class FakeVoiceConversationExecutionService:
                 "reason": None,
             },
         }
+
+    def prepare_conversation(
+        self,
+        *,
+        user_id,
+        conversation_id,
+    ):
+        return conversation_id or 42
 
     def execute_message(
         self,
@@ -48,6 +60,21 @@ class FakeVoiceConversationExecutionService:
                 "on_response_delta": on_response_delta,
             }
         )
+
+        if (
+            self.block_first_execution
+            and len(self.calls) == 1
+        ):
+            self.first_execution_started.set()
+            self.release_first_execution.wait(
+                timeout=5
+            )
+
+            if on_response_delta is not None:
+                try:
+                    on_response_delta("stale")
+                except Exception:
+                    pass
 
         if on_response_delta is not None:
             try:
@@ -392,7 +419,7 @@ def test_voice_websocket_handshake_and_turn_flow(
 
     assert core_service.calls[0]["user_id"] == "voice-test-user"
     assert core_service.calls[0]["message"] == "hello world"
-    assert core_service.calls[0]["conversation_id"] is None
+    assert core_service.calls[0]["conversation_id"] == 42
     assert isinstance(
         core_service.calls[0]["execution_context"],
         object,
@@ -526,8 +553,110 @@ def test_voice_websocket_keeps_conversation_for_follow_up_turn(
     core_service = client.app.state.conversation_execution_service
 
     assert len(core_service.calls) == 2
-    assert core_service.calls[0]["conversation_id"] is None
+    assert core_service.calls[0]["conversation_id"] == 42
     assert core_service.calls[1]["conversation_id"] == 42
+
+
+def test_voice_websocket_barge_in_cancels_previous_response_and_accepts_new_turn(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+            }
+        )
+
+        cancelled = websocket.receive_json()
+        assert cancelled == {
+            "type": "assistant.audio.cancelled",
+        }
+
+        second_started = websocket.receive_json()
+        assert second_started["type"] == "turn.started"
+        assert second_started["turn_id"] == "turn-2"
+
+        websocket.send_bytes(b"second")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-2",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        assistant = websocket.receive_json()
+        assert assistant["type"] == "assistant.response"
+        assert assistant["turn_id"] == "turn-2"
+        assert assistant["conversation_id"] == 42
+
+        core_service.release_first_execution.set()
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        pong = websocket.receive_json()
+        assert pong["type"] == "session.pong"
+
+    fake_tts = FakeVoiceTTSOrchestrator.instances[0]
+    assert fake_tts.texts == [
+        "Sure, ",
+        "done.",
+    ]
+    assert len(core_service.calls) == 2
 
 
 def test_voice_websocket_cancel_interrupts_active_turn(
