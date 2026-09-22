@@ -892,11 +892,6 @@ def test_voice_websocket_auto_commits_on_end_of_speech(
     _patch_auth(monkeypatch)
     _patch_fake_stt(monkeypatch)
     _patch_fake_tts(monkeypatch)
-    monkeypatch.setattr(
-        FakeVoiceSTTOrchestrator,
-        "emit_end_of_speech",
-        True,
-    )
 
     client = TestClient(
         _build_app()
@@ -919,6 +914,8 @@ def test_voice_websocket_auto_commits_on_end_of_speech(
         started = websocket.receive_json()
         assert started["type"] == "turn.started"
         assert started["turn_id"] == "turn-auto-1"
+
+        FakeVoiceSTTOrchestrator.instances[0].emit_end_of_speech = True
 
         websocket.send_bytes(
             b"input-audio"
