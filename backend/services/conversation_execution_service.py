@@ -46,6 +46,26 @@ class ConversationExecutionService:
         self.context_max_messages = context_max_messages
         self.context_max_characters = context_max_characters
 
+    def bind_dependencies(
+        self,
+        *,
+        conversation_service: ConversationService | None = None,
+        execution_service: NOVAExecutionService | None = None,
+        llm_service: LLMService | None = None,
+        memory_service: MemoryService | None = None,
+    ) -> None:
+        if conversation_service is not None:
+            self.conversation_service = conversation_service
+
+        if execution_service is not None:
+            self.execution_service = execution_service
+
+        if llm_service is not None:
+            self.llm_service = llm_service
+
+        if memory_service is not None:
+            self.memory_service = memory_service
+
     def execute_message(
         self,
         *,
