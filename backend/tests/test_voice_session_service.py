@@ -201,6 +201,54 @@ def test_turn_frame_count_is_bounded():
     )
 
 
+def test_response_generation_invalidates_stale_execution():
+    service = VoiceSessionService(
+        settings=_settings()
+    )
+
+    session = service.create_session(
+        "user-1"
+    )
+
+    first_generation = service.begin_response(
+        session,
+        "turn-1",
+    )
+
+    assert service.is_response_current(
+        session,
+        turn_id="turn-1",
+        generation=first_generation,
+    )
+
+    service.invalidate_response(
+        session
+    )
+
+    assert not service.is_response_current(
+        session,
+        turn_id="turn-1",
+        generation=first_generation,
+    )
+
+    second_generation = service.begin_response(
+        session,
+        "turn-2",
+    )
+
+    assert second_generation > first_generation
+    assert not service.is_response_current(
+        session,
+        turn_id="turn-1",
+        generation=first_generation,
+    )
+    assert service.is_response_current(
+        session,
+        turn_id="turn-2",
+        generation=second_generation,
+    )
+
+
 def test_turn_can_be_cancelled():
     service = VoiceSessionService(
         settings=_settings()
