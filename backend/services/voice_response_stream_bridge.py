@@ -63,6 +63,7 @@ class VoiceResponseStreamBridge:
         self._state_lock = threading.Lock()
         self._closed = False
         self._failure_message: str | None = None
+        self._terminal_enqueued = False
 
     def on_delta(
         self,
@@ -152,7 +153,25 @@ class VoiceResponseStreamBridge:
         """
 
         while True:
+            with self._state_lock:
+                failure_message = self._failure_message
+
+            if failure_message is not None:
+                self._drain_queue()
+                raise VoiceResponseStreamBridgeError(
+                    failure_message
+                )
+
             item = await self._queue.get()
+
+            with self._state_lock:
+                failure_message = self._failure_message
+
+            if failure_message is not None:
+                self._drain_queue()
+                raise VoiceResponseStreamBridgeError(
+                    failure_message
+                )
 
             if isinstance(
                 item,
@@ -181,8 +200,10 @@ class VoiceResponseStreamBridge:
                 self._failure_message is not None
             )
 
-        if failed:
-            return
+            if failed or self._terminal_enqueued:
+                return
+
+            self._terminal_enqueued = True
 
         await self._queue.put(
             _BridgeTerminal()
@@ -215,17 +236,21 @@ class VoiceResponseStreamBridge:
                 )
 
             self._closed = True
+            enqueue_terminal = not self._terminal_enqueued
+            self._terminal_enqueued = True
+            failure_message = (
+                self._failure_message
+                or normalized_message
+            )
 
         self._drain_queue()
 
-        await self._queue.put(
-            _BridgeTerminal(
-                error_message=(
-                    self._failure_message
-                    or normalized_message
+        if enqueue_terminal:
+            await self._queue.put(
+                _BridgeTerminal(
+                    error_message=failure_message
                 )
             )
-        )
 
     def abort_from_thread(
         self,
@@ -270,11 +295,21 @@ class VoiceResponseStreamBridge:
         self,
         message: str,
     ) -> None:
+        with self._state_lock:
+            if self._terminal_enqueued:
+                return
+
+            self._terminal_enqueued = True
+            failure_message = (
+                self._failure_message
+                or message
+            )
+
         self._drain_queue()
 
         await self._queue.put(
             _BridgeTerminal(
-                error_message=message
+                error_message=failure_message
             )
         )
 
