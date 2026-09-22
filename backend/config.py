@@ -155,6 +155,34 @@ def get_rate_limit_settings() -> RateLimitSettings:
     return RateLimitSettings()
 
 
+class DatabaseSettings(BaseSettings):
+    """
+    Database connection reliability configuration.
+
+    The PostgreSQL connection timeout is intentionally bounded so
+    readiness checks and application database operations fail fast
+    instead of waiting indefinitely on unreachable infrastructure.
+    """
+
+    db_connect_timeout_seconds: int = Field(
+        default=5,
+        gt=0,
+        le=60,
+    )
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+
+@lru_cache
+def get_database_settings() -> DatabaseSettings:
+    """
+    Return cached database reliability settings.
+    """
+    return DatabaseSettings()
+
+
 class LLMSettings(BaseSettings):
     """
     External LLM provider reliability configuration.
