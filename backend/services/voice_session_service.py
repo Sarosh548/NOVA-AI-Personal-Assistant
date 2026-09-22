@@ -40,6 +40,7 @@ class VoiceSession:
     session_id: str
     user_id: str
     connected_at: datetime
+    conversation_id: int | None = None
     active_turn: VoiceTurn | None = None
 
 

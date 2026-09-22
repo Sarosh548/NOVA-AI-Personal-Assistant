@@ -11,8 +11,45 @@ from starlette.websockets import WebSocketDisconnect
 from api.voice import router
 
 
+class FakeVoiceConversationExecutionService:
+    def __init__(self):
+        self.calls = []
+        self.response_payload = {
+            "response": "Sure, done.",
+            "conversation_id": 42,
+            "confirmation": {
+                "id": None,
+                "status": None,
+                "tool": None,
+                "action": None,
+                "reason": None,
+            },
+        }
+
+    def execute_message(
+        self,
+        *,
+        user_id,
+        message,
+        conversation_id,
+        execution_context,
+    ):
+        self.calls.append(
+            {
+                "user_id": user_id,
+                "message": message,
+                "conversation_id": conversation_id,
+                "execution_context": execution_context,
+            }
+        )
+        return dict(self.response_payload)
+
+
 def _build_app() -> FastAPI:
     app = FastAPI()
+    app.state.conversation_execution_service = (
+        FakeVoiceConversationExecutionService()
+    )
     app.include_router(router)
     return app
 
@@ -222,6 +259,24 @@ def test_voice_websocket_handshake_and_turn_flow(
         assert committed["audio_bytes"] == 8
         assert committed["transcript"] == "hello world"
 
+        assistant = websocket.receive_json()
+
+        assert assistant["type"] == "assistant.response"
+        assert assistant["turn_id"] == "turn-1"
+        assert assistant["conversation_id"] == 42
+        assert assistant["response"] == "Sure, done."
+        assert assistant["confirmation"]["status"] is None
+
+    core_service = websocket.app.state.conversation_execution_service
+
+    assert core_service.calls[0]["user_id"] == "voice-test-user"
+    assert core_service.calls[0]["message"] == "hello world"
+    assert core_service.calls[0]["conversation_id"] is None
+    assert isinstance(
+        core_service.calls[0]["execution_context"],
+        object,
+    )
+
     assert FakeVoiceSTTOrchestrator.instances[0].audio_frames == [
         b"12345678"
     ]
@@ -268,6 +323,90 @@ def test_voice_websocket_supports_browser_style_authentication(
         )
         assert ready["protocol_version"] == "1"
         assert ready["session_id"]
+
+
+def test_voice_websocket_keeps_conversation_for_follow_up_turn(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        first_final = websocket.receive_json()
+        assert first_final["type"] == "transcript.final"
+
+        first_committed = websocket.receive_json()
+        assert first_committed["type"] == "turn.committed"
+        assert first_committed["turn_id"] == "turn-1"
+
+        first_assistant = websocket.receive_json()
+        assert first_assistant["type"] == "assistant.response"
+        assert first_assistant["turn_id"] == "turn-1"
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"second")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-2",
+            }
+        )
+
+        second_final = websocket.receive_json()
+        assert second_final["type"] == "transcript.final"
+        assert second_final["turn_id"] == "turn-2"
+
+        second_committed = websocket.receive_json()
+        assert second_committed["type"] == "turn.committed"
+        assert second_committed["turn_id"] == "turn-2"
+
+        assistant = websocket.receive_json()
+        assert assistant["type"] == "assistant.response"
+        assert assistant["conversation_id"] == 42
+
+    core_service = client.app.state.conversation_execution_service
+
+    assert len(core_service.calls) == 2
+    assert core_service.calls[0]["conversation_id"] is None
+    assert core_service.calls[1]["conversation_id"] == 42
 
 
 def test_voice_websocket_cancel_interrupts_active_turn(

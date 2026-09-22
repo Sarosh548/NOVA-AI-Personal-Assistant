@@ -64,6 +64,9 @@ from services.autonomous_workflow_scheduler import (
 from services.conversation_service import (
     ConversationService,
 )
+from services.conversation_execution_service import (
+    ConversationExecutionService,
+)
 from services.execution_context import (
     ExecutionContext,
 )
@@ -303,6 +306,19 @@ proactive_activity_scheduler_task: (
 
 CONTEXT_MAX_MESSAGES = 12
 CONTEXT_MAX_CHARACTERS = 12000
+
+conversation_execution_service = ConversationExecutionService(
+    conversation_service=conversation_service,
+    execution_service=execution_service,
+    llm_service=llm_service,
+    memory_service=memory_service,
+    context_max_messages=CONTEXT_MAX_MESSAGES,
+    context_max_characters=CONTEXT_MAX_CHARACTERS,
+)
+
+app.state.conversation_execution_service = (
+    conversation_execution_service
+)
 
 
 class ChatRequest(BaseModel):
@@ -678,146 +694,19 @@ def _execute_chat(
     request: ChatRequest,
     current_user_id: str,
 ) -> dict:
-    user_message = request.message.strip()
-
-    if not user_message:
-        return {
-            "error": "message cannot be empty"
-        }
-
-    conversation_id = (
-        conversation_service.get_or_create_conversation(
-            user_id=current_user_id,
-            conversation_id=request.conversation_id,
-        )
+    conversation_execution_service.bind_dependencies(
+        conversation_service=conversation_service,
+        execution_service=execution_service,
+        llm_service=llm_service,
+        memory_service=memory_service,
     )
 
-    history = (
-        conversation_service.get_context_history(
-            user_id=current_user_id,
-            conversation_id=conversation_id,
-            max_messages=CONTEXT_MAX_MESSAGES,
-            max_characters=CONTEXT_MAX_CHARACTERS,
-        )
-    )
-
-    if not history:
-        title = (
-            llm_service.generate_conversation_title(
-                user_message
-            )
-        )
-
-        conversation_service.update_conversation_title(
-            conversation_id=conversation_id,
-            user_id=current_user_id,
-            title=title,
-        )
-
-    execution_context = (
-        ExecutionContext.interactive()
-    )
-
-    result = execution_service.execute(
+    return conversation_execution_service.execute_message(
         user_id=current_user_id,
-        conversation_id=conversation_id,
-        user_message=user_message,
-        history=history,
-        execution_context=execution_context,
+        message=request.message,
+        conversation_id=request.conversation_id,
+        execution_context=ExecutionContext.interactive(),
     )
-
-    response = result["response"]
-
-    understanding = result[
-        "understanding"
-    ]
-
-    plan = result.get(
-        "plan",
-        {},
-    )
-
-    permission = result.get(
-        "permission",
-        {},
-    )
-
-    confirmation = result.get(
-        "confirmation",
-        {},
-    )
-
-    tool_result = result[
-        "tool_result"
-    ]
-
-    workflow_result = result.get(
-        "workflow_result",
-        {},
-    )
-
-    knowledge_sources = result.get(
-        "knowledge_sources",
-        [],
-    )
-
-    web_sources = result.get(
-        "web_sources",
-        [],
-    )
-
-    conversation_service.save_message(
-        user_id=current_user_id,
-        conversation_id=conversation_id,
-        role="user",
-        content=user_message,
-    )
-
-    conversation_service.save_message(
-        user_id=current_user_id,
-        conversation_id=conversation_id,
-        role="assistant",
-        content=response,
-    )
-
-    new_memory = (
-        llm_service.extract_memory(
-            user_message
-        )
-    )
-
-    memory_action = None
-
-    if new_memory:
-        memory_action = (
-            memory_service.add_memory(
-                user_id=current_user_id,
-                memory_text=new_memory[
-                    "memory_text"
-                ],
-                category=new_memory[
-                    "category"
-                ],
-                importance=new_memory[
-                    "importance"
-                ],
-                user_message=user_message,
-            )
-        )
-
-    return {
-        "response": response,
-        "conversation_id": conversation_id,
-        "understanding": understanding,
-        "plan": plan,
-        "permission": permission,
-        "confirmation": confirmation,
-        "tool_result": tool_result,
-        "workflow_result": workflow_result,
-        "memory_action": memory_action,
-        "knowledge_sources": knowledge_sources,
-        "web_sources": web_sources,
-    }
 
 
 @app.post("/chat")
