@@ -499,6 +499,19 @@ async def test_only_one_event_consumer_is_allowed():
         _request()
     )
 
+    assert adapter.stream is not None
+
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            type="partial",
+            text="hello",
+            created_at=utc_now(),
+        )
+    )
+
     consumer_one = runtime.events(
         session_id="session-1",
         turn_id="turn-1",
