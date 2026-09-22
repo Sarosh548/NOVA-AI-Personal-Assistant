@@ -36,6 +36,7 @@ class FakeVoiceConversationExecutionService:
         message,
         conversation_id,
         execution_context,
+        on_response_delta=None,
     ):
         self.calls.append(
             {
@@ -43,8 +44,14 @@ class FakeVoiceConversationExecutionService:
                 "message": message,
                 "conversation_id": conversation_id,
                 "execution_context": execution_context,
+                "on_response_delta": on_response_delta,
             }
         )
+
+        if on_response_delta is not None:
+            on_response_delta("Sure, ")
+            on_response_delta("done.")
+
         return dict(self.response_payload)
 
 
@@ -166,6 +173,7 @@ class FakeVoiceTTSOrchestrator:
         self.turn_id = None
         self.stream_id = "fake-tts-stream-1"
         self.events_queue = asyncio.Queue()
+        self.texts = []
         self.instances.append(self)
 
     async def start_turn(
@@ -189,6 +197,7 @@ class FakeVoiceTTSOrchestrator:
         text,
     ):
         self.text = text
+        self.texts.append(text)
         await self.events_queue.put(
             SimpleNamespace(
                 type="audio",
@@ -808,10 +817,6 @@ def test_voice_websocket_streams_assistant_audio(
         assert websocket.receive_json()["type"] == "transcript.final"
         assert websocket.receive_json()["type"] == "turn.committed"
 
-        assistant = websocket.receive_json()
-        assert assistant["type"] == "assistant.response"
-        assert assistant["response"] == "Sure, done."
-
         started = websocket.receive_json()
         assert started == {
             "type": "assistant.audio.started",
@@ -824,18 +829,76 @@ def test_voice_websocket_streams_assistant_audio(
             },
         }
 
-        audio = websocket.receive_bytes()
-        assert audio == b"tts-audio"
+        messages = []
 
-        final = websocket.receive_json()
-        assert final["type"] == "assistant.audio.final"
-        assert final["stream_id"] == "fake-tts-stream-1"
-        assert final["turn_id"] == "turn-tts-1"
-        assert final["sequence"] == 2
+        while len(messages) < 3:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                messages.append(
+                    {
+                        "kind": "bytes",
+                        "value": message["bytes"],
+                    }
+                )
+                continue
+
+            if message.get("text") is not None:
+                messages.append(
+                    {
+                        "kind": "json",
+                        "value": json.loads(
+                            message["text"]
+                        ),
+                    }
+                )
+                continue
+
+            raise AssertionError(
+                f"Unexpected WebSocket message: {message!r}"
+            )
+
+        json_messages = [
+            item["value"]
+            for item in messages
+            if item["kind"] == "json"
+        ]
+
+        assert any(
+            message["type"] == "assistant.response"
+            and message["response"] == "Sure, done."
+            for message in json_messages
+        )
+
+        assert any(
+            message["type"] == "assistant.audio.final"
+            and message["stream_id"] == "fake-tts-stream-1"
+            and message["turn_id"] == "turn-tts-1"
+            and message["sequence"] == 2
+            for message in json_messages
+        )
+
+        audio_messages = [
+            item["value"]
+            for item in messages
+            if item["kind"] == "bytes"
+        ]
+        assert audio_messages == [
+            b"tts-audio",
+            b"tts-audio",
+        ]
 
     fake_tts = FakeVoiceTTSOrchestrator.instances[0]
     assert fake_tts.voice == "voice/example"
-    assert fake_tts.text == "Sure, done."
+    assert fake_tts.texts == [
+        "Sure, ",
+        "done.",
+    ]
+
+    core_service = websocket.app.state.conversation_execution_service
+    assert callable(
+        core_service.calls[0]["on_response_delta"]
+    )
 
 
 def test_voice_websocket_audio_output_failure_does_not_break_session(
@@ -890,14 +953,27 @@ def test_voice_websocket_audio_output_failure_does_not_break_session(
 
         assert websocket.receive_json()["type"] == "transcript.final"
         assert websocket.receive_json()["type"] == "turn.committed"
-        assert websocket.receive_json()["type"] == "assistant.response"
 
         started = websocket.receive_json()
         assert started["type"] == "assistant.audio.started"
 
-        error = websocket.receive_json()
-        assert error["type"] == "error"
-        assert error["code"] == "assistant_audio_failed"
+        messages = [
+            websocket.receive_json(),
+            websocket.receive_json(),
+        ]
+
+        assert any(
+            message["type"] == "assistant.response"
+            for message in messages
+        )
+
+        error_messages = [
+            message
+            for message in messages
+            if message["type"] == "error"
+        ]
+        assert error_messages
+        assert error_messages[0]["code"] == "assistant_audio_failed"
 
         websocket.send_json(
             {
@@ -906,3 +982,4 @@ def test_voice_websocket_audio_output_failure_does_not_break_session(
         )
         pong = websocket.receive_json()
         assert pong["type"] == "session.pong"
+
