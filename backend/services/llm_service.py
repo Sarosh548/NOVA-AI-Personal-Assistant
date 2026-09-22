@@ -1,5 +1,6 @@
 import json
 import os
+from collections.abc import Iterator
 
 from openai import OpenAI
 
@@ -55,6 +56,22 @@ class LLMService:
     # Internal helper
     # =========================================================
 
+    def _chat_messages(
+        self,
+        instructions: str,
+        user_input: str,
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": instructions,
+            },
+            {
+                "role": "user",
+                "content": user_input,
+            },
+        ]
+
     def _chat_completion(
         self,
         instructions: str,
@@ -70,16 +87,10 @@ class LLMService:
 
         response = self.client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": instructions,
-                },
-                {
-                    "role": "user",
-                    "content": user_input,
-                },
-            ],
+            messages=self._chat_messages(
+                instructions,
+                user_input,
+            ),
         )
 
         content = response.choices[0].message.content
@@ -88,6 +99,56 @@ class LLMService:
             return ""
 
         return content.strip()
+
+    def _chat_completion_stream(
+        self,
+        instructions: str,
+        user_input: str,
+    ) -> Iterator[str]:
+        """
+        Stream non-empty text deltas from an LLM chat completion.
+
+        The underlying SDK call remains synchronous so existing NOVA
+        callers can continue using the current client boundary. Async
+        transports can consume this iterator from a worker thread.
+        """
+
+        stream = self.client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=self._chat_messages(
+                instructions,
+                user_input,
+            ),
+            stream=True,
+        )
+
+        for chunk in stream:
+            choices = getattr(
+                chunk,
+                "choices",
+                None,
+            )
+
+            if not choices:
+                continue
+
+            delta = getattr(
+                choices[0],
+                "delta",
+                None,
+            )
+
+            if delta is None:
+                continue
+
+            content = getattr(
+                delta,
+                "content",
+                None,
+            )
+
+            if content:
+                yield str(content)
 
     # =========================================================
     # Generic instruction-driven generation
@@ -119,19 +180,28 @@ class LLMService:
             user_input=user_input,
         )
 
+    def generate_with_instructions_stream(
+        self,
+        *,
+        instructions: str,
+        user_input: str,
+    ) -> Iterator[str]:
+        """
+        Stream a response using caller-provided instructions.
+        """
+
+        return self._chat_completion_stream(
+            instructions=instructions,
+            user_input=user_input,
+        )
+
     # =========================================================
     # Normal NOVA response
     # =========================================================
 
-    def generate_response(self, message: str) -> str:
-        """
-        Generate NOVA's normal conversational response.
-
-        No tools are exposed here yet.
-        Tool execution will be handled by a dedicated tool layer.
-        """
-
-        instructions = f"""
+    @staticmethod
+    def _response_instructions() -> str:
+        return f"""
 {NOVA_PERSONALITY}
 
 You are generating NOVA's conversational response.
@@ -146,8 +216,32 @@ IMPORTANT:
   respond naturally and honestly.
 """
 
+    def generate_response(self, message: str) -> str:
+        """
+        Generate NOVA's normal conversational response.
+
+        No tools are exposed here yet.
+        Tool execution will be handled by a dedicated tool layer.
+        """
+
         return self._chat_completion(
-            instructions=instructions,
+            instructions=self._response_instructions(),
+            user_input=message,
+        )
+
+    def generate_response_stream(
+        self,
+        message: str,
+    ) -> Iterator[str]:
+        """
+        Stream NOVA's normal conversational response as text deltas.
+
+        The yielded chunks preserve provider whitespace and ordering so
+        downstream voice/TTS orchestration can forward them incrementally.
+        """
+
+        return self._chat_completion_stream(
+            instructions=self._response_instructions(),
             user_input=message,
         )
 
