@@ -18,7 +18,6 @@ from api.auth import (
     get_current_auth_context,
 )
 from api.schemas.voice import (
-    VoiceAudioFormat,
     VoiceControlMessage,
 )
 from config import (
@@ -352,7 +351,6 @@ async def voice_websocket(
     transcript_task: asyncio.Task[None] | None = None
     final_delivery: asyncio.Future[None] | None = None
     session = None
-    active_turn_id: str | None = None
 
     _validate_origin(
         websocket
@@ -562,7 +560,7 @@ async def voice_websocket(
 
                 try:
                     if control.type == "turn.start":
-                        if active_turn_id is not None:
+                        if session.active_turn is not None:
                             raise VoiceProtocolError(
                                 "turn_already_active",
                                 "A voice turn is already active.",
@@ -603,7 +601,6 @@ async def voice_websocket(
                             )
                             continue
 
-                        active_turn_id = event["turn_id"]
                         event["stt_stream_id"] = stream_id
 
                         loop = asyncio.get_running_loop()
@@ -626,7 +623,9 @@ async def voice_websocket(
                         continue
 
                     if control.type == "turn.commit":
-                        if active_turn_id is None:
+                        active_turn = session.active_turn
+
+                        if active_turn is None:
                             raise VoiceProtocolError(
                                 "no_active_turn",
                                 "There is no active voice turn to commit.",
@@ -650,7 +649,7 @@ async def voice_websocket(
                         event, _audio_data = (
                             session_service.commit_turn(
                                 session=session,
-                                turn_id=active_turn_id,
+                                turn_id=active_turn.turn_id,
                             )
                         )
                         event["transcript"] = final_event.text
@@ -663,21 +662,21 @@ async def voice_websocket(
 
                         transcript_task = None
                         final_delivery = None
-                        active_turn_id = None
-
                         await websocket.send_json(
                             event
                         )
                         continue
 
                     if control.type == "turn.cancel":
-                        if active_turn_id is None:
+                        active_turn = session.active_turn
+
+                        if active_turn is None:
                             raise VoiceProtocolError(
                                 "no_active_turn",
                                 "There is no active voice turn to cancel.",
                             )
 
-                        turn_id = active_turn_id
+                        turn_id = active_turn.turn_id
 
                         await stt_orchestrator.cancel_turn()
 
@@ -686,7 +685,6 @@ async def voice_websocket(
                             turn_id=turn_id,
                         )
 
-                        active_turn_id = None
                         final_delivery = None
 
                         if transcript_task is not None:
@@ -716,13 +714,14 @@ async def voice_websocket(
                         continue
 
                     if control.type == "session.close":
-                        if active_turn_id is not None:
+                        active_turn = session.active_turn
+
+                        if active_turn is not None:
                             await stt_orchestrator.cancel_turn()
                             session_service.cancel_turn(
                                 session=session,
-                                turn_id=active_turn_id,
+                                turn_id=active_turn.turn_id,
                             )
-                            active_turn_id = None
 
                         if transcript_task is not None:
                             transcript_task.cancel()
@@ -785,7 +784,7 @@ async def voice_websocket(
                     )
                     return
 
-                if active_turn_id is None:
+                if session.active_turn is None:
                     try:
                         session_service.append_audio_frame(
                             session=session,
@@ -830,14 +829,13 @@ async def voice_websocket(
                         pass
 
                     try:
-                        session_service.cancel_turn(
-                            session=session,
-                            turn_id=active_turn_id,
-                        )
+                        if session.active_turn is not None:
+                            session_service.cancel_turn(
+                                session=session,
+                                turn_id=session.active_turn.turn_id,
+                            )
                     except VoiceProtocolError:
                         pass
-
-                    active_turn_id = None
 
                     if transcript_task is not None:
                         transcript_task.cancel()
