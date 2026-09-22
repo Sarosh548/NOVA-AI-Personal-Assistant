@@ -363,6 +363,9 @@ class DeepgramSTTStream(STTStream):
             sequence=self._sequence,
             type=event_type,
             text=normalized_text,
+            is_end_of_speech=(
+                payload.get("speech_final") is True
+            ),
             created_at=utc_now(),
         )
 
