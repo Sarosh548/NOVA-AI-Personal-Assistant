@@ -20,6 +20,12 @@ from api.auth import (
 from api.schemas.voice import (
     VoiceControlMessage,
 )
+from services.conversation_execution_service import (
+    ConversationExecutionService,
+)
+from services.execution_context import (
+    ExecutionContext,
+)
 from config import (
     get_rate_limit_settings,
     get_security_settings,
@@ -260,6 +266,16 @@ def _build_voice_stt_orchestrator(
     )
 
 
+def _get_voice_conversation_execution_service(
+    websocket: WebSocket,
+) -> ConversationExecutionService | None:
+    return getattr(
+        websocket.app.state,
+        "conversation_execution_service",
+        None,
+    )
+
+
 def _audio_format_from_control(
     control: VoiceControlMessage,
     voice_settings,
@@ -350,6 +366,7 @@ async def voice_websocket(
     stt_orchestrator: VoiceSTTOrchestrator | None = None
     transcript_task: asyncio.Task[None] | None = None
     final_delivery: asyncio.Future[None] | None = None
+    conversation_execution_service = None
     session = None
 
     _validate_origin(
@@ -396,6 +413,11 @@ async def voice_websocket(
         )
         stt_orchestrator = _build_voice_stt_orchestrator(
             voice_settings
+        )
+        conversation_execution_service = (
+            _get_voice_conversation_execution_service(
+                websocket
+            )
         )
 
         session_started_monotonic = time.monotonic()
@@ -666,6 +688,78 @@ async def voice_websocket(
                         final_delivery = None
                         await websocket.send_json(
                             event
+                        )
+
+                        turn_id = event["turn_id"]
+
+                        if conversation_execution_service is None:
+                            await _send_error(
+                                websocket,
+                                code="assistant_execution_unavailable",
+                                message=(
+                                    "NOVA conversation execution "
+                                    "service is unavailable."
+                                ),
+                            )
+                            continue
+
+                        try:
+                            response_payload = (
+                                await asyncio.to_thread(
+                                    conversation_execution_service
+                                    .execute_message,
+                                    user_id=context.user.id,
+                                    message=final_event.text,
+                                    conversation_id=(
+                                        session.conversation_id
+                                    ),
+                                    execution_context=(
+                                        ExecutionContext.interactive()
+                                    ),
+                                )
+                            )
+                        except Exception:
+                            await _send_error(
+                                websocket,
+                                code="assistant_execution_failed",
+                                message=(
+                                    "NOVA could not process the "
+                                    "voice request."
+                                ),
+                            )
+                            continue
+
+                        if response_payload.get("error"):
+                            await _send_error(
+                                websocket,
+                                code="assistant_execution_failed",
+                                message=str(
+                                    response_payload["error"]
+                                ),
+                            )
+                            continue
+
+                        session.conversation_id = (
+                            response_payload["conversation_id"]
+                        )
+
+                        await websocket.send_json(
+                            {
+                                "type": "assistant.response",
+                                "turn_id": turn_id,
+                                "conversation_id": (
+                                    session.conversation_id
+                                ),
+                                "response": (
+                                    response_payload["response"]
+                                ),
+                                "confirmation": (
+                                    response_payload.get(
+                                        "confirmation",
+                                        {},
+                                    )
+                                ),
+                            }
                         )
                         continue
 
