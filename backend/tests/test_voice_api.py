@@ -821,9 +821,8 @@ def test_voice_websocket_streams_assistant_audio(
             },
         }
 
-        audio = websocket.receive()
-        assert audio["type"] == "websocket.receive"
-        assert audio["bytes"] == b"tts-audio"
+        audio = websocket.receive_bytes()
+        assert audio == b"tts-audio"
 
         final = websocket.receive_json()
         assert final["type"] == "assistant.audio.final"
