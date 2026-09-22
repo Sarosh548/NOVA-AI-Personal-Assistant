@@ -655,6 +655,8 @@ async def voice_websocket(
                         event["transcript"] = final_event.text
 
                         if transcript_task is not None:
+                            transcript_task.cancel()
+
                             try:
                                 await transcript_task
                             except asyncio.CancelledError:
