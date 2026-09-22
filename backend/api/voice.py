@@ -66,6 +66,10 @@ from services.voice_tts_orchestrator import (
 from services.user_service import (
     UserService,
 )
+from services.voice_response_stream_bridge import (
+    VoiceResponseStreamBridge,
+    VoiceResponseStreamBridgeError,
+)
 from services.voice_session_service import (
     VoiceProtocolError,
     VoiceSessionService,
@@ -326,7 +330,7 @@ async def _run_tts_output(
     *,
     websocket: WebSocket,
     orchestrator: VoiceTTSOrchestrator,
-    text: str,
+    response_bridge: VoiceResponseStreamBridge,
 ) -> None:
     relay_task = asyncio.create_task(
         _relay_tts_audio(
@@ -336,18 +340,34 @@ async def _run_tts_output(
     )
 
     try:
-        await orchestrator.send_text(
-            text
-        )
+        async for delta in response_bridge.text_deltas():
+            await orchestrator.send_text(
+                delta
+            )
+
         await orchestrator.finish_turn()
         await relay_task
     except asyncio.CancelledError:
+        try:
+            await response_bridge.abort(
+                "Voice TTS response stream was cancelled."
+            )
+        except Exception:
+            pass
         raise
     except (
+        VoiceResponseStreamBridgeError,
         VoiceTTSOrchestratorError,
         TTSRuntimeError,
         ValueError,
     ) as exc:
+        try:
+            await response_bridge.abort(
+                str(exc)
+            )
+        except Exception:
+            pass
+
         try:
             await _send_error(
                 websocket,
@@ -842,64 +862,7 @@ async def voice_websocket(
                             )
                             continue
 
-                        try:
-                            response_payload = (
-                                await asyncio.to_thread(
-                                    conversation_execution_service
-                                    .execute_message,
-                                    user_id=context.user.id,
-                                    message=final_event.text,
-                                    conversation_id=(
-                                        session.conversation_id
-                                    ),
-                                    execution_context=(
-                                        ExecutionContext.interactive()
-                                    ),
-                                )
-                            )
-                        except Exception:
-                            await _send_error(
-                                websocket,
-                                code="assistant_execution_failed",
-                                message=(
-                                    "NOVA could not process the "
-                                    "voice request."
-                                ),
-                            )
-                            continue
-
-                        if response_payload.get("error"):
-                            await _send_error(
-                                websocket,
-                                code="assistant_execution_failed",
-                                message=str(
-                                    response_payload["error"]
-                                ),
-                            )
-                            continue
-
-                        session.conversation_id = (
-                            response_payload["conversation_id"]
-                        )
-
-                        await websocket.send_json(
-                            {
-                                "type": "assistant.response",
-                                "turn_id": turn_id,
-                                "conversation_id": (
-                                    session.conversation_id
-                                ),
-                                "response": (
-                                    response_payload["response"]
-                                ),
-                                "confirmation": (
-                                    response_payload.get(
-                                        "confirmation",
-                                        {},
-                                    )
-                                ),
-                            }
-                        )
+                        response_bridge = None
 
                         if tts_orchestrator is not None:
                             tts_provider_settings = (
@@ -958,12 +921,28 @@ async def voice_websocket(
                                         }
                                     )
 
+                                    response_bridge = (
+                                        VoiceResponseStreamBridge(
+                                            loop=(
+                                                asyncio.get_running_loop()
+                                            ),
+                                            max_queue_items=(
+                                                voice_settings
+                                                .voice_response_delta_queue_max_items
+                                            ),
+                                            enqueue_timeout_seconds=(
+                                                voice_settings
+                                                .voice_response_delta_enqueue_timeout_seconds
+                                            ),
+                                        )
+                                    )
+
                                     tts_task = asyncio.create_task(
                                         _run_tts_output(
                                             websocket=websocket,
                                             orchestrator=tts_orchestrator,
-                                            text=str(
-                                                response_payload["response"]
+                                            response_bridge=(
+                                                response_bridge
                                             ),
                                         )
                                     )
@@ -972,11 +951,102 @@ async def voice_websocket(
                                     TTSRuntimeError,
                                     ValueError,
                                 ) as exc:
+                                    response_bridge = None
+
                                     await _send_error(
                                         websocket,
                                         code="assistant_audio_start_failed",
                                         message=str(exc),
                                     )
+
+                        execution_kwargs = {
+                            "user_id": context.user.id,
+                            "message": final_event.text,
+                            "conversation_id": (
+                                session.conversation_id
+                            ),
+                            "execution_context": (
+                                ExecutionContext.interactive()
+                            ),
+                        }
+
+                        if response_bridge is not None:
+                            execution_kwargs[
+                                "on_response_delta"
+                            ] = response_bridge.on_delta
+
+                        try:
+                            response_payload = (
+                                await asyncio.to_thread(
+                                    conversation_execution_service
+                                    .execute_message,
+                                    **execution_kwargs,
+                                )
+                            )
+                        except Exception:
+                            if response_bridge is not None:
+                                try:
+                                    await response_bridge.abort(
+                                        "NOVA could not process the voice request."
+                                    )
+                                except Exception:
+                                    pass
+
+                            await _send_error(
+                                websocket,
+                                code="assistant_execution_failed",
+                                message=(
+                                    "NOVA could not process the "
+                                    "voice request."
+                                ),
+                            )
+                            continue
+
+                        if response_payload.get("error"):
+                            if response_bridge is not None:
+                                try:
+                                    await response_bridge.abort(
+                                        str(
+                                            response_payload["error"]
+                                        )
+                                    )
+                                except Exception:
+                                    pass
+
+                            await _send_error(
+                                websocket,
+                                code="assistant_execution_failed",
+                                message=str(
+                                    response_payload["error"]
+                                ),
+                            )
+                            continue
+
+                        session.conversation_id = (
+                            response_payload["conversation_id"]
+                        )
+
+                        await websocket.send_json(
+                            {
+                                "type": "assistant.response",
+                                "turn_id": turn_id,
+                                "conversation_id": (
+                                    session.conversation_id
+                                ),
+                                "response": (
+                                    response_payload["response"]
+                                ),
+                                "confirmation": (
+                                    response_payload.get(
+                                        "confirmation",
+                                        {},
+                                    )
+                                ),
+                            }
+                        )
+
+                        if response_bridge is not None:
+                            await response_bridge.finish()
 
                         continue
 
