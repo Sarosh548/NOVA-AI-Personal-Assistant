@@ -29,6 +29,7 @@ from services.execution_context import (
 from config import (
     get_rate_limit_settings,
     get_security_settings,
+    get_tts_provider_settings,
     get_voice_settings,
 )
 from services.auth_service import (
@@ -46,8 +47,21 @@ from services.stt_adapter import (
 from services.stt_runtime_service import (
     STTRuntimeError,
 )
+from services.tts_runtime_service import (
+    TTSRuntimeError,
+)
 from services.token_service import (
     TokenService,
+)
+from services.elevenlabs_tts_adapter import (
+    ElevenLabsTTSAdapter,
+)
+from services.tts_adapter import (
+    TTSAudioFormat,
+)
+from services.voice_tts_orchestrator import (
+    VoiceTTSOrchestrator,
+    VoiceTTSOrchestratorError,
 )
 from services.user_service import (
     UserService,
@@ -266,6 +280,97 @@ def _build_voice_stt_orchestrator(
     )
 
 
+def _build_voice_tts_orchestrator(
+    voice_settings,
+) -> VoiceTTSOrchestrator:
+    return VoiceTTSOrchestrator(
+        adapter=ElevenLabsTTSAdapter(),
+        settings=voice_settings,
+    )
+
+
+def _tts_audio_format_from_settings(
+    voice_settings,
+) -> TTSAudioFormat:
+    return TTSAudioFormat(
+        encoding=voice_settings.voice_tts_output_encoding,
+        sample_rate_hz=voice_settings.voice_tts_output_sample_rate_hz,
+        channels=voice_settings.voice_tts_output_channels,
+    )
+
+
+async def _relay_tts_audio(
+    *,
+    websocket: WebSocket,
+    orchestrator: VoiceTTSOrchestrator,
+) -> None:
+    async for event in orchestrator.events():
+        if event.type == "audio":
+            await websocket.send_bytes(
+                event.audio
+            )
+            continue
+
+        await websocket.send_json(
+            {
+                "type": "assistant.audio.final",
+                "stream_id": event.stream_id,
+                "turn_id": event.turn_id,
+                "sequence": event.sequence,
+                "created_at": event.created_at.isoformat(),
+            }
+        )
+
+
+async def _run_tts_output(
+    *,
+    websocket: WebSocket,
+    orchestrator: VoiceTTSOrchestrator,
+    text: str,
+) -> None:
+    relay_task = asyncio.create_task(
+        _relay_tts_audio(
+            websocket=websocket,
+            orchestrator=orchestrator,
+        )
+    )
+
+    try:
+        await orchestrator.send_text(
+            text
+        )
+        await orchestrator.finish_turn()
+        await relay_task
+    except asyncio.CancelledError:
+        raise
+    except (
+        VoiceTTSOrchestratorError,
+        TTSRuntimeError,
+        ValueError,
+    ) as exc:
+        try:
+            await _send_error(
+                websocket,
+                code="assistant_audio_failed",
+                message=str(exc),
+            )
+        except WebSocketDisconnect:
+            pass
+    finally:
+        if not relay_task.done():
+            relay_task.cancel()
+
+            try:
+                await relay_task
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            await orchestrator.cancel_turn()
+        except Exception:
+            pass
+
+
 def _get_voice_conversation_execution_service(
     websocket: WebSocket,
 ) -> ConversationExecutionService | None:
@@ -364,7 +469,9 @@ async def voice_websocket(
         settings=voice_settings
     )
     stt_orchestrator: VoiceSTTOrchestrator | None = None
+    tts_orchestrator: VoiceTTSOrchestrator | None = None
     transcript_task: asyncio.Task[None] | None = None
+    tts_task: asyncio.Task[None] | None = None
     final_delivery: asyncio.Future[None] | None = None
     conversation_execution_service = None
     session = None
@@ -412,6 +519,9 @@ async def voice_websocket(
             )
         )
         stt_orchestrator = _build_voice_stt_orchestrator(
+            voice_settings
+        )
+        tts_orchestrator = _build_voice_tts_orchestrator(
             voice_settings
         )
         conversation_execution_service = (
@@ -495,6 +605,14 @@ async def voice_websocket(
                     code=status.WS_1000_NORMAL_CLOSURE
                 )
                 return
+
+            if tts_task is not None and tts_task.done():
+                try:
+                    await tts_task
+                except asyncio.CancelledError:
+                    pass
+
+                tts_task = None
 
             message_type = message.get(
                 "type"
@@ -582,6 +700,27 @@ async def voice_websocket(
 
                 try:
                     if control.type == "turn.start":
+                        if (
+                            tts_task is not None
+                            and not tts_task.done()
+                        ):
+                            tts_task.cancel()
+
+                            try:
+                                await tts_task
+                            except asyncio.CancelledError:
+                                pass
+
+                            tts_task = None
+
+                            await websocket.send_json(
+                                {
+                                    "type": "assistant.audio.cancelled",
+                                }
+                            )
+                        elif tts_task is not None:
+                            tts_task = None
+
                         if session.active_turn is not None:
                             raise VoiceProtocolError(
                                 "turn_already_active",
@@ -761,9 +900,108 @@ async def voice_websocket(
                                 ),
                             }
                         )
+
+                        if tts_orchestrator is not None:
+                            tts_provider_settings = (
+                                get_tts_provider_settings()
+                            )
+
+                            voice_id = (
+                                tts_provider_settings.elevenlabs_voice_id
+                            )
+
+                            if (
+                                voice_id is not None
+                                and voice_id.strip()
+                            ):
+                                try:
+                                    if tts_task is not None:
+                                        tts_task.cancel()
+
+                                        try:
+                                            await tts_task
+                                        except asyncio.CancelledError:
+                                            pass
+
+                                    audio_format = (
+                                        _tts_audio_format_from_settings(
+                                            voice_settings
+                                        )
+                                    )
+
+                                    stream_id = (
+                                        await tts_orchestrator.start_turn(
+                                            user_id=context.user.id,
+                                            session_id=session.session_id,
+                                            turn_id=turn_id,
+                                            voice=voice_id,
+                                            audio_format=audio_format,
+                                        )
+                                    )
+
+                                    await websocket.send_json(
+                                        {
+                                            "type": "assistant.audio.started",
+                                            "stream_id": stream_id,
+                                            "turn_id": turn_id,
+                                            "audio_format": {
+                                                "encoding": (
+                                                    audio_format.encoding
+                                                ),
+                                                "sample_rate_hz": (
+                                                    audio_format.sample_rate_hz
+                                                ),
+                                                "channels": (
+                                                    audio_format.channels
+                                                ),
+                                            },
+                                        }
+                                    )
+
+                                    tts_task = asyncio.create_task(
+                                        _run_tts_output(
+                                            websocket=websocket,
+                                            orchestrator=tts_orchestrator,
+                                            text=str(
+                                                response_payload["response"]
+                                            ),
+                                        )
+                                    )
+                                except (
+                                    VoiceTTSOrchestratorError,
+                                    TTSRuntimeError,
+                                    ValueError,
+                                ) as exc:
+                                    await _send_error(
+                                        websocket,
+                                        code="assistant_audio_start_failed",
+                                        message=str(exc),
+                                    )
+
                         continue
 
                     if control.type == "turn.cancel":
+                        if (
+                            tts_task is not None
+                            and not tts_task.done()
+                        ):
+                            tts_task.cancel()
+
+                            try:
+                                await tts_task
+                            except asyncio.CancelledError:
+                                pass
+
+                            tts_task = None
+
+                            await websocket.send_json(
+                                {
+                                    "type": "assistant.audio.cancelled",
+                                }
+                            )
+                        elif tts_task is not None:
+                            tts_task = None
+
                         active_turn = session.active_turn
 
                         if active_turn is None:
@@ -810,6 +1048,27 @@ async def voice_websocket(
                         continue
 
                     if control.type == "session.close":
+                        if (
+                            tts_task is not None
+                            and not tts_task.done()
+                        ):
+                            tts_task.cancel()
+
+                            try:
+                                await tts_task
+                            except asyncio.CancelledError:
+                                pass
+
+                            tts_task = None
+                        elif tts_task is not None:
+                            tts_task = None
+
+                        if tts_orchestrator is not None:
+                            try:
+                                await tts_orchestrator.close_session()
+                            except Exception:
+                                pass
+
                         active_turn = session.active_turn
 
                         if active_turn is not None:
@@ -955,6 +1214,20 @@ async def voice_websocket(
         return
 
     finally:
+        if tts_task is not None:
+            tts_task.cancel()
+
+            try:
+                await tts_task
+            except asyncio.CancelledError:
+                pass
+
+        if tts_orchestrator is not None:
+            try:
+                await tts_orchestrator.close_session()
+            except Exception:
+                pass
+
         if transcript_task is not None:
             transcript_task.cancel()
 

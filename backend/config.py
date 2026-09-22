@@ -247,6 +247,36 @@ class VoiceSettings(BaseSettings):
         le=900,
     )
 
+    voice_tts_output_encoding: str = Field(
+        default="pcm_s16le",
+        min_length=1,
+        max_length=64,
+    )
+
+    voice_tts_output_sample_rate_hz: int = Field(
+        default=16_000,
+        ge=8_000,
+        le=192_000,
+    )
+
+    voice_tts_output_channels: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+    )
+
+    voice_tts_audio_chunk_max_bytes: int = Field(
+        default=65_536,
+        ge=1_024,
+        le=1_048_576,
+    )
+
+    voice_tts_event_queue_max_items: int = Field(
+        default=64,
+        ge=1,
+        le=4_096,
+    )
+
     model_config = SettingsConfigDict(
         case_sensitive=False,
     )
@@ -359,6 +389,12 @@ class TTSProviderSettings(BaseSettings):
     elevenlabs_api_key: str | None = Field(
         default=None,
         min_length=1,
+    )
+
+    elevenlabs_voice_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
     )
 
     elevenlabs_ws_url: str = (
