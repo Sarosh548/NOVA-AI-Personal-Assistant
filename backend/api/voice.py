@@ -603,6 +603,10 @@ async def voice_websocket(
 
                         event["stt_stream_id"] = stream_id
 
+                        await websocket.send_json(
+                            event
+                        )
+
                         loop = asyncio.get_running_loop()
                         final_delivery = loop.create_future()
 
@@ -615,10 +619,6 @@ async def voice_websocket(
                                 turn_id=event["turn_id"],
                                 final_delivery=final_delivery,
                             )
-                        )
-
-                        await websocket.send_json(
-                            event
                         )
                         continue
 
