@@ -50,8 +50,11 @@ class FakeVoiceConversationExecutionService:
         )
 
         if on_response_delta is not None:
-            on_response_delta("Sure, ")
-            on_response_delta("done.")
+            try:
+                on_response_delta("Sure, ")
+                on_response_delta("done.")
+            except Exception:
+                pass
 
         return dict(self.response_payload)
 
