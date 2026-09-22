@@ -118,7 +118,7 @@ class FakeTTSAdapter(TTSAdapter):
 def settings() -> VoiceSettings:
     return VoiceSettings(
         voice_tts_event_queue_max_items=4,
-        voice_tts_audio_chunk_max_bytes=16,
+        voice_tts_audio_chunk_max_bytes=1_024,
     )
 
 
@@ -333,7 +333,7 @@ async def test_runtime_rejects_oversized_audio_chunk(
                 "stream-1",
                 "turn-1",
                 1,
-                audio=b"0123456789abcdefg",
+                audio=b"x" * 1_025,
             )
         ]
     )
