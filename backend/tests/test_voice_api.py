@@ -958,10 +958,27 @@ def test_voice_websocket_audio_output_failure_does_not_break_session(
         started = websocket.receive_json()
         assert started["type"] == "assistant.audio.started"
 
-        messages = [
-            websocket.receive_json(),
-            websocket.receive_json(),
-        ]
+        messages = []
+
+        while True:
+            message = websocket.receive_json()
+            messages.append(message)
+
+            types = {
+                item["type"]
+                for item in messages
+            }
+
+            if (
+                "assistant.response" in types
+                and "error" in types
+            ):
+                break
+
+            if len(messages) > 4:
+                raise AssertionError(
+                    f"Unexpected assistant message sequence: {messages!r}"
+                )
 
         assert any(
             message["type"] == "assistant.response"
