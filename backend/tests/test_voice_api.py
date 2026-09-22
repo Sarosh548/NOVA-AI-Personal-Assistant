@@ -831,7 +831,7 @@ def test_voice_websocket_streams_assistant_audio(
 
         messages = []
 
-        while len(messages) < 3:
+        while len(messages) < 4:
             message = websocket.receive()
 
             if message.get("bytes") is not None:
