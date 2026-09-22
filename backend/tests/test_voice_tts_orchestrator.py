@@ -229,7 +229,7 @@ async def test_orchestrator_cancel_cleans_up_active_stream(
         VoiceTTSOrchestratorError,
         match="No active voice TTS turn",
     ):
-        orchestrator.events().__anext__()
+        await orchestrator.events().__anext__()
 
 
 @pytest.mark.asyncio
