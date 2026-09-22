@@ -294,19 +294,6 @@ user_notification_preferences_service = (
 
 idempotency_service = IdempotencyService()
 
-conversation_execution_service = ConversationExecutionService(
-    conversation_service=conversation_service,
-    execution_service=execution_service,
-    llm_service=llm_service,
-    memory_service=memory_service,
-    context_max_messages=CONTEXT_MAX_MESSAGES,
-    context_max_characters=CONTEXT_MAX_CHARACTERS,
-)
-
-app.state.conversation_execution_service = (
-    conversation_execution_service
-)
-
 scheduler_task: asyncio.Task | None = None
 
 autonomous_workflow_scheduler_task: (
@@ -319,6 +306,19 @@ proactive_activity_scheduler_task: (
 
 CONTEXT_MAX_MESSAGES = 12
 CONTEXT_MAX_CHARACTERS = 12000
+
+conversation_execution_service = ConversationExecutionService(
+    conversation_service=conversation_service,
+    execution_service=execution_service,
+    llm_service=llm_service,
+    memory_service=memory_service,
+    context_max_messages=CONTEXT_MAX_MESSAGES,
+    context_max_characters=CONTEXT_MAX_CHARACTERS,
+)
+
+app.state.conversation_execution_service = (
+    conversation_execution_service
+)
 
 
 class ChatRequest(BaseModel):
