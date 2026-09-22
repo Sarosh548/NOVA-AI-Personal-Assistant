@@ -24,6 +24,7 @@ from services.tts_adapter import (
     TTSStreamClosedError,
     TTSStreamNotActiveError,
     TTSStreamRequest,
+    DEFAULT_MAX_SYNTHESIS_TEXT_CHARS,
     utc_now,
 )
 
@@ -102,7 +103,7 @@ class ElevenLabsTTSStream(TTSStream):
                 "Synthesis text cannot be empty."
             )
 
-        if len(normalized_text) > 16_384:
+        if len(normalized_text) > DEFAULT_MAX_SYNTHESIS_TEXT_CHARS:
             raise ValueError(
                 "Synthesis text exceeds the default size limit."
             )
