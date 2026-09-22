@@ -1107,7 +1107,8 @@ async def voice_websocket(
                                         }
                                     )
 
-                                    assistant_response_bridge = (\n                                        VoiceResponseStreamBridge(
+                                    assistant_response_bridge = (
+                                        VoiceResponseStreamBridge(
                                             loop=(
                                                 asyncio.get_running_loop()
                                             ),
