@@ -116,8 +116,8 @@ class STTTranscriptEvent:
     sequence: int
     type: STTEventType
     text: str
-    is_end_of_speech: bool = False
     created_at: datetime
+    is_end_of_speech: bool = False
 
     def __post_init__(self) -> None:
         for field_name in (
