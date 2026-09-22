@@ -102,7 +102,7 @@ class FakeTTSAdapter(TTSAdapter):
 def settings() -> VoiceSettings:
     return VoiceSettings(
         voice_tts_event_queue_max_items=4,
-        voice_tts_audio_chunk_max_bytes=64,
+        voice_tts_audio_chunk_max_bytes=1_024,
     )
 
 
