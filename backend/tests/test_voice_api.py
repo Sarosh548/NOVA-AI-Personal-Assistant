@@ -635,8 +635,27 @@ def test_voice_websocket_barge_in_cancels_previous_response_and_accepts_new_turn
         assert websocket.receive_json()["type"] == "turn.committed"
         assert websocket.receive_json()["type"] == "assistant.audio.started"
 
-        assistant = websocket.receive_json()
-        assert assistant["type"] == "assistant.response"
+        assistant = None
+
+        while assistant is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(
+                message["text"]
+            )
+
+            if payload["type"] == "assistant.response":
+                assistant = payload
+                continue
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
         assert assistant["turn_id"] == "turn-2"
         assert assistant["conversation_id"] == 42
 
@@ -648,7 +667,25 @@ def test_voice_websocket_barge_in_cancels_previous_response_and_accepts_new_turn
             }
         )
 
-        pong = websocket.receive_json()
+        while True:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(
+                message["text"]
+            )
+
+            if payload["type"] == "session.pong":
+                pong = payload
+                break
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
         assert pong["type"] == "session.pong"
 
     fake_tts = FakeVoiceTTSOrchestrator.instances[0]
