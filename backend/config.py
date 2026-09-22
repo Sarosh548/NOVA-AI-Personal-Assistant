@@ -391,6 +391,12 @@ class TTSProviderSettings(BaseSettings):
         min_length=1,
     )
 
+    elevenlabs_voice_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+    )
+
     elevenlabs_ws_url: str = (
         "wss://api.elevenlabs.io/v1/text-to-speech"
     )
