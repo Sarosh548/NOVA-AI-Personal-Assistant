@@ -236,6 +236,94 @@ def get_voice_settings() -> VoiceSettings:
     return VoiceSettings()
 
 
+class STTProviderSettings(BaseSettings):
+    """
+    Concrete realtime STT provider configuration.
+
+    Provider credentials remain environment-driven and are never placed
+    in WebSocket URLs or application logs.
+    """
+
+    deepgram_api_key: str | None = Field(
+        default=None,
+        min_length=1,
+    )
+
+    deepgram_ws_url: str = (
+        "wss://api.deepgram.com/v1/listen"
+    )
+
+    deepgram_model: str = "nova-3"
+
+    deepgram_language: str = "en-US"
+
+    deepgram_interim_results: bool = True
+
+    deepgram_endpointing_ms: int = Field(
+        default=300,
+        ge=50,
+        le=5000,
+    )
+
+    deepgram_smart_format: bool = True
+
+    deepgram_no_delay: bool = False
+
+    stt_connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=60,
+    )
+
+    stt_ping_interval_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=300,
+    )
+
+    stt_ping_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=300,
+    )
+
+    stt_close_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=60,
+    )
+
+    stt_provider_max_message_bytes: int = Field(
+        default=1_048_576,
+        ge=16_384,
+        le=10_485_760,
+    )
+
+    stt_provider_max_queue_items: int = Field(
+        default=16,
+        ge=1,
+        le=1024,
+    )
+
+    stt_event_queue_max_items: int = Field(
+        default=64,
+        ge=1,
+        le=4096,
+    )
+
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
+
+
+@lru_cache
+def get_stt_provider_settings() -> STTProviderSettings:
+    """
+    Return cached concrete STT provider settings.
+    """
+    return STTProviderSettings()
+
+
 class DatabaseSettings(BaseSettings):
     """
     Database connection reliability configuration.
