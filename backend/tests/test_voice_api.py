@@ -9,6 +9,9 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from api.voice import router
+from services.voice_tts_orchestrator import (
+    VoiceTTSOrchestratorError,
+)
 
 
 class FakeVoiceConversationExecutionService:
@@ -843,7 +846,9 @@ def test_voice_websocket_audio_output_failure_does_not_break_session(
     _patch_fake_tts(monkeypatch)
 
     async def failing_send_text(self, _text):
-        raise RuntimeError("tts unavailable")
+        raise VoiceTTSOrchestratorError(
+            "tts unavailable"
+        )
 
     monkeypatch.setattr(
         FakeVoiceTTSOrchestrator,
