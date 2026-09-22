@@ -181,6 +181,30 @@ class VoiceSettings(BaseSettings):
         le=1_048_576,
     )
 
+    voice_stt_finalization_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=30,
+    )
+
+    voice_default_audio_encoding: str = Field(
+        default="pcm_s16le",
+        min_length=1,
+        max_length=64,
+    )
+
+    voice_default_sample_rate_hz: int = Field(
+        default=16_000,
+        ge=8_000,
+        le=192_000,
+    )
+
+    voice_default_channels: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+    )
+
     voice_stt_event_queue_max_items: int = Field(
         default=64,
         ge=1,
