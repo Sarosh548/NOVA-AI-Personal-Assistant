@@ -633,6 +633,7 @@ async def voice_websocket(
     tts_task: asyncio.Task[None] | None = None
     assistant_execution_task: asyncio.Task[None] | None = None
     assistant_response_bridge: VoiceResponseStreamBridge | None = None
+    assistant_turn_id: str | None = None
     final_delivery: asyncio.Future[None] | None = None
     conversation_execution_service = None
     session = None
@@ -786,6 +787,7 @@ async def voice_websocket(
 
                 assistant_execution_task = None
                 assistant_response_bridge = None
+                assistant_turn_id = None
 
             message_type = message.get(
                 "type"
@@ -889,6 +891,7 @@ async def voice_websocket(
                         tts_task = None
                         assistant_execution_task = None
                         assistant_response_bridge = None
+                        assistant_turn_id = None
 
                         await _cancel_voice_response(
                             assistant_execution_task=(
@@ -1162,38 +1165,77 @@ async def voice_websocket(
                                 )
                             )
                         )
+                        assistant_turn_id = turn_id
 
                         continue
 
                     if control.type == "turn.cancel":
-                        if (
-                            tts_task is not None
-                            and not tts_task.done()
-                        ):
-                            tts_task.cancel()
-
-                            try:
-                                await tts_task
-                            except asyncio.CancelledError:
-                                pass
-
-                            tts_task = None
-
-                            await websocket.send_json(
-                                {
-                                    "type": "assistant.audio.cancelled",
-                                }
-                            )
-                        elif tts_task is not None:
-                            tts_task = None
-
                         active_turn = session.active_turn
 
                         if active_turn is None:
-                            raise VoiceProtocolError(
-                                "no_active_turn",
-                                "There is no active voice turn to cancel.",
+                            response_turn_id = assistant_turn_id
+                            response_active = (
+                                (
+                                    tts_task is not None
+                                    and not tts_task.done()
+                                )
+                                or (
+                                    assistant_execution_task
+                                    is not None
+                                    and not assistant_execution_task.done()
+                                )
+                                or assistant_response_bridge is not None
                             )
+
+                            if (
+                                not response_active
+                                or response_turn_id is None
+                            ):
+                                raise VoiceProtocolError(
+                                    "no_active_turn",
+                                    "There is no active voice turn to cancel.",
+                                )
+
+                            had_active_audio = (
+                                tts_task is not None
+                                and not tts_task.done()
+                            )
+
+                            previous_tts_task = tts_task
+                            previous_execution_task = (
+                                assistant_execution_task
+                            )
+                            previous_response_bridge = (
+                                assistant_response_bridge
+                            )
+
+                            tts_task = None
+                            assistant_execution_task = None
+                            assistant_response_bridge = None
+                            assistant_turn_id = None
+
+                            await _cancel_voice_response(
+                                assistant_execution_task=(
+                                    previous_execution_task
+                                ),
+                                tts_task=previous_tts_task,
+                                response_bridge=previous_response_bridge,
+                            )
+
+                            if had_active_audio:
+                                await websocket.send_json(
+                                    {
+                                        "type": "assistant.audio.cancelled",
+                                    }
+                                )
+
+                            await websocket.send_json(
+                                {
+                                    "type": "turn.cancelled",
+                                    "turn_id": response_turn_id,
+                                }
+                            )
+                            continue
 
                         turn_id = active_turn.turn_id
 
@@ -1411,6 +1453,7 @@ async def voice_websocket(
         tts_task = None
         assistant_execution_task = None
         assistant_response_bridge = None
+        assistant_turn_id = None
 
         await _cancel_voice_response(
             assistant_execution_task=(
