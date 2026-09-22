@@ -199,6 +199,24 @@ def _service():
     return service, conversation, execution, llm, memory
 
 
+def test_prepare_conversation_uses_shared_conversation_boundary():
+    service, conversation, _execution, _llm, _memory = _service()
+
+    result = service.prepare_conversation(
+        user_id="user-1",
+        conversation_id=None,
+    )
+
+    assert result == 42
+    assert conversation.calls == [
+        (
+            "get_or_create_conversation",
+            "user-1",
+            None,
+        )
+    ]
+
+
 def test_execute_message_reuses_shared_core_and_persists_result():
     service, conversation, execution, llm, memory = _service()
 

@@ -67,6 +67,26 @@ class ConversationExecutionService:
         if memory_service is not None:
             self.memory_service = memory_service
 
+    def prepare_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: int | None = None,
+    ) -> int:
+        """
+        Prepare the conversation identity before realtime execution begins.
+
+        Realtime voice can accept a new turn while a previous execution
+        worker is still unwinding after interruption. Establishing the
+        conversation id before launching that worker keeps subsequent turns
+        anchored to the same conversation.
+        """
+
+        return self.conversation_service.get_or_create_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+
     def execute_message(
         self,
         *,
