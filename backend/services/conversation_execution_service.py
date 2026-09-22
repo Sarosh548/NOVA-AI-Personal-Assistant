@@ -95,6 +95,7 @@ class ConversationExecutionService:
         conversation_id: int | None = None,
         execution_context: ExecutionContext | None = None,
         on_response_delta: Callable[[str], None] | None = None,
+        is_execution_current: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         user_message = str(message).strip()
 
@@ -127,6 +128,12 @@ class ConversationExecutionService:
             )
         )
 
+        if is_execution_current is not None and not is_execution_current():
+            return {
+                "cancelled": True,
+                "conversation_id": conversation_id,
+            }
+
         if not history:
             title = (
                 self.llm_service
@@ -134,6 +141,12 @@ class ConversationExecutionService:
                     user_message
                 )
             )
+
+            if is_execution_current is not None and not is_execution_current():
+                return {
+                    "cancelled": True,
+                    "conversation_id": conversation_id,
+                }
 
             self.conversation_service.update_conversation_title(
                 conversation_id=conversation_id,
@@ -157,6 +170,12 @@ class ConversationExecutionService:
         result = self.execution_service.execute(
             **execution_kwargs
         )
+
+        if is_execution_current is not None and not is_execution_current():
+            return {
+                "cancelled": True,
+                "conversation_id": conversation_id,
+            }
 
         response = result["response"]
 
