@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from config import (
@@ -25,6 +26,10 @@ API_ALLOWED_HEADERS = [
     "Idempotency-Key",
     "X-Request-ID",
 ]
+
+
+class RequestBodySizeLimitExceeded(Exception):
+    pass
 
 
 def _build_hsts_value(
@@ -71,6 +76,72 @@ def configure_api_security(
         allow_headers=API_ALLOWED_HEADERS,
         expose_headers=["X-Request-ID"],
     )
+
+    @app.middleware("http")
+    async def request_body_size_limit_middleware(
+        request: Request,
+        call_next,
+    ):
+        content_length = request.headers.get(
+            "content-length"
+        )
+
+        if content_length is not None:
+            try:
+                declared_length = int(
+                    content_length
+                )
+            except ValueError:
+                declared_length = None
+
+            if (
+                declared_length is not None
+                and declared_length
+                > security_settings.api_max_request_body_bytes
+            ):
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": "Request body is too large."
+                    },
+                )
+
+        original_receive = request._receive
+        bytes_seen = 0
+
+        async def limited_receive():
+            nonlocal bytes_seen
+
+            message = await original_receive()
+
+            if message.get("type") == "http.request":
+                body = message.get(
+                    "body",
+                    b"",
+                )
+                bytes_seen += len(body)
+
+                if (
+                    bytes_seen
+                    > security_settings.api_max_request_body_bytes
+                ):
+                    raise RequestBodySizeLimitExceeded()
+
+            return message
+
+        request._receive = limited_receive
+
+        try:
+            return await call_next(request)
+        except RequestBodySizeLimitExceeded:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": "Request body is too large."
+                },
+            )
+        finally:
+            request._receive = original_receive
 
     @app.middleware("http")
     async def security_headers_middleware(

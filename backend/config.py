@@ -18,6 +18,12 @@ class SecuritySettings(BaseSettings):
 
     api_cors_allowed_origins: str = ""
 
+    api_max_request_body_bytes: int = Field(
+        default=10_485_760,
+        ge=1024,
+        le=52_428_800,
+    )
+
     api_trusted_hosts: str = (
         "testserver,localhost,127.0.0.1"
     )

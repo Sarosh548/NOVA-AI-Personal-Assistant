@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -18,6 +18,13 @@ def _client_for(
     @app.get("/probe")
     def probe():
         return {"status": "ok"}
+
+    @app.post("/probe")
+    async def post_probe(
+        request: Request,
+    ):
+        body = await request.body()
+        return {"size": len(body)}
 
     configure_api_security(
         app,
@@ -214,6 +221,10 @@ def test_security_configuration_reads_environment_values(
         "SECURITY_HSTS_ENABLED",
         "true",
     )
+    monkeypatch.setenv(
+        "API_MAX_REQUEST_BODY_BYTES",
+        "2048",
+    )
 
     settings = SecuritySettings()
 
@@ -227,6 +238,68 @@ def test_security_configuration_reads_environment_values(
         settings.security_hsts_enabled
         is True
     )
+    assert (
+        settings.api_max_request_body_bytes
+        == 2048
+    )
+
+
+def test_request_body_size_limit_has_bounded_default():
+    settings = SecuritySettings()
+
+    assert (
+        settings.api_max_request_body_bytes
+        == 10_485_760
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [1023, 52_428_801],
+)
+def test_request_body_size_limit_rejects_invalid_values(
+    value,
+):
+    with pytest.raises(ValidationError):
+        SecuritySettings(
+            api_max_request_body_bytes=value
+        )
+
+
+def test_request_body_size_limit_rejects_large_requests():
+    client = _client_for(
+        SecuritySettings(
+            api_max_request_body_bytes=1024
+        )
+    )
+
+    response = client.post(
+        "/probe",
+        content=b"a" * 1025,
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "detail": "Request body is too large."
+    }
+
+
+def test_request_body_size_limit_allows_requests_within_limit():
+    client = _client_for(
+        SecuritySettings(
+            api_max_request_body_bytes=1024
+        )
+    )
+
+    response = client.post(
+        "/probe",
+        content=b"a" * 1024,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "size": 1024
+    }
 
 
 def test_main_application_uses_security_boundary():
