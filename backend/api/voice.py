@@ -612,7 +612,7 @@ async def voice_websocket(
                                 orchestrator=stt_orchestrator,
                                 session_service=session_service,
                                 session=session,
-                                turn_id=active_turn_id,
+                                turn_id=event["turn_id"],
                                 final_delivery=final_delivery,
                             )
                         )
