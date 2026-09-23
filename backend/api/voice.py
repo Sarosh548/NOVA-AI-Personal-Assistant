@@ -168,6 +168,7 @@ async def _send_error(
     message: str,
     recoverable: bool = False,
     recovery_action: str | None = None,
+    retry_after_seconds: int | None = None,
 ) -> None:
     payload = {
         "type": "error",
@@ -181,8 +182,37 @@ async def _send_error(
         if recovery_action is not None:
             payload["recovery_action"] = recovery_action
 
+    if retry_after_seconds is not None:
+        payload["retry_after_seconds"] = max(
+            1,
+            int(retry_after_seconds),
+        )
+
     await websocket.send_json(
         payload
+    )
+
+
+def _check_voice_turn_rate_limit(
+    *,
+    user_id: str,
+    rate_limit_service: RateLimitService,
+    rate_limit_settings,
+):
+    if not rate_limit_settings.voice_rate_limit_enabled:
+        return None
+
+    return rate_limit_service.check_and_consume(
+        principal_key=f"user:{user_id}",
+        scope="voice:turn_start",
+        limit=(
+            rate_limit_settings
+            .voice_turn_start_requests_per_window
+        ),
+        window_seconds=(
+            rate_limit_settings
+            .voice_turn_start_window_seconds
+        ),
     )
 
 
@@ -853,6 +883,8 @@ async def voice_websocket(
 
     current_turn_started_monotonic: float | None = None
 
+    voice_rate_limit_service = RateLimitService()
+
     await websocket.accept()
 
     if header_token is not None:
@@ -1172,6 +1204,47 @@ async def voice_websocket(
 
                 try:
                     if control.type == "turn.start":
+                        rate_limit_decision = (
+                            _check_voice_turn_rate_limit(
+                                user_id=context.user.id,
+                                rate_limit_service=(
+                                    voice_rate_limit_service
+                                ),
+                                rate_limit_settings=(
+                                    get_rate_limit_settings()
+                                ),
+                            )
+                        )
+
+                        if (
+                            rate_limit_decision is not None
+                            and not rate_limit_decision.allowed
+                        ):
+                            voice_metrics.record_error(
+                                stage="session",
+                                code="voice_rate_limit_exceeded",
+                            )
+                            log_voice_event(
+                                event="voice_rate_limit_exceeded",
+                                session_id=session.session_id,
+                                code="voice_rate_limit_exceeded",
+                                recoverable=True,
+                            )
+                            await _send_error(
+                                websocket,
+                                code="voice_rate_limit_exceeded",
+                                message=(
+                                    "Voice turn rate limit exceeded."
+                                ),
+                                recoverable=True,
+                                recovery_action="retry_after_reset",
+                                retry_after_seconds=(
+                                    rate_limit_decision
+                                    .reset_after_seconds
+                                ),
+                            )
+                            continue
+
                         had_active_audio = (
                             tts_task is not None
                             and not tts_task.done()
