@@ -309,6 +309,12 @@ class VoiceSettings(BaseSettings):
         le=4_096,
     )
 
+    voice_event_queue_enqueue_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+    )
+
     voice_response_delta_enqueue_timeout_seconds: float = Field(
         default=2.0,
         gt=0,

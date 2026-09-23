@@ -286,6 +286,7 @@ class TTSRuntimeService:
         turn: _RuntimeTurn,
     ) -> None:
         last_sequence: int | None = None
+        pump_failed = False
 
         try:
             async for event in turn.stream.events():
@@ -313,20 +314,59 @@ class TTSRuntimeService:
 
                 last_sequence = event.sequence
 
-                await turn.event_queue.put(event)
+                try:
+                    await asyncio.wait_for(
+                        turn.event_queue.put(
+                            event
+                        ),
+                        timeout=(
+                            self.settings
+                            .voice_event_queue_enqueue_timeout_seconds
+                        ),
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise TTSRuntimeError(
+                        "TTS event queue backpressure deadline was exceeded."
+                    ) from exc
 
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            pump_failed = True
+            self._drain_queue(
+                turn.event_queue
+            )
+
             try:
-                await turn.event_queue.put(exc)
+                await turn.event_queue.put(
+                    exc
+                )
             except asyncio.CancelledError:
                 raise
         finally:
             turn.ended = True
 
-            if not turn.cancelled:
-                await turn.event_queue.put(None)
+            if not turn.cancelled and not pump_failed:
+                try:
+                    await asyncio.wait_for(
+                        turn.event_queue.put(
+                            None
+                        ),
+                        timeout=(
+                            self.settings
+                            .voice_event_queue_enqueue_timeout_seconds
+                        ),
+                    )
+                except asyncio.TimeoutError:
+                    self._drain_queue(
+                        turn.event_queue
+                    )
+
+                    await turn.event_queue.put(
+                        TTSRuntimeError(
+                            "TTS event queue backpressure deadline was exceeded."
+                        )
+                    )
 
     @staticmethod
     def _validate_event(
