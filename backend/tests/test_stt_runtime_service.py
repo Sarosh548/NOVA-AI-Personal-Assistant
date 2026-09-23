@@ -131,6 +131,7 @@ def _settings(
         "voice_session_max_duration_seconds": 1800,
         "voice_turn_max_duration_seconds": 30,
         "voice_stt_event_queue_max_items": 4,
+        "voice_event_queue_enqueue_timeout_seconds": 2.0,
     }
     values.update(overrides)
     return VoiceSettings(**values)
@@ -318,6 +319,62 @@ async def test_partial_and_final_events_are_relayed_in_order():
         1,
         2,
     ]
+    assert runtime._turns == {}
+
+
+@pytest.mark.asyncio
+async def test_event_queue_backpressure_fails_fast_and_cleans_up():
+    adapter = RuntimeFakeAdapter()
+    runtime = STTRuntimeService(
+        adapter=adapter,
+        settings=_settings(
+            voice_stt_event_queue_max_items=1,
+            voice_event_queue_enqueue_timeout_seconds=0.01,
+        ),
+    )
+
+    await runtime.start_turn(
+        _request()
+    )
+
+    assert adapter.stream is not None
+
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            type="partial",
+            text="hello",
+            created_at=utc_now(),
+        )
+    )
+
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=2,
+            type="partial",
+            text="hello there",
+            created_at=utc_now(),
+        )
+    )
+
+    await asyncio.sleep(0.03)
+
+    with pytest.raises(
+        STTRuntimeError,
+        match="backpressure deadline",
+    ):
+        async for _event in runtime.events(
+            session_id="session-1",
+            turn_id="turn-1",
+        ):
+            pass
+
+    assert adapter.stream.cancelled is True
+    assert adapter.stream.closed is True
     assert runtime._turns == {}
 
 

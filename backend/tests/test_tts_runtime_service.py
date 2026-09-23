@@ -119,6 +119,7 @@ def settings() -> VoiceSettings:
     return VoiceSettings(
         voice_tts_event_queue_max_items=4,
         voice_tts_audio_chunk_max_bytes=1_024,
+        voice_event_queue_enqueue_timeout_seconds=2.0,
     )
 
 
@@ -279,6 +280,44 @@ async def test_runtime_rejects_invalid_event_sequence(
             turn_id="turn-1",
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_queue_backpressure_fails_fast_and_cleans_up() -> None:
+    stream = FakeTTSStream(
+        events=[
+            make_event("stream-1", "turn-1", 1),
+            make_event("stream-1", "turn-1", 2),
+        ]
+    )
+    runtime = TTSRuntimeService(
+        FakeTTSAdapter(stream),
+        VoiceSettings(
+            voice_tts_event_queue_max_items=1,
+            voice_tts_audio_chunk_max_bytes=1_024,
+            voice_event_queue_enqueue_timeout_seconds=0.01,
+        ),
+    )
+
+    await runtime.start_turn(
+        make_request()
+    )
+
+    await asyncio.sleep(0.03)
+
+    with pytest.raises(
+        TTSRuntimeError,
+        match="backpressure deadline",
+    ):
+        async for _event in runtime.events(
+            session_id="session-1",
+            turn_id="turn-1",
+        ):
+            pass
+
+    assert stream.cancelled is True
+    assert stream.closed is True
+    assert runtime._turns == {}
 
 
 @pytest.mark.asyncio
