@@ -86,4 +86,3 @@ class VoiceSessionLease(Base):
             "lease_until",
         ),
     )
-)
