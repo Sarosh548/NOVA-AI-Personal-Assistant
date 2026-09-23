@@ -354,6 +354,18 @@ class STTProviderSettings(BaseSettings):
         le=60,
     )
 
+    stt_connect_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+    )
+
+    stt_connect_retry_backoff_seconds: float = Field(
+        default=0.25,
+        gt=0,
+        le=5,
+    )
+
     stt_ping_interval_seconds: float = Field(
         default=20.0,
         gt=0,
@@ -456,6 +468,18 @@ class TTSProviderSettings(BaseSettings):
         default=10.0,
         gt=0,
         le=60,
+    )
+
+    tts_connect_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+    )
+
+    tts_connect_retry_backoff_seconds: float = Field(
+        default=0.25,
+        gt=0,
+        le=5,
     )
 
     tts_ping_interval_seconds: float = Field(
