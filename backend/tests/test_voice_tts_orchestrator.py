@@ -165,6 +165,70 @@ async def test_orchestrator_streams_text_and_events(
     assert adapter.requests[0].voice == "voice-1"
 
 
+
+@pytest.mark.asyncio
+async def test_relay_enqueue_fails_fast_when_event_queue_is_full(
+    settings: VoiceSettings,
+) -> None:
+    settings = settings.model_copy(
+        update={
+            "voice_tts_event_queue_max_items": 1,
+            "voice_event_queue_enqueue_timeout_seconds": 0.01,
+        }
+    )
+
+    orchestrator = VoiceTTSOrchestrator(
+        FakeTTSAdapter(FakeTTSStream()),
+        settings,
+    )
+
+    await orchestrator.start_turn(
+        user_id="user-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        voice="voice-1",
+        audio_format=make_request().audio_format,
+    )
+
+    turn = orchestrator._turn
+    assert turn is not None
+
+    turn.events.put_nowait(
+        TTSAudioEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            type="audio",
+            audio=b"buffered",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    with pytest.raises(
+        VoiceTTSOrchestratorError,
+        match="event relay backpressure deadline",
+    ):
+        await orchestrator._enqueue_relay_event(
+            turn,
+            TTSAudioEvent(
+                stream_id="stream-1",
+                turn_id="turn-1",
+                sequence=2,
+                type="audio",
+                audio=b"blocked",
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    with pytest.raises(
+        VoiceTTSOrchestratorError,
+        match="event relay backpressure deadline",
+    ):
+        await orchestrator.events().__anext__()
+
+    await orchestrator.cancel_turn()
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_allows_only_one_active_turn(
     settings: VoiceSettings,
