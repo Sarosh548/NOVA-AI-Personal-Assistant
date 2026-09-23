@@ -164,6 +164,66 @@ def _resolve_authenticated_context(
     )
 
 
+class VoiceWebSocketSendError(RuntimeError):
+    """Raised when the client-facing WebSocket send deadline is exceeded."""
+
+
+async def _send_websocket_json(
+    websocket: WebSocket,
+    payload,
+) -> None:
+    try:
+        await asyncio.wait_for(
+            websocket.send_json(payload),
+            timeout=(
+                get_voice_settings()
+                .voice_websocket_send_timeout_seconds
+            ),
+        )
+    except asyncio.TimeoutError as exc:
+        voice_metrics.record_error(
+            stage="transport",
+            code="voice_websocket_send_timeout",
+        )
+        try:
+            await websocket.close(
+                code=status.WS_1011_INTERNAL_ERROR
+            )
+        except Exception:
+            pass
+        raise VoiceWebSocketSendError(
+            "WebSocket send deadline was exceeded."
+        ) from exc
+
+
+async def _send_websocket_bytes(
+    websocket: WebSocket,
+    payload: bytes,
+) -> None:
+    try:
+        await asyncio.wait_for(
+            websocket.send_bytes(payload),
+            timeout=(
+                get_voice_settings()
+                .voice_websocket_send_timeout_seconds
+            ),
+        )
+    except asyncio.TimeoutError as exc:
+        voice_metrics.record_error(
+            stage="transport",
+            code="voice_websocket_send_timeout",
+        )
+        try:
+            await websocket.close(
+                code=status.WS_1011_INTERNAL_ERROR
+            )
+        except Exception:
+            pass
+        raise VoiceWebSocketSendError(
+            "WebSocket send deadline was exceeded."
+        ) from exc
+
+
 async def _send_error(
     websocket: WebSocket,
     *,
@@ -191,7 +251,7 @@ async def _send_error(
             int(retry_after_seconds),
         )
 
-    await websocket.send_json(
+    await _send_websocket_json(websocket,
         payload
     )
 
@@ -370,12 +430,12 @@ async def _relay_tts_audio(
                 )
                 timing_state["first_audio_observed"] = True
 
-            await websocket.send_bytes(
+            await _send_websocket_bytes(websocket,
                 event.audio
             )
             continue
 
-        await websocket.send_json(
+        await _send_websocket_json(websocket,
             {
                 "type": "assistant.audio.final",
                 "stream_id": event.stream_id,
@@ -719,7 +779,7 @@ async def _run_voice_assistant_execution(
     ]
 
     try:
-        await websocket.send_json(
+        await _send_websocket_json(websocket,
             {
                 "type": "assistant.response",
                 "turn_id": turn_id,
@@ -818,7 +878,7 @@ async def _relay_transcripts(
 ) -> None:
     try:
         async for event in orchestrator.events():
-            await websocket.send_json(
+            await _send_websocket_json(websocket,
                 event
             )
 
@@ -945,26 +1005,32 @@ async def voice_websocket(
 
     if header_token is not None:
         try:
-            context = (
-                _resolve_authenticated_context(
-                    header_token
+            try:
+                context = (
+                    _resolve_authenticated_context(
+                        header_token
+                    )
                 )
-            )
-        except Exception:
-            await _send_error(
-                websocket,
-                code="authentication_required",
-                message="Authentication required.",
-            )
-            await websocket.close(
-                code=status.WS_1008_POLICY_VIOLATION
-            )
+            except Exception:
+                await _send_error(
+                    websocket,
+                    code="authentication_required",
+                    message="Authentication required.",
+                )
+                await websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION
+                )
+                return
+        except VoiceWebSocketSendError:
             return
     else:
-        context = await _authenticate_after_connect(
-            websocket,
-            voice_settings,
-        )
+        try:
+            context = await _authenticate_after_connect(
+                websocket,
+                voice_settings,
+            )
+        except VoiceWebSocketSendError:
+            return
 
         if context is None:
             return
@@ -1072,7 +1138,7 @@ async def voice_websocket(
 
         session_started_monotonic = time.monotonic()
 
-        await websocket.send_json(
+        await _send_websocket_json(websocket,
             {
                 "type": "session.ready",
                 "protocol_version": "1",
@@ -1488,7 +1554,7 @@ async def voice_websocket(
                         )
 
                         if had_active_response:
-                            await websocket.send_json(
+                            await _send_websocket_json(websocket,
                                 {
                                     "type": "assistant.response.cancelled",
                                     "turn_id": previous_response_turn_id,
@@ -1496,7 +1562,7 @@ async def voice_websocket(
                             )
 
                         if had_active_audio:
-                            await websocket.send_json(
+                            await _send_websocket_json(websocket,
                                 {
                                     "type": "assistant.audio.cancelled",
                                 }
@@ -1573,7 +1639,7 @@ async def voice_websocket(
                             provider="deepgram",
                         )
 
-                        await websocket.send_json(
+                        await _send_websocket_json(websocket,
                             event
                         )
 
@@ -1642,7 +1708,7 @@ async def voice_websocket(
 
                         transcript_task = None
                         final_delivery = None
-                        await websocket.send_json(
+                        await _send_websocket_json(websocket,
                             event
                         )
 
@@ -1753,7 +1819,7 @@ async def voice_websocket(
                                         provider="elevenlabs",
                                     )
 
-                                    await websocket.send_json(
+                                    await _send_websocket_json(websocket,
                                         {
                                             "type": "assistant.audio.started",
                                             "stream_id": stream_id,
@@ -1930,7 +1996,7 @@ async def voice_websocket(
                                 turn_id=previous_response_turn_id,
                             )
 
-                            await websocket.send_json(
+                            await _send_websocket_json(websocket,
                                 {
                                     "type": "assistant.response.cancelled",
                                     "turn_id": previous_response_turn_id,
@@ -1938,13 +2004,13 @@ async def voice_websocket(
                             )
 
                             if had_active_audio:
-                                await websocket.send_json(
+                                await _send_websocket_json(websocket,
                                     {
                                         "type": "assistant.audio.cancelled",
                                     }
                                 )
 
-                            await websocket.send_json(
+                            await _send_websocket_json(websocket,
                                 {
                                     "type": "turn.cancelled",
                                     "turn_id": response_turn_id,
@@ -1979,13 +2045,13 @@ async def voice_websocket(
                             turn_id=turn_id,
                         )
 
-                        await websocket.send_json(
+                        await _send_websocket_json(websocket,
                             event
                         )
                         continue
 
                     if control.type == "session.ping":
-                        await websocket.send_json(
+                        await _send_websocket_json(websocket,
                             {
                                 "type": "session.pong",
                                 "session_id": (
@@ -2049,7 +2115,7 @@ async def voice_websocket(
 
                         await stt_orchestrator.close_session()
 
-                        await websocket.send_json(
+                        await _send_websocket_json(websocket,
                             {
                                 "type": "session.closed",
                                 "session_id": (
@@ -2168,6 +2234,24 @@ async def voice_websocket(
                     )
 
                 continue
+
+    except VoiceWebSocketSendError:
+        if session is not None:
+            log_voice_event(
+                event="voice_websocket_send_timeout",
+                session_id=session.session_id,
+                code="voice_websocket_send_timeout",
+                recoverable=True,
+            )
+
+        try:
+            await websocket.close(
+                code=status.WS_1011_INTERNAL_ERROR
+            )
+        except Exception:
+            pass
+
+        return
 
     except WebSocketDisconnect:
         return

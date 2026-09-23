@@ -195,6 +195,12 @@ class VoiceSettings(BaseSettings):
         le=1_048_576,
     )
 
+    voice_websocket_send_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+    )
+
     voice_stt_finalization_timeout_seconds: float = Field(
         default=5.0,
         gt=0,
