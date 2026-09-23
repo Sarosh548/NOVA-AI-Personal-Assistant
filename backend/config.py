@@ -148,6 +148,20 @@ class RateLimitSettings(BaseSettings):
         le=3600,
     )
 
+    voice_rate_limit_enabled: bool = True
+
+    voice_turn_start_requests_per_window: int = Field(
+        default=30,
+        ge=1,
+        le=100000,
+    )
+
+    voice_turn_start_window_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+    )
+
     model_config = SettingsConfigDict(
         case_sensitive=False,
     )
