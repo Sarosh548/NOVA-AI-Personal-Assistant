@@ -23,8 +23,9 @@ from services.voice_tts_orchestrator import (
 
 
 class BlockingVoiceWebSocket:
-    def __init__(self):
+    def __init__(self, *, block_close=False):
         self.closed_code = None
+        self.block_close = block_close
 
     async def send_json(self, _payload):
         await asyncio.sleep(1)
@@ -34,6 +35,8 @@ class BlockingVoiceWebSocket:
 
     async def close(self, *, code):
         self.closed_code = code
+        if self.block_close:
+            await asyncio.sleep(1)
 
 
 class FakeVoiceConversationExecutionService:
@@ -279,6 +282,76 @@ def test_websocket_json_send_fails_fast_on_deadline(monkeypatch):
             voice_module._send_websocket_json(
                 websocket,
                 {"type": "test"},
+            )
+        )
+
+    assert websocket.closed_code == 1011
+
+
+def test_websocket_json_send_does_not_wait_for_blocked_close(monkeypatch):
+    import api.voice as voice_module
+
+    timeout_settings = voice_module.get_voice_settings().model_copy(
+        update={
+            "voice_websocket_send_timeout_seconds": 0.01,
+        }
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_voice_settings",
+        lambda: timeout_settings,
+    )
+
+    websocket = BlockingVoiceWebSocket(
+        block_close=True
+    )
+
+    with pytest.raises(
+        VoiceWebSocketSendError,
+        match="send deadline",
+    ):
+        asyncio.run(
+            asyncio.wait_for(
+                voice_module._send_websocket_json(
+                    websocket,
+                    {"type": "test"},
+                ),
+                timeout=0.2,
+            )
+        )
+
+    assert websocket.closed_code == 1011
+
+
+def test_websocket_bytes_send_does_not_wait_for_blocked_close(monkeypatch):
+    import api.voice as voice_module
+
+    timeout_settings = voice_module.get_voice_settings().model_copy(
+        update={
+            "voice_websocket_send_timeout_seconds": 0.01,
+        }
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_voice_settings",
+        lambda: timeout_settings,
+    )
+
+    websocket = BlockingVoiceWebSocket(
+        block_close=True
+    )
+
+    with pytest.raises(
+        VoiceWebSocketSendError,
+        match="send deadline",
+    ):
+        asyncio.run(
+            asyncio.wait_for(
+                voice_module._send_websocket_bytes(
+                    websocket,
+                    b"audio",
+                ),
+                timeout=0.2,
             )
         )
 
