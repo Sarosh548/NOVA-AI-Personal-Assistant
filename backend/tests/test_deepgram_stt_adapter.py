@@ -75,7 +75,9 @@ def _settings(
         "deepgram_model": "nova-3",
         "deepgram_language": "en-US",
         "deepgram_interim_results": True,
-        "deepgram_endpointing_ms": 300,
+        "deepgram_endpointing_ms": 700,
+        "deepgram_utterance_end_ms": 1200,
+        "deepgram_vad_events": True,
         "deepgram_smart_format": True,
         "deepgram_no_delay": False,
         "stt_connect_timeout_seconds": 5.0,
@@ -176,7 +178,9 @@ async def test_adapter_opens_authenticated_deepgram_connection(
     )
     assert "model=nova-3" in captured["uri"]
     assert "interim_results=true" in captured["uri"]
-    assert "endpointing=300" in captured["uri"]
+    assert "endpointing=700" in captured["uri"]
+    assert "utterance_end_ms=1200" in captured["uri"]
+    assert "vad_events=true" in captured["uri"]
     assert "smart_format=true" in captured["uri"]
     assert captured["kwargs"]["additional_headers"] == {
         "Authorization": "Token test-api-key"
@@ -344,6 +348,123 @@ async def test_stream_converts_partial_and_final_results():
         )
         for event in events
     )
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_converts_speech_boundaries():
+    websocket = FakeDeepgramWebSocket()
+
+    stream = DeepgramSTTStream(
+        websocket=websocket,
+        request=_request(),
+        settings=_settings(),
+    )
+
+    await websocket.emit(
+        {
+            "type": "SpeechStarted",
+            "channel": [0, 1],
+            "timestamp": 1.25,
+        }
+    )
+    await websocket.emit(
+        {
+            "type": "Results",
+            "is_final": True,
+            "speech_final": False,
+            "channel": {
+                "alternatives": [
+                    {
+                        "transcript": "hello there"
+                    }
+                ]
+            },
+        }
+    )
+    await websocket.emit(
+        {
+            "type": "UtteranceEnd",
+            "channel": [0, 1],
+            "last_word_end": 2.4,
+        }
+    )
+
+    events = []
+
+    async def consume():
+        async for event in stream.events():
+            events.append(event)
+            if len(events) == 3:
+                return
+
+    consumer = asyncio.create_task(consume())
+
+    await asyncio.wait_for(
+        consumer,
+        timeout=1,
+    )
+
+    assert events[0].stream_id == "provider-stream-1"
+    assert events[0].timestamp_seconds == 1.25
+    assert events[0].sequence == 1
+    assert events[1].type == "final"
+    assert events[1].sequence == 2
+    assert events[1].is_end_of_speech is False
+    assert events[2].last_word_end_seconds == 2.4
+    assert events[2].sequence == 3
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_ignores_stale_utterance_end():
+    websocket = FakeDeepgramWebSocket()
+
+    stream = DeepgramSTTStream(
+        websocket=websocket,
+        request=_request(),
+        settings=_settings(),
+    )
+
+    await websocket.emit(
+        {
+            "type": "UtteranceEnd",
+            "channel": [0, 1],
+            "last_word_end": -1,
+        }
+    )
+    await websocket.emit(
+        {
+            "type": "Results",
+            "is_final": True,
+            "speech_final": True,
+            "channel": {
+                "alternatives": [
+                    {
+                        "transcript": "hello"
+                    }
+                ]
+            },
+        }
+    )
+
+    event = None
+
+    async def consume():
+        nonlocal event
+        async for item in stream.events():
+            event = item
+            return
+
+    consumer = asyncio.create_task(consume())
+
+    await asyncio.wait_for(consumer, timeout=1)
+
+    assert event is not None
+    assert event.type == "final"
+    assert event.sequence == 1
 
     await stream.close()
 

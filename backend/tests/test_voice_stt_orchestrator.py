@@ -9,9 +9,11 @@ from config import VoiceSettings
 from services.stt_adapter import (
     STTAdapter,
     STTAudioFormat,
+    STTSpeechStartedEvent,
     STTStream,
     STTStreamRequest,
     STTTranscriptEvent,
+    STTUtteranceEndEvent,
     utc_now,
 )
 from services.voice_stt_orchestrator import (
@@ -154,6 +156,42 @@ async def test_audio_is_forwarded():
     assert adapter.stream.audio_frames == [b"audio"]
 
     await service.cancel_turn()
+
+
+@pytest.mark.asyncio
+async def test_speech_started_is_relayed_as_protocol_event():
+    adapter = FakeAdapter()
+    service = VoiceSTTOrchestrator(
+        adapter=adapter,
+        settings=_settings(),
+    )
+
+    await _start(service)
+    consumer = service.events()
+
+    assert adapter.stream is not None
+    await adapter.stream.emit(
+        STTSpeechStartedEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            created_at=utc_now(),
+            timestamp_seconds=0.75,
+        )
+    )
+
+    event = await asyncio.wait_for(
+        anext(consumer),
+        timeout=1,
+    )
+
+    assert event["type"] == "speech.started"
+    assert event["stream_id"] == "stream-1"
+    assert event["turn_id"] == "turn-1"
+    assert event["sequence"] == 1
+    assert event["timestamp_seconds"] == 0.75
+
+    await consumer.aclose()
 
 
 @pytest.mark.asyncio
@@ -318,6 +356,80 @@ async def test_manual_finish_waits_for_post_finalize_final_segment():
 
     assert final.type == "final"
     assert final.text == "hello world"
+    assert final.is_end_of_speech is True
+    assert adapter.stream.closed is True
+
+    await consumer.aclose()
+
+
+@pytest.mark.asyncio
+async def test_utterance_end_completes_assembled_transcript():
+    adapter = FakeAdapter()
+    service = VoiceSTTOrchestrator(
+        adapter=adapter,
+        settings=_settings(),
+    )
+
+    await _start(service)
+    consumer = service.events()
+
+    assert adapter.stream is not None
+    await adapter.stream.emit(
+        STTSpeechStartedEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            created_at=utc_now(),
+        )
+    )
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=2,
+            type="final",
+            text="hello",
+            created_at=utc_now(),
+        )
+    )
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=3,
+            type="final",
+            text="there",
+            created_at=utc_now(),
+        )
+    )
+    await adapter.stream.emit(
+        STTUtteranceEndEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=4,
+            created_at=utc_now(),
+            last_word_end_seconds=1.8,
+        )
+    )
+
+    events = [
+        await asyncio.wait_for(
+            anext(consumer),
+            timeout=1,
+        )
+        for _ in range(4)
+    ]
+
+    assert [event["type"] for event in events] == [
+        "speech.started",
+        "transcript.final",
+        "transcript.final",
+        "transcript.utterance_end",
+    ]
+
+    final = await service.finish_turn()
+
+    assert final.text == "hello there"
     assert final.is_end_of_speech is True
     assert adapter.stream.closed is True
 

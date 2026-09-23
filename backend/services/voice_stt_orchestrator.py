@@ -8,8 +8,11 @@ from config import VoiceSettings, get_voice_settings
 from services.stt_adapter import (
     STTAdapter,
     STTAudioFormat,
+    STTSpeechStartedEvent,
+    STTStreamEvent,
     STTStreamRequest,
     STTTranscriptEvent,
+    STTUtteranceEndEvent,
 )
 from services.stt_runtime_service import (
     STTRuntimeError,
@@ -30,6 +33,7 @@ class _VoiceSTTTurn:
     ]
     final_event: asyncio.Future[STTTranscriptEvent]
     final_segments: list[str] = field(default_factory=list)
+    speech_started: bool = False
     last_sequence: int = -1
     finish_sequence: int | None = None
     relay_task: asyncio.Task[None] | None = None
@@ -247,24 +251,40 @@ class VoiceSTTOrchestrator:
             ):
                 turn.last_sequence = event.sequence
 
-                if event.type == "final":
-                    turn.final_segments.append(
-                        event.text
-                    )
+                if isinstance(event, STTSpeechStartedEvent):
+                    turn.speech_started = True
 
-                    if (
-                        event.is_end_of_speech
-                        or (
-                            turn.finish_sequence is not None
-                            and event.sequence > turn.finish_sequence
+                elif isinstance(event, STTTranscriptEvent):
+                    if event.type == "final":
+                        turn.final_segments.append(
+                            event.text
                         )
-                    ) and not turn.final_event.done():
-                        turn.final_event.set_result(
-                            self._build_complete_final_event(
-                                turn,
-                                event,
+
+                        if (
+                            event.is_end_of_speech
+                            or (
+                                turn.finish_sequence is not None
+                                and event.sequence > turn.finish_sequence
                             )
+                        ) and not turn.final_event.done():
+                            turn.final_event.set_result(
+                                self._build_complete_final_event(
+                                    turn,
+                                    event,
+                                )
+                            )
+
+                elif (
+                    isinstance(event, STTUtteranceEndEvent)
+                    and turn.final_segments
+                    and not turn.final_event.done()
+                ):
+                    turn.final_event.set_result(
+                        self._build_complete_final_event(
+                            turn,
+                            event,
                         )
+                    )
 
                 await turn.events.put(event)
 
@@ -287,7 +307,7 @@ class VoiceSTTOrchestrator:
     @staticmethod
     def _build_complete_final_event(
         turn: _VoiceSTTTurn,
-        terminal_event: STTTranscriptEvent,
+        terminal_event: STTStreamEvent,
     ) -> STTTranscriptEvent:
         return STTTranscriptEvent(
             stream_id=terminal_event.stream_id,
@@ -335,8 +355,28 @@ class VoiceSTTOrchestrator:
 
     @staticmethod
     def _protocol_event(
-        event: STTTranscriptEvent,
+        event: STTStreamEvent,
     ) -> dict:
+        if isinstance(event, STTSpeechStartedEvent):
+            return {
+                "type": "speech.started",
+                "stream_id": event.stream_id,
+                "turn_id": event.turn_id,
+                "sequence": event.sequence,
+                "timestamp_seconds": event.timestamp_seconds,
+                "created_at": event.created_at.isoformat(),
+            }
+
+        if isinstance(event, STTUtteranceEndEvent):
+            return {
+                "type": "transcript.utterance_end",
+                "stream_id": event.stream_id,
+                "turn_id": event.turn_id,
+                "sequence": event.sequence,
+                "last_word_end_seconds": event.last_word_end_seconds,
+                "created_at": event.created_at.isoformat(),
+            }
+
         return {
             "type": (
                 "transcript.final"

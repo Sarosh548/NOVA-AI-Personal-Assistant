@@ -124,6 +124,7 @@ class FakeVoiceSTTOrchestrator:
         self.events_queue = asyncio.Queue()
         self.final_text = "hello world"
         self.emit_end_of_speech = False
+        self.emit_utterance_end = False
         self.instances.append(self)
 
     async def start_turn(
@@ -168,6 +169,29 @@ class FakeVoiceSTTOrchestrator:
                     "sequence": 2,
                     "text": self.final_text,
                     "is_end_of_speech": True,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }
+            )
+
+        if self.emit_utterance_end:
+            await self.events_queue.put(
+                {
+                    "type": "transcript.final",
+                    "stream_id": "fake-stt-stream-1",
+                    "turn_id": self.turn_id,
+                    "sequence": 2,
+                    "text": self.final_text,
+                    "is_end_of_speech": False,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }
+            )
+            await self.events_queue.put(
+                {
+                    "type": "transcript.utterance_end",
+                    "stream_id": "fake-stt-stream-1",
+                    "turn_id": self.turn_id,
+                    "sequence": 3,
+                    "last_word_end_seconds": 1.5,
                     "created_at": "2026-01-01T00:00:00+00:00",
                 }
             )
@@ -957,6 +981,66 @@ def test_voice_websocket_auto_commits_on_end_of_speech(
         )
 
         assert len(core_service.calls) == 1
+
+
+def test_voice_websocket_auto_commits_on_utterance_end(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-auto-utterance-end",
+            }
+        )
+        websocket.receive_json()
+
+        FakeVoiceSTTOrchestrator.instances[0].emit_utterance_end = True
+        websocket.send_bytes(
+            b"input-audio"
+        )
+
+        seen_types = []
+        assistant = None
+
+        while assistant is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            seen_types.append(payload["type"])
+
+            if payload["type"] == "assistant.response":
+                assistant = payload
+                continue
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert "transcript.final" in seen_types
+        assert "transcript.utterance_end" in seen_types
+        assert "turn.committed" in seen_types
+        assert assistant["turn_id"] == "turn-auto-utterance-end"
+        assert assistant["response"] == "Sure, done."
 
 
 def test_voice_websocket_rejects_missing_auth():

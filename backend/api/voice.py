@@ -620,11 +620,16 @@ async def _relay_transcripts(
             )
 
             if (
-                event.get("type")
-                == "transcript.final"
-                and event.get("is_end_of_speech") is True
-                and auto_turn_events is not None
-            ):
+                (
+                    event.get("type")
+                    == "transcript.utterance_end"
+                )
+                or (
+                    event.get("type")
+                    == "transcript.final"
+                    and event.get("is_end_of_speech") is True
+                )
+            ) and auto_turn_events is not None:
                 try:
                     auto_turn_events.put_nowait(
                         {
