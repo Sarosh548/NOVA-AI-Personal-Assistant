@@ -11,6 +11,9 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from api.voice import router
+from services.voice_stt_orchestrator import (
+    VoiceSTTOrchestratorError,
+)
 from services.voice_tts_orchestrator import (
     VoiceTTSOrchestratorError,
 )
@@ -125,6 +128,7 @@ class FakeVoiceSTTOrchestrator:
         self.final_text = "hello world"
         self.emit_end_of_speech = False
         self.emit_utterance_end = False
+        self.emit_error = False
         self.instances.append(self)
 
     async def start_turn(
@@ -196,6 +200,13 @@ class FakeVoiceSTTOrchestrator:
                 }
             )
 
+        if self.emit_error:
+            await self.events_queue.put(
+                VoiceSTTOrchestratorError(
+                    "STT provider disconnected mid-turn."
+                )
+            )
+
     async def finish_turn(self):
         await self.events_queue.put(
             {
@@ -228,6 +239,9 @@ class FakeVoiceSTTOrchestrator:
             if item is None:
                 return
 
+            if isinstance(item, Exception):
+                raise item
+
             yield item
 
 
@@ -246,6 +260,7 @@ class FakeVoiceTTSOrchestrator:
         self.stream_id = "fake-tts-stream-1"
         self.events_queue = asyncio.Queue()
         self.texts = []
+        self.emit_error = False
         self.instances.append(self)
 
     async def start_turn(
@@ -270,6 +285,7 @@ class FakeVoiceTTSOrchestrator:
     ):
         self.text = text
         self.texts.append(text)
+
         await self.events_queue.put(
             SimpleNamespace(
                 type="audio",
@@ -282,6 +298,13 @@ class FakeVoiceTTSOrchestrator:
                 ),
             )
         )
+
+        if self.emit_error:
+            await self.events_queue.put(
+                VoiceTTSOrchestratorError(
+                    "TTS provider disconnected mid-response."
+                )
+            )
 
     async def finish_turn(self):
         await self.events_queue.put(
@@ -309,6 +332,9 @@ class FakeVoiceTTSOrchestrator:
 
             if item is None:
                 return
+
+            if isinstance(item, Exception):
+                raise item
 
             yield item
 
@@ -1041,6 +1067,173 @@ def test_voice_websocket_auto_commits_on_utterance_end(
         assert "turn.committed" in seen_types
         assert assistant["turn_id"] == "turn-auto-utterance-end"
         assert assistant["response"] == "Sure, done."
+
+
+def test_voice_websocket_recovers_after_midstream_stt_provider_failure(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-stt-failure",
+            }
+        )
+        started = websocket.receive_json()
+
+        assert started["type"] == "turn.started"
+        assert started["turn_id"] == "turn-stt-failure"
+
+        stt = FakeVoiceSTTOrchestrator.instances[0]
+        stt.emit_error = True
+
+        websocket.send_bytes(
+            b"failure-audio"
+        )
+
+        seen_error = None
+        while seen_error is None:
+            message = websocket.receive_json()
+
+            if message["type"] == "error":
+                seen_error = message
+
+        assert seen_error["code"] == "stt_error"
+        assert seen_error["recoverable"] is True
+        assert seen_error["recovery_action"] == "start_new_turn"
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-stt-recovered",
+            }
+        )
+
+        recovered = websocket.receive_json()
+
+        assert recovered["type"] == "turn.started"
+        assert recovered["turn_id"] == "turn-stt-recovered"
+
+        stt.emit_error = False
+
+        websocket.send_bytes(
+            b"recovered-audio"
+        )
+
+        partial = websocket.receive_json()
+
+        assert partial["type"] == "transcript.partial"
+        assert partial["turn_id"] == "turn-stt-recovered"
+
+        websocket.send_json(
+            {
+                "type": "turn.cancel",
+                "turn_id": "turn-stt-recovered",
+            }
+        )
+
+        cancelled = websocket.receive_json()
+
+        assert cancelled == {
+            "type": "turn.cancelled",
+            "turn_id": "turn-stt-recovered",
+        }
+
+
+def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-tts-failure",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(
+            b"tts-failure-input"
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-tts-failure",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        fake_tts = FakeVoiceTTSOrchestrator.instances[0]
+        fake_tts.emit_error = True
+
+        error_message = None
+        while error_message is None:
+            message = websocket.receive_json()
+
+            if message["type"] == "error":
+                error_message = message
+            elif message["type"] == "assistant.response":
+                continue
+            else:
+                continue
+
+        assert error_message["code"] == "assistant_audio_failed"
+        assert error_message["recoverable"] is True
+        assert error_message["recovery_action"] == "start_new_turn"
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-tts-recovered",
+            }
+        )
+
+        recovered = websocket.receive_json()
+
+        assert recovered["type"] == "turn.started"
+        assert recovered["turn_id"] == "turn-tts-recovered"
+
+        websocket.send_bytes(
+            b"next-input"
+        )
+
+        partial = websocket.receive_json()
+
+        assert partial["type"] == "transcript.partial"
 
 
 def test_voice_websocket_rejects_missing_auth():
