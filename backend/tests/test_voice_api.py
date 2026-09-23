@@ -529,6 +529,80 @@ def test_voice_websocket_handshake_and_turn_flow(
     ]
 
 
+def test_voice_websocket_emits_structured_lifecycle_logs(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    import api.voice as voice_module
+
+    events = []
+
+    monkeypatch.setattr(
+        voice_module,
+        "log_voice_event",
+        lambda **kwargs: events.append(dict(kwargs)),
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        ready = websocket.receive_json()
+
+        session_id = ready["session_id"]
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-log-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"audio")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-log-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.response"
+
+        websocket.close()
+
+    assert [event["event"] for event in events] == [
+        "session_started",
+        "turn_started",
+        "assistant_response_completed",
+        "session_closed",
+    ]
+
+    assert events[0]["session_id"] == session_id
+    assert events[1]["turn_id"] == "turn-log-1"
+    assert events[2]["turn_id"] == "turn-log-1"
+    assert events[2]["duration_ms"] >= 0
+    assert events[3]["session_id"] == session_id
+
+    for event in events:
+        assert "user_id" not in event
+        assert "message" not in event
+        assert "transcript" not in event
+        assert "access_token" not in event
+
+
 def test_voice_websocket_supports_browser_style_authentication(
     monkeypatch,
 ):
