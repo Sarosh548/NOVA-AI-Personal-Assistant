@@ -611,12 +611,28 @@ async def _relay_transcripts(
     session,
     turn_id: str,
     final_delivery: asyncio.Future[None],
+    auto_turn_events: asyncio.Queue[dict] | None = None,
 ) -> None:
     try:
         async for event in orchestrator.events():
             await websocket.send_json(
                 event
             )
+
+            if (
+                event.get("type")
+                == "transcript.final"
+                and event.get("is_end_of_speech") is True
+                and auto_turn_events is not None
+            ):
+                try:
+                    auto_turn_events.put_nowait(
+                        {
+                            "turn_id": turn_id,
+                        }
+                    )
+                except asyncio.QueueFull:
+                    pass
 
             if (
                 event.get("type")
@@ -670,6 +686,7 @@ async def voice_websocket(
     assistant_turn_id: str | None = None
     assistant_response_generation: int | None = None
     final_delivery: asyncio.Future[None] | None = None
+    auto_turn_events: asyncio.Queue[dict] = asyncio.Queue(maxsize=1)
     conversation_execution_service = None
     session = None
 
@@ -771,12 +788,48 @@ async def voice_websocket(
                 session_remaining,
             )
 
-            try:
-                message = await asyncio.wait_for(
-                    websocket.receive(),
-                    timeout=receive_timeout,
+            receive_task = asyncio.create_task(
+                websocket.receive()
+            )
+            auto_turn_task = None
+
+            if (
+                session.active_turn is not None
+                and transcript_task is not None
+                and not transcript_task.done()
+            ):
+                auto_turn_task = asyncio.create_task(
+                    auto_turn_events.get()
                 )
-            except asyncio.TimeoutError:
+
+            done, _pending = await asyncio.wait(
+                (
+                    [receive_task]
+                    if auto_turn_task is None
+                    else [receive_task, auto_turn_task]
+                ),
+                timeout=receive_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if not done:
+                for task in (
+                    receive_task,
+                    auto_turn_task,
+                ):
+                    if task is not None and not task.done():
+                        task.cancel()
+
+                for task in (
+                    receive_task,
+                    auto_turn_task,
+                ):
+                    if task is not None:
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+
                 if session_remaining <= (
                     voice_settings
                     .voice_session_idle_timeout_seconds
@@ -802,6 +855,55 @@ async def voice_websocket(
                     code=status.WS_1000_NORMAL_CLOSURE
                 )
                 return
+
+            if receive_task in done:
+                message = receive_task.result()
+
+                if auto_turn_task is not None:
+                    if auto_turn_task.done():
+                        auto_turn_event = auto_turn_task.result()
+                        try:
+                            auto_turn_events.put_nowait(
+                                auto_turn_event
+                            )
+                        except asyncio.QueueFull:
+                            pass
+                    else:
+                        auto_turn_task.cancel()
+
+                        try:
+                            await auto_turn_task
+                        except asyncio.CancelledError:
+                            pass
+            else:
+                auto_turn_event = auto_turn_task.result()
+
+                if (
+                    session.active_turn is None
+                    or auto_turn_event.get("turn_id")
+                    != session.active_turn.turn_id
+                ):
+                    continue
+
+                message = {
+                    "type": "websocket.receive",
+                    "text": json.dumps(
+                        {
+                            "type": "turn.commit",
+                            "turn_id": auto_turn_event["turn_id"],
+                        }
+                    ),
+                }
+
+            if (
+                receive_task not in done
+            ):
+                receive_task.cancel()
+
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
 
             if tts_task is not None and tts_task.done():
                 try:
@@ -1007,6 +1109,7 @@ async def voice_websocket(
                                 session=session,
                                 turn_id=event["turn_id"],
                                 final_delivery=final_delivery,
+                                auto_turn_events=auto_turn_events,
                             )
                         )
                         continue

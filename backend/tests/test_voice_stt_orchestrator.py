@@ -185,6 +185,7 @@ async def test_partial_and_final_events_are_relayed_as_protocol_events():
             sequence=2,
             type="final",
             text="set a reminder",
+            is_end_of_speech=True,
             created_at=utc_now(),
         )
     )
@@ -202,6 +203,8 @@ async def test_partial_and_final_events_are_relayed_as_protocol_events():
     assert second["type"] == "transcript.final"
     assert first["sequence"] == 1
     assert second["sequence"] == 2
+    assert first["is_end_of_speech"] is False
+    assert second["is_end_of_speech"] is True
 
     await consumer.aclose()
 
