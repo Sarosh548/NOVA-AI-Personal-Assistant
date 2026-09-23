@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from config import VoiceSettings, get_voice_settings
 from services.stt_adapter import (
@@ -29,6 +29,9 @@ class _VoiceSTTTurn:
         STTTranscriptEvent | Exception | None
     ]
     final_event: asyncio.Future[STTTranscriptEvent]
+    final_segments: list[str] = field(default_factory=list)
+    last_sequence: int = -1
+    finish_sequence: int | None = None
     relay_task: asyncio.Task[None] | None = None
     consumer_claimed: bool = False
 
@@ -129,6 +132,20 @@ class VoiceSTTOrchestrator:
     ) -> STTTranscriptEvent:
         turn = self._require_turn()
 
+        if turn.final_event.done():
+            final_event = turn.final_event.result()
+
+            await self.runtime.close_session(
+                turn.request.session_id
+            )
+            await self._stop_relay(turn)
+            self._drain_events(turn.events)
+            self._turn = None
+
+            return final_event
+
+        turn.finish_sequence = turn.last_sequence
+
         try:
             await self.runtime.finish_turn(
                 session_id=turn.request.session_id,
@@ -228,8 +245,26 @@ class VoiceSTTOrchestrator:
                 session_id=turn.request.session_id,
                 turn_id=turn.request.turn_id,
             ):
-                if event.type == "final" and not turn.final_event.done():
-                    turn.final_event.set_result(event)
+                turn.last_sequence = event.sequence
+
+                if event.type == "final":
+                    turn.final_segments.append(
+                        event.text
+                    )
+
+                    if (
+                        event.is_end_of_speech
+                        or (
+                            turn.finish_sequence is not None
+                            and event.sequence > turn.finish_sequence
+                        )
+                    ) and not turn.final_event.done():
+                        turn.final_event.set_result(
+                            self._build_complete_final_event(
+                                turn,
+                                event,
+                            )
+                        )
 
                 await turn.events.put(event)
 
@@ -248,6 +283,21 @@ class VoiceSTTOrchestrator:
                 await turn.events.put(None)
             except asyncio.CancelledError:
                 raise
+
+    @staticmethod
+    def _build_complete_final_event(
+        turn: _VoiceSTTTurn,
+        terminal_event: STTTranscriptEvent,
+    ) -> STTTranscriptEvent:
+        return STTTranscriptEvent(
+            stream_id=terminal_event.stream_id,
+            turn_id=terminal_event.turn_id,
+            sequence=terminal_event.sequence,
+            type="final",
+            text=" ".join(turn.final_segments),
+            is_end_of_speech=True,
+            created_at=terminal_event.created_at,
+        )
 
     async def _cancel_active_turn(
         self,
