@@ -81,6 +81,8 @@ def _settings(
         "deepgram_smart_format": True,
         "deepgram_no_delay": False,
         "stt_connect_timeout_seconds": 5.0,
+        "stt_connect_max_retries": 2,
+        "stt_connect_retry_backoff_seconds": 0.01,
         "stt_ping_interval_seconds": 20.0,
         "stt_ping_timeout_seconds": 20.0,
         "stt_close_timeout_seconds": 5.0,
@@ -189,6 +191,80 @@ async def test_adapter_opens_authenticated_deepgram_connection(
     assert captured["kwargs"]["max_size"] == 1_048_576
 
     await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_adapter_retries_transient_connection_failure(
+    monkeypatch,
+):
+    websocket = FakeDeepgramWebSocket()
+    attempts = 0
+
+    async def flaky_connect(uri, **kwargs):
+        nonlocal attempts
+        attempts += 1
+
+        if attempts == 1:
+            raise OSError("temporary network failure")
+
+        return websocket
+
+    import services.deepgram_stt_adapter as module
+
+    monkeypatch.setattr(
+        module,
+        "connect",
+        flaky_connect,
+    )
+
+    adapter = DeepgramSTTAdapter(
+        _settings(
+            stt_connect_max_retries=2,
+        )
+    )
+
+    stream = await adapter.start_stream(
+        _request()
+    )
+
+    assert attempts == 2
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_adapter_exhausts_bounded_connection_retries(
+    monkeypatch,
+):
+    attempts = 0
+
+    async def failing_connect(uri, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise OSError("provider unavailable")
+
+    import services.deepgram_stt_adapter as module
+
+    monkeypatch.setattr(
+        module,
+        "connect",
+        failing_connect,
+    )
+
+    adapter = DeepgramSTTAdapter(
+        _settings(
+            stt_connect_max_retries=2,
+        )
+    )
+
+    with pytest.raises(
+        STTAdapterError,
+        match="after 3 attempts",
+    ):
+        await adapter.start_stream(
+            _request()
+        )
+
+    assert attempts == 3
 
 
 @pytest.mark.asyncio

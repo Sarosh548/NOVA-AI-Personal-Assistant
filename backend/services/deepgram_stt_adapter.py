@@ -491,40 +491,58 @@ class DeepgramSTTAdapter(STTAdapter):
             provider_encoding,
         )
 
-        try:
-            websocket = await connect(
-                uri,
-                additional_headers={
-                    "Authorization": (
-                        f"Token {api_key.strip()}"
-                    )
-                },
-                compression=None,
-                open_timeout=self.settings.stt_connect_timeout_seconds,
-                ping_interval=self.settings.stt_ping_interval_seconds,
-                ping_timeout=self.settings.stt_ping_timeout_seconds,
-                close_timeout=self.settings.stt_close_timeout_seconds,
-                max_size=self.settings.stt_provider_max_message_bytes,
-                max_queue=(
-                    self.settings.stt_provider_max_queue_items
-                ),
-                write_limit=32 * 1024,
-            )
-        except asyncio.TimeoutError as exc:
+        last_error: Exception | None = None
+
+        for attempt in range(
+            self.settings.stt_connect_max_retries + 1
+        ):
+            try:
+                websocket = await connect(
+                    uri,
+                    additional_headers={
+                        "Authorization": (
+                            f"Token {api_key.strip()}"
+                        )
+                    },
+                    compression=None,
+                    open_timeout=self.settings.stt_connect_timeout_seconds,
+                    ping_interval=self.settings.stt_ping_interval_seconds,
+                    ping_timeout=self.settings.stt_ping_timeout_seconds,
+                    close_timeout=self.settings.stt_close_timeout_seconds,
+                    max_size=self.settings.stt_provider_max_message_bytes,
+                    max_queue=(
+                        self.settings.stt_provider_max_queue_items
+                    ),
+                    write_limit=32 * 1024,
+                )
+                break
+            except asyncio.CancelledError:
+                raise
+            except (
+                asyncio.TimeoutError,
+                OSError,
+                WebSocketException,
+            ) as exc:
+                last_error = exc
+
+                if attempt >= self.settings.stt_connect_max_retries:
+                    break
+
+                await asyncio.sleep(
+                    self.settings.stt_connect_retry_backoff_seconds
+                    * (2**attempt)
+                )
+        else:
+            websocket = None
+
+        if last_error is not None and "websocket" not in locals():
+            websocket = None
+
+        if websocket is None:
             raise STTAdapterError(
-                "Deepgram STT connection timed out."
-            ) from exc
-        except (
-            OSError,
-            WebSocketException,
-        ) as exc:
-            raise STTAdapterError(
-                "Deepgram STT connection failed."
-            ) from exc
-        except Exception as exc:
-            raise STTAdapterError(
-                "Deepgram STT connection failed."
-            ) from exc
+                "Deepgram STT connection failed after "
+                f"{self.settings.stt_connect_max_retries + 1} attempts."
+            ) from last_error
 
         return DeepgramSTTStream(
             websocket=websocket,

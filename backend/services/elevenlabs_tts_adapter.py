@@ -441,61 +441,93 @@ class ElevenLabsTTSAdapter(TTSAdapter):
             output_format,
         )
 
-        try:
-            websocket = await connect(
-                uri,
-                additional_headers={
-                    "xi-api-key": api_key.strip(),
-                },
-                compression=None,
-                open_timeout=self.settings.tts_connect_timeout_seconds,
-                ping_interval=self.settings.tts_ping_interval_seconds,
-                ping_timeout=self.settings.tts_ping_timeout_seconds,
-                close_timeout=self.settings.tts_close_timeout_seconds,
-                max_size=self.settings.tts_provider_max_message_bytes,
-                max_queue=self.settings.tts_provider_max_queue_items,
-                write_limit=32 * 1024,
-            )
-        except asyncio.TimeoutError as exc:
-            raise TTSAdapterError(
-                "ElevenLabs TTS connection timed out."
-            ) from exc
-        except (
-            OSError,
-            WebSocketException,
-        ) as exc:
-            raise TTSAdapterError(
-                "ElevenLabs TTS connection failed."
-            ) from exc
-        except Exception as exc:
-            raise TTSAdapterError(
-                "ElevenLabs TTS connection failed."
-            ) from exc
+        last_error: Exception | None = None
 
-        stream = ElevenLabsTTSStream(
-            websocket=websocket,
-            request=request,
-            settings=self.settings,
-        )
+        for attempt in range(
+            self.settings.tts_connect_max_retries + 1
+        ):
+            websocket = None
+            stream = None
 
-        try:
-            await websocket.send(
-                json.dumps(
-                    self._initial_payload()
+            try:
+                websocket = await connect(
+                    uri,
+                    additional_headers={
+                        "xi-api-key": api_key.strip(),
+                    },
+                    compression=None,
+                    open_timeout=self.settings.tts_connect_timeout_seconds,
+                    ping_interval=self.settings.tts_ping_interval_seconds,
+                    ping_timeout=self.settings.tts_ping_timeout_seconds,
+                    close_timeout=self.settings.tts_close_timeout_seconds,
+                    max_size=self.settings.tts_provider_max_message_bytes,
+                    max_queue=self.settings.tts_provider_max_queue_items,
+                    write_limit=32 * 1024,
                 )
-            )
-        except ConnectionClosed as exc:
-            await stream.close()
-            raise TTSAdapterError(
-                "ElevenLabs TTS connection closed during initialization."
-            ) from exc
-        except Exception as exc:
-            await stream.close()
-            raise TTSAdapterError(
-                "ElevenLabs TTS initialization failed."
-            ) from exc
 
-        return stream
+                stream = ElevenLabsTTSStream(
+                    websocket=websocket,
+                    request=request,
+                    settings=self.settings,
+                )
+
+                await websocket.send(
+                    json.dumps(
+                        self._initial_payload()
+                    )
+                )
+
+                return stream
+
+            except asyncio.CancelledError:
+                if stream is not None:
+                    await stream.close()
+                elif websocket is not None:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                raise
+            except (
+                asyncio.TimeoutError,
+                OSError,
+                WebSocketException,
+                ConnectionClosed,
+            ) as exc:
+                last_error = exc
+
+                if stream is not None:
+                    await stream.close()
+                elif websocket is not None:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+
+                if attempt >= self.settings.tts_connect_max_retries:
+                    break
+
+                await asyncio.sleep(
+                    self.settings.tts_connect_retry_backoff_seconds
+                    * (2**attempt)
+                )
+            except Exception as exc:
+                if stream is not None:
+                    await stream.close()
+                elif websocket is not None:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+
+                raise TTSAdapterError(
+                    "ElevenLabs TTS initialization failed."
+                ) from exc
+
+        raise TTSAdapterError(
+            "ElevenLabs TTS connection failed after "
+            f"{self.settings.tts_connect_max_retries + 1} attempts."
+        ) from last_error
 
     def _build_uri(
         self,

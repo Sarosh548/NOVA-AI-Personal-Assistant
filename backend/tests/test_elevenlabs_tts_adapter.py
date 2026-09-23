@@ -57,6 +57,8 @@ def make_settings(
 ) -> TTSProviderSettings:
     values = {
         "elevenlabs_api_key": "test-elevenlabs-key",
+        "tts_connect_max_retries": 2,
+        "tts_connect_retry_backoff_seconds": 0.01,
         "tts_event_queue_max_items": 16,
         "tts_provider_max_message_bytes": 64 * 1024,
         "tts_provider_max_queue_items": 4,
@@ -158,6 +160,85 @@ async def test_start_stream_builds_secure_uri_and_initializes_socket(
     }
 
     await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_start_stream_retries_transient_connection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    websockets = [
+        FakeWebSocket([]),
+        FakeWebSocket([]),
+    ]
+
+    async def flaky_connect(
+        _uri: str,
+        **_kwargs: object,
+    ) -> FakeWebSocket:
+        nonlocal attempts
+        attempts += 1
+
+        if attempts == 1:
+            raise OSError("temporary network failure")
+
+        return websockets[1]
+
+    monkeypatch.setattr(
+        provider_module,
+        "connect",
+        flaky_connect,
+    )
+
+    stream = await ElevenLabsTTSAdapter(
+        make_settings(
+            tts_connect_max_retries=2,
+        )
+    ).start_stream(
+        make_request()
+    )
+
+    assert attempts == 2
+    assert json.loads(
+        websockets[1].sent[0]
+    )["text"] == " "
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_start_stream_exhausts_bounded_connection_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def failing_connect(
+        _uri: str,
+        **_kwargs: object,
+    ) -> FakeWebSocket:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("provider unavailable")
+
+    monkeypatch.setattr(
+        provider_module,
+        "connect",
+        failing_connect,
+    )
+
+    with pytest.raises(
+        TTSAdapterError,
+        match="after 3 attempts",
+    ):
+        await ElevenLabsTTSAdapter(
+            make_settings(
+                tts_connect_max_retries=2,
+            )
+        ).start_stream(
+            make_request()
+        )
+
+    assert attempts == 3
 
 
 @pytest.mark.asyncio
