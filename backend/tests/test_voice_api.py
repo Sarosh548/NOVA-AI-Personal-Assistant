@@ -123,6 +123,46 @@ class RecordingVoiceMetrics:
         self.errors.append((stage, code))
 
 
+class FakeVoiceRateLimitService:
+    instances = []
+
+    def __init__(self):
+        self.calls = []
+        self.instances.append(self)
+
+    def check_and_consume(
+        self,
+        *,
+        principal_key,
+        scope,
+        limit,
+        window_seconds,
+    ):
+        self.calls.append(
+            {
+                "principal_key": principal_key,
+                "scope": scope,
+                "limit": limit,
+                "window_seconds": window_seconds,
+            }
+        )
+
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                allowed=True,
+                limit=limit,
+                remaining=limit - 1,
+                reset_after_seconds=60,
+            )
+
+        return SimpleNamespace(
+            allowed=False,
+            limit=limit,
+            remaining=0,
+            reset_after_seconds=17,
+        )
+
+
 def _build_app() -> FastAPI:
     app = FastAPI()
     app.state.conversation_execution_service = (
@@ -601,6 +641,119 @@ def test_voice_websocket_emits_structured_lifecycle_logs(
         assert "message" not in event
         assert "transcript" not in event
         assert "access_token" not in event
+
+
+def test_voice_websocket_enforces_turn_start_rate_limit(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    import api.voice as voice_module
+
+    FakeVoiceRateLimitService.instances = []
+
+    monkeypatch.setattr(
+        voice_module,
+        "RateLimitService",
+        FakeVoiceRateLimitService,
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_rate_limit_settings",
+        lambda: SimpleNamespace(
+            voice_rate_limit_enabled=True,
+            voice_turn_start_requests_per_window=1,
+            voice_turn_start_window_seconds=60,
+        ),
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-rate-1",
+            }
+        )
+
+        started = websocket.receive_json()
+
+        assert started["type"] == "turn.started"
+        assert started["turn_id"] == "turn-rate-1"
+
+        websocket.send_json(
+            {
+                "type": "turn.cancel",
+                "turn_id": "turn-rate-1",
+            }
+        )
+
+        cancelled = websocket.receive_json()
+
+        assert cancelled == {
+            "type": "turn.cancelled",
+            "turn_id": "turn-rate-1",
+        }
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-rate-2",
+            }
+        )
+
+        error = websocket.receive_json()
+
+        assert error == {
+            "type": "error",
+            "code": "voice_rate_limit_exceeded",
+            "message": "Voice turn rate limit exceeded.",
+            "recoverable": True,
+            "recovery_action": "retry_after_reset",
+            "retry_after_seconds": 17,
+        }
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        pong = websocket.receive_json()
+
+        assert pong["type"] == "session.pong"
+
+    limiter = FakeVoiceRateLimitService.instances[0]
+
+    assert limiter.calls == [
+        {
+            "principal_key": "user:voice-test-user",
+            "scope": "voice:turn_start",
+            "limit": 1,
+            "window_seconds": 60,
+        },
+        {
+            "principal_key": "user:voice-test-user",
+            "scope": "voice:turn_start",
+            "limit": 1,
+            "window_seconds": 60,
+        },
+    ]
+
+    assert FakeVoiceSTTOrchestrator.instances[0].turn_id == (
+        "turn-rate-1"
+    )
 
 
 def test_voice_websocket_supports_browser_style_authentication(
