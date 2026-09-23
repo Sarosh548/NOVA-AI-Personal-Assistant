@@ -531,16 +531,16 @@ async def _run_voice_assistant_execution(
     except asyncio.CancelledError:
         raise
     except Exception:
-        voice_metrics.record_error(
-            stage="llm",
-            code="assistant_execution_failed",
-        )
-
         if (
             is_execution_current is not None
             and not is_execution_current()
         ):
             return
+
+        voice_metrics.record_error(
+            stage="llm",
+            code="assistant_execution_failed",
+        )
 
         if response_bridge is not None:
             try:
