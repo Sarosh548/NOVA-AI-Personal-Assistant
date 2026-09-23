@@ -222,22 +222,61 @@ class VoiceTTSOrchestrator:
                 session_id=turn.request.session_id,
                 turn_id=turn.request.turn_id,
             ):
-                await turn.events.put(
-                    event
+                await self._enqueue_relay_event(
+                    turn,
+                    event,
                 )
 
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            self._drain_events(turn.events)
+
             try:
-                await turn.events.put(exc)
-            except asyncio.CancelledError:
-                raise
+                turn.events.put_nowait(exc)
+            except asyncio.QueueFull:
+                pass
         finally:
+            if not turn.cancelled:
+                try:
+                    await self._enqueue_relay_event(
+                        turn,
+                        None,
+                    )
+                except VoiceTTSOrchestratorError:
+                    return
+
+    async def _enqueue_relay_event(
+        self,
+        turn: _VoiceTTSTurn,
+        item: TTSAudioEvent | Exception | None,
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                turn.events.put(item),
+                timeout=(
+                    self.settings
+                    .voice_event_queue_enqueue_timeout_seconds
+                ),
+            )
+        except asyncio.TimeoutError as exc:
+            message = (
+                "TTS voice event relay backpressure deadline was exceeded."
+            )
+            self._drain_events(turn.events)
+
             try:
-                await turn.events.put(None)
-            except asyncio.CancelledError:
-                raise
+                turn.events.put_nowait(
+                    VoiceTTSOrchestratorError(
+                        message
+                    )
+                )
+            except asyncio.QueueFull:
+                pass
+
+            raise VoiceTTSOrchestratorError(
+                message
+            ) from exc
 
     async def _cancel_active_turn(
         self,

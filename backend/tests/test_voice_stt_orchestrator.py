@@ -247,6 +247,58 @@ async def test_partial_and_final_events_are_relayed_as_protocol_events():
     await consumer.aclose()
 
 
+
+@pytest.mark.asyncio
+async def test_relay_enqueue_fails_fast_when_event_queue_is_full():
+    service = VoiceSTTOrchestrator(
+        adapter=FakeAdapter(),
+        settings=_settings(
+            voice_stt_event_queue_max_items=1,
+            voice_event_queue_enqueue_timeout_seconds=0.01,
+        ),
+    )
+
+    await _start(service)
+
+    turn = service._turn
+    assert turn is not None
+
+    turn.events.put_nowait(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            type="partial",
+            text="buffered",
+            created_at=utc_now(),
+        )
+    )
+
+    with pytest.raises(
+        VoiceSTTOrchestratorError,
+        match="event relay backpressure deadline",
+    ):
+        await service._enqueue_relay_event(
+            turn,
+            STTTranscriptEvent(
+                stream_id="stream-1",
+                turn_id="turn-1",
+                sequence=2,
+                type="partial",
+                text="blocked",
+                created_at=utc_now(),
+            ),
+        )
+
+    with pytest.raises(
+        VoiceSTTOrchestratorError,
+        match="event relay backpressure deadline",
+    ):
+        await service.events().__anext__()
+
+    await service.cancel_turn()
+
+
 @pytest.mark.asyncio
 async def test_end_of_speech_assembles_multiple_final_segments():
     adapter = FakeAdapter()
