@@ -160,13 +160,23 @@ async def _send_error(
     *,
     code: str,
     message: str,
+    recoverable: bool = False,
+    recovery_action: str | None = None,
 ) -> None:
+    payload = {
+        "type": "error",
+        "code": code,
+        "message": message,
+    }
+
+    if recoverable:
+        payload["recoverable"] = True
+
+        if recovery_action is not None:
+            payload["recovery_action"] = recovery_action
+
     await websocket.send_json(
-        {
-            "type": "error",
-            "code": code,
-            "message": message,
-        }
+        payload
     )
 
 
@@ -373,6 +383,8 @@ async def _run_tts_output(
                 websocket,
                 code="assistant_audio_failed",
                 message=str(exc),
+                recoverable=True,
+                recovery_action="start_new_turn",
             )
         except WebSocketDisconnect:
             pass
@@ -669,6 +681,8 @@ async def _relay_transcripts(
                 websocket,
                 code="stt_error",
                 message=str(exc),
+                recoverable=True,
+                recovery_action="start_new_turn",
             )
         except WebSocketDisconnect:
             pass
