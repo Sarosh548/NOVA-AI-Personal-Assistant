@@ -2757,6 +2757,6 @@ def test_voice_websocket_exercises_real_stt_tts_orchestrators_end_to_end(
     assert tts_adapter.requests[0].voice == "voice/e2e"
     assert tts_adapter.stream is not None
     assert tts_adapter.stream.text_chunks == [
-        "Sure, ",
+        "Sure,",
         "done.",
     ]
