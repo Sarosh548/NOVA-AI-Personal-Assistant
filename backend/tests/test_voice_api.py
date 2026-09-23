@@ -136,6 +136,7 @@ class FakeVoiceSessionLeaseService:
         self.lease_seconds = lease_seconds
         self.heartbeat_calls = 0
         self.heartbeat_result = True
+        self.heartbeat_event = threading.Event()
         self.instances.append(self)
 
     def acquire(
@@ -172,6 +173,7 @@ class FakeVoiceSessionLeaseService:
         session_id,
     ):
         self.heartbeat_calls += 1
+        self.heartbeat_event.set()
 
         if not self.heartbeat_result:
             return False
@@ -875,11 +877,9 @@ def test_voice_websocket_renews_session_lease_while_idle(
             FakeVoiceSessionLeaseService.instances[-1]
         )
 
-        for _ in range(50):
-            if lease_service.heartbeat_calls > 0:
-                break
-            await asyncio.sleep(0.005)
-
+        assert lease_service.heartbeat_event.wait(
+            timeout=1
+        )
         assert lease_service.heartbeat_calls > 0
 
         websocket.send_json(
