@@ -8,6 +8,7 @@ from config import VoiceSettings, get_voice_settings
 from services.stt_adapter import (
     STTAdapter,
     STTStream,
+    STTStreamEvent,
     STTStreamRequest,
     STTTranscriptEvent,
 )
@@ -22,7 +23,7 @@ class _RuntimeTurn:
     request: STTStreamRequest
     stream: STTStream
     event_queue: asyncio.Queue[
-        STTTranscriptEvent | Exception | None
+        STTStreamEvent | Exception | None
     ]
     pump_task: asyncio.Task[None] | None = None
     events_consumer_claimed: bool = False
@@ -242,7 +243,7 @@ class STTRuntimeService:
         *,
         session_id: str,
         turn_id: str,
-    ) -> AsyncIterator[STTTranscriptEvent]:
+    ) -> AsyncIterator[STTStreamEvent]:
         turn = self._require_turn(
             session_id,
             turn_id,
@@ -336,7 +337,7 @@ class STTRuntimeService:
     def _validate_event(
         self,
         turn: _RuntimeTurn,
-        event: STTTranscriptEvent,
+        event: STTStreamEvent,
         last_sequence: int | None,
     ) -> None:
         if event.stream_id != turn.stream.stream_id:
@@ -354,7 +355,7 @@ class STTRuntimeService:
             and event.sequence <= last_sequence
         ):
             raise STTRuntimeError(
-                "STT transcript event sequence is not strictly increasing."
+                "STT stream event sequence is not strictly increasing."
             )
 
     def _require_turn(

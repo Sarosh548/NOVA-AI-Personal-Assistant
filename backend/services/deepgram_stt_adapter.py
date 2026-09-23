@@ -16,11 +16,14 @@ from services.stt_adapter import (
     STTAdapter,
     STTAdapterError,
     STTAudioFormat,
+    STTSpeechStartedEvent,
     STTStream,
     STTStreamClosedError,
     STTStreamNotActiveError,
     STTStreamRequest,
+    STTStreamEvent,
     STTTranscriptEvent,
+    STTUtteranceEndEvent,
     utc_now,
 )
 
@@ -120,7 +123,7 @@ class DeepgramSTTStream(STTStream):
 
     async def events(
         self,
-    ) -> AsyncIterator[STTTranscriptEvent]:
+    ) -> AsyncIterator[STTStreamEvent]:
         while True:
             item = await self._events.get()
 
@@ -245,11 +248,51 @@ class DeepgramSTTStream(STTStream):
 
                     continue
 
-                if message_type in {
-                    "Metadata",
-                    "UtteranceEnd",
-                    "SpeechStarted",
-                }:
+                if message_type == "SpeechStarted":
+                    self._sequence += 1
+                    timestamp = payload.get("timestamp")
+                    timestamp_seconds = (
+                        float(timestamp)
+                        if isinstance(timestamp, (int, float))
+                        and timestamp >= 0
+                        else None
+                    )
+
+                    await self._events.put(
+                        STTSpeechStartedEvent(
+                            stream_id=self.stream_id,
+                            turn_id=self.turn_id,
+                            sequence=self._sequence,
+                            created_at=utc_now(),
+                            timestamp_seconds=timestamp_seconds,
+                        )
+                    )
+                    continue
+
+                if message_type == "UtteranceEnd":
+                    last_word_end = payload.get("last_word_end")
+
+                    # Deepgram documents -1 as a stale/duplicate boundary.
+                    if (
+                        not isinstance(last_word_end, (int, float))
+                        or last_word_end < 0
+                    ):
+                        continue
+
+                    self._sequence += 1
+
+                    await self._events.put(
+                        STTUtteranceEndEvent(
+                            stream_id=self.stream_id,
+                            turn_id=self.turn_id,
+                            sequence=self._sequence,
+                            created_at=utc_now(),
+                            last_word_end_seconds=float(last_word_end),
+                        )
+                    )
+                    continue
+
+                if message_type == "Metadata":
                     continue
 
                 if message_type == "Error":
@@ -532,6 +575,18 @@ class DeepgramSTTAdapter(STTAdapter):
                 str(
                     self.settings.deepgram_endpointing_ms
                 ),
+            ),
+            (
+                "utterance_end_ms",
+                str(
+                    self.settings.deepgram_utterance_end_ms
+                ),
+            ),
+            (
+                "vad_events",
+                str(
+                    self.settings.deepgram_vad_events
+                ).lower(),
             ),
             (
                 "no_delay",

@@ -325,11 +325,24 @@ class STTProviderSettings(BaseSettings):
 
     deepgram_interim_results: bool = True
 
+    # 700 ms limits accidental early turn cuts while remaining responsive.
+    # Keep this environment-tunable; later latency/segmentation telemetry
+    # should drive any further tuning.
     deepgram_endpointing_ms: int = Field(
-        default=300,
+        default=700,
         ge=50,
         le=5000,
     )
+
+    # Deepgram requires at least 1000 ms for useful UtteranceEnd behavior
+    # with its typical interim-result cadence.
+    deepgram_utterance_end_ms: int = Field(
+        default=1200,
+        ge=1000,
+        le=5000,
+    )
+
+    deepgram_vad_events: bool = True
 
     deepgram_smart_format: bool = True
 

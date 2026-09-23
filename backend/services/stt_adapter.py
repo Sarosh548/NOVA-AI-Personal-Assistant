@@ -186,6 +186,131 @@ class STTTranscriptEvent:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class STTSpeechStartedEvent:
+    """Provider-neutral notification that speech has started in a stream."""
+
+    stream_id: str
+    turn_id: str
+    sequence: int
+    created_at: datetime
+    timestamp_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "stream_id",
+            "turn_id",
+        ):
+            value = getattr(self, field_name)
+
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"{field_name} must be a string."
+                )
+
+            normalized = value.strip()
+
+            if not normalized:
+                raise ValueError(
+                    f"{field_name} cannot be empty."
+                )
+
+            if len(normalized) > 128:
+                raise ValueError(
+                    f"{field_name} cannot exceed 128 characters."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                normalized,
+            )
+
+        if self.sequence < 0:
+            raise ValueError(
+                "sequence must be non-negative."
+            )
+
+        if self.created_at.tzinfo is None:
+            raise ValueError(
+                "created_at must be timezone-aware."
+            )
+
+        if (
+            self.timestamp_seconds is not None
+            and self.timestamp_seconds < 0
+        ):
+            raise ValueError(
+                "timestamp_seconds must be non-negative when supplied."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class STTUtteranceEndEvent:
+    """Provider-neutral fallback boundary based on a finalized-word gap."""
+
+    stream_id: str
+    turn_id: str
+    sequence: int
+    created_at: datetime
+    last_word_end_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "stream_id",
+            "turn_id",
+        ):
+            value = getattr(self, field_name)
+
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"{field_name} must be a string."
+                )
+
+            normalized = value.strip()
+
+            if not normalized:
+                raise ValueError(
+                    f"{field_name} cannot be empty."
+                )
+
+            if len(normalized) > 128:
+                raise ValueError(
+                    f"{field_name} cannot exceed 128 characters."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                normalized,
+            )
+
+        if self.sequence < 0:
+            raise ValueError(
+                "sequence must be non-negative."
+            )
+
+        if self.created_at.tzinfo is None:
+            raise ValueError(
+                "created_at must be timezone-aware."
+            )
+
+        if (
+            self.last_word_end_seconds is not None
+            and self.last_word_end_seconds < 0
+        ):
+            raise ValueError(
+                "last_word_end_seconds must be non-negative when supplied."
+            )
+
+
+STTStreamEvent = (
+    STTTranscriptEvent
+    | STTSpeechStartedEvent
+    | STTUtteranceEndEvent
+)
+
+
 class STTStream(ABC):
     """
     Provider-neutral lifecycle for one realtime STT stream.
@@ -219,9 +344,9 @@ class STTStream(ABC):
     @abstractmethod
     async def events(
         self,
-    ) -> AsyncIterator[STTTranscriptEvent]:
+    ) -> AsyncIterator[STTStreamEvent]:
         """
-        Yield ordered partial/final transcript events.
+        Yield ordered transcript and speech-boundary events.
 
         Implementations should terminate iteration after finish(), cancel(),
         or close().
