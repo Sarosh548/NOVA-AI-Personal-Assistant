@@ -28,9 +28,9 @@ def test_voice_metrics_record_latencies_provider_events_and_errors():
     assert "nova_voice_tts_first_audio_seconds_count 1.0" in body
     assert "nova_voice_turn_response_seconds_count 1.0" in body
     assert "nova_voice_turn_total_seconds_count 1.0" in body
-    assert 'nova_voice_provider_events_total{event="stream_started",provider="deepgram"} 1.0' in body
-    assert 'nova_voice_provider_events_total{event="stream_started",provider="elevenlabs"} 1.0' in body
-    assert 'nova_voice_errors_total{code="assistant_audio_failed",stage="tts"} 1.0' in body
+    assert 'nova_voice_provider_events_total{provider="deepgram",event="stream_started"} 1.0' in body
+    assert 'nova_voice_provider_events_total{provider="elevenlabs",event="stream_started"} 1.0' in body
+    assert 'nova_voice_errors_total{stage="tts",code="assistant_audio_failed"} 1.0' in body
 
 
 def test_voice_metrics_do_not_expose_identity_in_labels():
