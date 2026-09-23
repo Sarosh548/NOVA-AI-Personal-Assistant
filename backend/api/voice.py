@@ -168,29 +168,44 @@ class VoiceWebSocketSendError(RuntimeError):
     """Raised when the client-facing WebSocket send deadline is exceeded."""
 
 
+async def _close_websocket_after_send_timeout(
+    websocket: WebSocket,
+    timeout_seconds: float,
+) -> None:
+    try:
+        await asyncio.wait_for(
+            websocket.close(
+                code=status.WS_1011_INTERNAL_ERROR
+            ),
+            timeout=timeout_seconds,
+        )
+    except Exception:
+        pass
+
+
 async def _send_websocket_json(
     websocket: WebSocket,
     payload,
 ) -> None:
+    timeout_seconds = (
+        get_voice_settings()
+        .voice_websocket_send_timeout_seconds
+    )
+
     try:
         await asyncio.wait_for(
             websocket.send_json(payload),
-            timeout=(
-                get_voice_settings()
-                .voice_websocket_send_timeout_seconds
-            ),
+            timeout=timeout_seconds,
         )
     except asyncio.TimeoutError as exc:
         voice_metrics.record_error(
             stage="transport",
             code="voice_websocket_send_timeout",
         )
-        try:
-            await websocket.close(
-                code=status.WS_1011_INTERNAL_ERROR
-            )
-        except Exception:
-            pass
+        await _close_websocket_after_send_timeout(
+            websocket,
+            timeout_seconds,
+        )
         raise VoiceWebSocketSendError(
             "WebSocket send deadline was exceeded."
         ) from exc
@@ -200,25 +215,25 @@ async def _send_websocket_bytes(
     websocket: WebSocket,
     payload: bytes,
 ) -> None:
+    timeout_seconds = (
+        get_voice_settings()
+        .voice_websocket_send_timeout_seconds
+    )
+
     try:
         await asyncio.wait_for(
             websocket.send_bytes(payload),
-            timeout=(
-                get_voice_settings()
-                .voice_websocket_send_timeout_seconds
-            ),
+            timeout=timeout_seconds,
         )
     except asyncio.TimeoutError as exc:
         voice_metrics.record_error(
             stage="transport",
             code="voice_websocket_send_timeout",
         )
-        try:
-            await websocket.close(
-                code=status.WS_1011_INTERNAL_ERROR
-            )
-        except Exception:
-            pass
+        await _close_websocket_after_send_timeout(
+            websocket,
+            timeout_seconds,
+        )
         raise VoiceWebSocketSendError(
             "WebSocket send deadline was exceeded."
         ) from exc
