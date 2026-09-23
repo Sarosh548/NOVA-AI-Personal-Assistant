@@ -70,6 +70,9 @@ from services.voice_response_stream_bridge import (
     VoiceResponseStreamBridge,
     VoiceResponseStreamBridgeError,
 )
+from services.voice_metrics import (
+    voice_metrics,
+)
 from services.voice_session_service import (
     VoiceProtocolError,
     VoiceSessionService,
@@ -317,9 +320,20 @@ async def _relay_tts_audio(
     *,
     websocket: WebSocket,
     orchestrator: VoiceTTSOrchestrator,
+    timing_state: dict[str, float | bool | None],
 ) -> None:
     async for event in orchestrator.events():
         if event.type == "audio":
+            if (
+                timing_state["first_audio_observed"] is False
+                and timing_state["first_text_sent_at"] is not None
+            ):
+                voice_metrics.observe_tts_first_audio(
+                    time.monotonic()
+                    - float(timing_state["first_text_sent_at"])
+                )
+                timing_state["first_audio_observed"] = True
+
             await websocket.send_bytes(
                 event.audio
             )
@@ -342,15 +356,24 @@ async def _run_tts_output(
     orchestrator: VoiceTTSOrchestrator,
     response_bridge: VoiceResponseStreamBridge,
 ) -> None:
+    timing_state: dict[str, float | bool | None] = {
+        "first_text_sent_at": None,
+        "first_audio_observed": False,
+    }
+
     relay_task = asyncio.create_task(
         _relay_tts_audio(
             websocket=websocket,
             orchestrator=orchestrator,
+            timing_state=timing_state,
         )
     )
 
     try:
         async for delta in response_bridge.text_deltas():
+            if timing_state["first_text_sent_at"] is None:
+                timing_state["first_text_sent_at"] = time.monotonic()
+
             await orchestrator.send_text(
                 delta
             )
@@ -371,6 +394,23 @@ async def _run_tts_output(
         TTSRuntimeError,
         ValueError,
     ) as exc:
+        if isinstance(
+            exc,
+            (
+                VoiceTTSOrchestratorError,
+                TTSRuntimeError,
+            ),
+        ):
+            voice_metrics.record_provider_event(
+                provider="elevenlabs",
+                event="stream_failed",
+            )
+
+        voice_metrics.record_error(
+            stage="tts",
+            code="assistant_audio_failed",
+        )
+
         try:
             await response_bridge.abort(
                 str(exc)
@@ -450,7 +490,12 @@ async def _run_voice_assistant_execution(
     turn_id: str,
     response_bridge: VoiceResponseStreamBridge | None,
     is_execution_current,
+    response_started_monotonic: float,
+    turn_started_monotonic: float | None,
 ) -> None:
+    execution_started_monotonic = time.monotonic()
+    first_delta_observed = False
+
     execution_kwargs = {
         "user_id": user_id,
         "message": message,
@@ -459,7 +504,21 @@ async def _run_voice_assistant_execution(
     }
 
     if response_bridge is not None:
-        execution_kwargs["on_response_delta"] = response_bridge.on_delta
+        def on_response_delta(
+            delta: str,
+        ) -> None:
+            nonlocal first_delta_observed
+
+            if not first_delta_observed:
+                voice_metrics.observe_llm_first_delta(
+                    time.monotonic()
+                    - execution_started_monotonic
+                )
+                first_delta_observed = True
+
+            response_bridge.on_delta(delta)
+
+        execution_kwargs["on_response_delta"] = on_response_delta
 
     if is_execution_current is not None:
         execution_kwargs["is_execution_current"] = is_execution_current
@@ -477,6 +536,11 @@ async def _run_voice_assistant_execution(
             and not is_execution_current()
         ):
             return
+
+        voice_metrics.record_error(
+            stage="llm",
+            code="assistant_execution_failed",
+        )
 
         if response_bridge is not None:
             try:
@@ -512,6 +576,11 @@ async def _run_voice_assistant_execution(
         return
 
     if response_payload.get("error"):
+        voice_metrics.record_error(
+            stage="llm",
+            code="assistant_execution_failed",
+        )
+
         if response_bridge is not None:
             try:
                 await response_bridge.abort(
@@ -571,6 +640,17 @@ async def _run_voice_assistant_execution(
         )
     except WebSocketDisconnect:
         return
+
+    voice_metrics.observe_turn_response(
+        time.monotonic()
+        - response_started_monotonic
+    )
+
+    if turn_started_monotonic is not None:
+        voice_metrics.observe_turn_total(
+            time.monotonic()
+            - turn_started_monotonic
+        )
 
     if response_bridge is not None:
         await response_bridge.finish()
@@ -665,6 +745,15 @@ async def _relay_transcripts(
     except WebSocketDisconnect:
         return
     except VoiceSTTOrchestratorError as exc:
+        voice_metrics.record_provider_event(
+            provider="deepgram",
+            event="stream_failed",
+        )
+        voice_metrics.record_error(
+            stage="stt",
+            code="stt_error",
+        )
+
         try:
             session_service.cancel_turn(
                 session=session,
@@ -716,6 +805,8 @@ async def voice_websocket(
     header_token = _extract_bearer_token(
         websocket
     )
+
+    current_turn_started_monotonic: float | None = None
 
     await websocket.accept()
 
@@ -1103,6 +1194,7 @@ async def voice_websocket(
                             session=session,
                             turn_id=control.turn_id,
                         )
+                        current_turn_started_monotonic = time.monotonic()
 
                         try:
                             audio_format = _audio_format_from_control(
@@ -1123,6 +1215,15 @@ async def voice_websocket(
                             STTRuntimeError,
                             ValueError,
                         ) as exc:
+                            voice_metrics.record_provider_event(
+                                provider="deepgram",
+                                event="stream_failed",
+                            )
+                            voice_metrics.record_error(
+                                stage="stt",
+                                code="stt_start_failed",
+                            )
+
                             session_service.cancel_turn(
                                 session=session,
                                 turn_id=event["turn_id"],
@@ -1135,6 +1236,11 @@ async def voice_websocket(
                             continue
 
                         event["stt_stream_id"] = stream_id
+
+                        voice_metrics.record_provider_event(
+                            provider="deepgram",
+                            event="stream_started",
+                        )
 
                         await websocket.send_json(
                             event
@@ -1165,8 +1271,15 @@ async def voice_websocket(
                                 "There is no active voice turn to commit.",
                             )
 
+                        stt_finalization_started_monotonic = time.monotonic()
+
                         final_event = (
                             await stt_orchestrator.finish_turn()
+                        )
+
+                        voice_metrics.observe_stt_finalization(
+                            time.monotonic()
+                            - stt_finalization_started_monotonic
                         )
 
                         if final_delivery is not None:
@@ -1203,6 +1316,11 @@ async def voice_websocket(
                         )
 
                         turn_id = event["turn_id"]
+                        response_turn_started_monotonic = (
+                            current_turn_started_monotonic
+                        )
+                        current_turn_started_monotonic = None
+                        response_started_monotonic = time.monotonic()
                         assistant_response_generation = (
                             session_service.begin_response(
                                 session,
@@ -1211,6 +1329,11 @@ async def voice_websocket(
                         )
 
                         if conversation_execution_service is None:
+                            voice_metrics.record_error(
+                                stage="llm",
+                                code="assistant_execution_unavailable",
+                            )
+
                             await _send_error(
                                 websocket,
                                 code="assistant_execution_unavailable",
@@ -1233,6 +1356,11 @@ async def voice_websocket(
                                 )
                             )
                         except Exception:
+                            voice_metrics.record_error(
+                                stage="llm",
+                                code="assistant_execution_failed",
+                            )
+
                             await _send_error(
                                 websocket,
                                 code="assistant_execution_failed",
@@ -1281,6 +1409,11 @@ async def voice_websocket(
                                             voice=voice_id,
                                             audio_format=audio_format,
                                         )
+                                    )
+
+                                    voice_metrics.record_provider_event(
+                                        provider="elevenlabs",
+                                        event="stream_started",
                                     )
 
                                     await websocket.send_json(
@@ -1334,6 +1467,15 @@ async def voice_websocket(
                                 ) as exc:
                                     assistant_response_bridge = None
 
+                                    voice_metrics.record_provider_event(
+                                        provider="elevenlabs",
+                                        event="stream_failed",
+                                    )
+                                    voice_metrics.record_error(
+                                        stage="tts",
+                                        code="assistant_audio_start_failed",
+                                    )
+
                                     await _send_error(
                                         websocket,
                                         code="assistant_audio_start_failed",
@@ -1363,6 +1505,12 @@ async def voice_websocket(
                                                 generation=response_generation,
                                             )
                                         )
+                                    ),
+                                    response_started_monotonic=(
+                                        response_started_monotonic
+                                    ),
+                                    turn_started_monotonic=(
+                                        response_turn_started_monotonic
                                     ),
                                 )
                             )
