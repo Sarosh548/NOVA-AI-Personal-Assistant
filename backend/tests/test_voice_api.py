@@ -14,10 +14,28 @@ from api.voice import (
     VoiceWebSocketSendError,
     router,
 )
+from services.stt_adapter import (
+    STTAdapter,
+    STTAudioFormat,
+    STTStream,
+    STTStreamRequest,
+    STTSpeechStartedEvent,
+    STTTranscriptEvent,
+    utc_now,
+)
+from services.tts_adapter import (
+    TTSAudioEvent,
+    TTSAudioFormat,
+    TTSAdapter,
+    TTSStream,
+    TTSStreamRequest,
+)
 from services.voice_stt_orchestrator import (
+    VoiceSTTOrchestrator,
     VoiceSTTOrchestratorError,
 )
 from services.voice_tts_orchestrator import (
+    VoiceTTSOrchestrator,
     VoiceTTSOrchestratorError,
 )
 
@@ -634,6 +652,204 @@ class FakeVoiceTTSOrchestrator:
                 raise item
 
             yield item
+
+
+class E2EVoiceSTTStream(STTStream):
+    def __init__(
+        self,
+        *,
+        stream_id: str,
+        turn_id: str,
+    ) -> None:
+        self._stream_id = stream_id
+        self._turn_id = turn_id
+        self.audio_frames = []
+        self.finished = False
+        self.cancelled = False
+        self.closed = False
+        self._events = asyncio.Queue()
+
+    @property
+    def stream_id(self) -> str:
+        return self._stream_id
+
+    @property
+    def turn_id(self) -> str:
+        return self._turn_id
+
+    async def send_audio(
+        self,
+        frame: bytes,
+    ) -> None:
+        self.audio_frames.append(frame)
+
+        await self._events.put(
+            STTSpeechStartedEvent(
+                stream_id=self._stream_id,
+                turn_id=self._turn_id,
+                sequence=1,
+                created_at=utc_now(),
+            )
+        )
+
+        await self._events.put(
+            STTTranscriptEvent(
+                stream_id=self._stream_id,
+                turn_id=self._turn_id,
+                sequence=2,
+                type="partial",
+                text="hello",
+                created_at=utc_now(),
+            )
+        )
+
+    async def events(self):
+        while True:
+            item = await self._events.get()
+
+            if item is None:
+                return
+
+            yield item
+
+    async def finish(self) -> None:
+        if self.finished:
+            return
+
+        self.finished = True
+
+        await self._events.put(
+            STTTranscriptEvent(
+                stream_id=self._stream_id,
+                turn_id=self._turn_id,
+                sequence=3,
+                type="final",
+                text="hello world",
+                is_end_of_speech=True,
+                created_at=utc_now(),
+            )
+        )
+        await self._events.put(None)
+
+    async def cancel(self) -> None:
+        self.cancelled = True
+        await self._events.put(None)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class E2EVoiceSTTAdapter(STTAdapter):
+    def __init__(self) -> None:
+        self.stream: E2EVoiceSTTStream | None = None
+        self.requests: list[STTStreamRequest] = []
+
+    async def start_stream(
+        self,
+        request: STTStreamRequest,
+    ) -> STTStream:
+        self.requests.append(request)
+
+        self.stream = E2EVoiceSTTStream(
+            stream_id="e2e-stt-stream-1",
+            turn_id=request.turn_id,
+        )
+        return self.stream
+
+
+class E2EVoiceTTSStream(TTSStream):
+    def __init__(
+        self,
+        *,
+        stream_id: str,
+        turn_id: str,
+    ) -> None:
+        self._stream_id = stream_id
+        self._turn_id = turn_id
+        self.text_chunks = []
+        self.finished = False
+        self.cancelled = False
+        self.closed = False
+        self._sequence = 0
+        self._events = asyncio.Queue()
+
+    @property
+    def stream_id(self) -> str:
+        return self._stream_id
+
+    @property
+    def turn_id(self) -> str:
+        return self._turn_id
+
+    async def send_text(
+        self,
+        text: str,
+    ) -> None:
+        self.text_chunks.append(text)
+        self._sequence += 1
+
+        await self._events.put(
+            TTSAudioEvent(
+                stream_id=self._stream_id,
+                turn_id=self._turn_id,
+                sequence=self._sequence,
+                type="audio",
+                audio=f"audio-{self._sequence}".encode(),
+                created_at=utc_now(),
+            )
+        )
+
+    async def events(self):
+        while True:
+            item = await self._events.get()
+
+            if item is None:
+                return
+
+            yield item
+
+    async def finish(self) -> None:
+        if self.finished:
+            return
+
+        self.finished = True
+
+        await self._events.put(
+            TTSAudioEvent(
+                stream_id=self._stream_id,
+                turn_id=self._turn_id,
+                sequence=self._sequence + 1,
+                type="final",
+                audio=b"",
+                created_at=utc_now(),
+            )
+        )
+        await self._events.put(None)
+
+    async def cancel(self) -> None:
+        self.cancelled = True
+        await self._events.put(None)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class E2EVoiceTTSAdapter(TTSAdapter):
+    def __init__(self) -> None:
+        self.stream: E2EVoiceTTSStream | None = None
+        self.requests: list[TTSStreamRequest] = []
+
+    async def start_stream(
+        self,
+        request: TTSStreamRequest,
+    ) -> TTSStream:
+        self.requests.append(request)
+
+        self.stream = E2EVoiceTTSStream(
+            stream_id="e2e-tts-stream-1",
+            turn_id=request.turn_id,
+        )
+        return self.stream
 
 
 def _patch_auth(
@@ -2377,3 +2593,170 @@ def test_voice_websocket_records_performance_metrics(monkeypatch):
     assert metrics.turn_total
     assert ("deepgram", "stream_started") in metrics.provider_events
     assert ("elevenlabs", "stream_started") in metrics.provider_events
+
+
+
+def test_voice_websocket_exercises_real_stt_tts_orchestrators_end_to_end(
+    monkeypatch,
+):
+    import api.voice as voice_module
+
+    _patch_auth(monkeypatch)
+
+    stt_adapter = E2EVoiceSTTAdapter()
+    tts_adapter = E2EVoiceTTSAdapter()
+
+    monkeypatch.setattr(
+        voice_module,
+        "_build_voice_stt_orchestrator",
+        lambda settings: VoiceSTTOrchestrator(
+            adapter=stt_adapter,
+            settings=settings,
+        ),
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "_build_voice_tts_orchestrator",
+        lambda settings: VoiceTTSOrchestrator(
+            adapter=tts_adapter,
+            settings=settings,
+        ),
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_tts_provider_settings",
+        lambda: SimpleNamespace(
+            elevenlabs_voice_id="voice/e2e",
+        ),
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        ready = websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-e2e-1",
+                "audio_format": {
+                    "encoding": "pcm_s16le",
+                    "sample_rate_hz": 16_000,
+                    "channels": 1,
+                },
+            }
+        )
+
+        started = websocket.receive_json()
+
+        assert started["type"] == "turn.started"
+        assert started["turn_id"] == "turn-e2e-1"
+        assert started["stt_stream_id"] == "e2e-stt-stream-1"
+        assert started["started_at"]
+
+        websocket.send_bytes(b"input-audio")
+
+        speech_started = websocket.receive_json()
+        assert speech_started["type"] == "speech.started"
+
+        partial = websocket.receive_json()
+        assert partial["type"] == "transcript.partial"
+        assert partial["text"] == "hello"
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-e2e-1",
+            }
+        )
+
+        final = websocket.receive_json()
+        assert final["type"] == "transcript.final"
+        assert final["text"] == "hello world"
+
+        committed = websocket.receive_json()
+        assert committed["type"] == "turn.committed"
+        assert committed["turn_id"] == "turn-e2e-1"
+        assert committed["transcript"] == "hello world"
+
+        audio_started = websocket.receive_json()
+        assert audio_started == {
+            "type": "assistant.audio.started",
+            "stream_id": "e2e-tts-stream-1",
+            "turn_id": "turn-e2e-1",
+            "audio_format": {
+                "encoding": "pcm_s16le",
+                "sample_rate_hz": 16_000,
+                "channels": 1,
+            },
+        }
+
+        received_audio = []
+        received_json = []
+
+        while True:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                received_audio.append(
+                    message["bytes"]
+                )
+                continue
+
+            payload = json.loads(
+                message["text"]
+            )
+            received_json.append(payload)
+
+            if {
+                item["type"]
+                for item in received_json
+            } >= {
+                "assistant.response",
+                "assistant.audio.final",
+            }:
+                break
+
+        assert received_audio == [
+            b"audio-1",
+            b"audio-2",
+        ]
+
+        response_message = next(
+            item
+            for item in received_json
+            if item["type"] == "assistant.response"
+        )
+        assert response_message["response"] == "Sure, done."
+
+        final_audio_message = next(
+            item
+            for item in received_json
+            if item["type"] == "assistant.audio.final"
+        )
+        assert final_audio_message["stream_id"] == "e2e-tts-stream-1"
+        assert final_audio_message["turn_id"] == "turn-e2e-1"
+
+    assert ready["session_id"]
+    assert stt_adapter.requests[0].user_id == "voice-test-user"
+    assert stt_adapter.requests[0].session_id == ready["session_id"]
+    assert stt_adapter.requests[0].turn_id == "turn-e2e-1"
+    assert stt_adapter.stream is not None
+    assert stt_adapter.stream.audio_frames == [b"input-audio"]
+
+    assert tts_adapter.requests[0].user_id == "voice-test-user"
+    assert tts_adapter.requests[0].session_id == ready["session_id"]
+    assert tts_adapter.requests[0].turn_id == "turn-e2e-1"
+    assert tts_adapter.requests[0].voice == "voice/e2e"
+    assert tts_adapter.stream is not None
+    assert tts_adapter.stream.text_chunks == [
+        "Sure,",
+        "done.",
+    ]
