@@ -1044,6 +1044,21 @@ async def voice_websocket(
                         previous_response_bridge = (
                             assistant_response_bridge
                         )
+                        previous_response_turn_id = assistant_turn_id
+                        had_active_response = (
+                            previous_response_turn_id is not None
+                            and (
+                                (
+                                    previous_tts_task is not None
+                                    and not previous_tts_task.done()
+                                )
+                                or (
+                                    previous_execution_task is not None
+                                    and not previous_execution_task.done()
+                                )
+                                or previous_response_bridge is not None
+                            )
+                        )
 
                         tts_task = None
                         assistant_execution_task = None
@@ -1062,6 +1077,14 @@ async def voice_websocket(
                             tts_task=previous_tts_task,
                             response_bridge=previous_response_bridge,
                         )
+
+                        if had_active_response:
+                            await websocket.send_json(
+                                {
+                                    "type": "assistant.response.cancelled",
+                                    "turn_id": previous_response_turn_id,
+                                }
+                            )
 
                         if had_active_audio:
                             await websocket.send_json(
@@ -1379,6 +1402,7 @@ async def voice_websocket(
                                 tts_task is not None
                                 and not tts_task.done()
                             )
+                            previous_response_turn_id = response_turn_id
 
                             previous_tts_task = tts_task
                             previous_execution_task = (
@@ -1404,6 +1428,13 @@ async def voice_websocket(
                                 ),
                                 tts_task=previous_tts_task,
                                 response_bridge=previous_response_bridge,
+                            )
+
+                            await websocket.send_json(
+                                {
+                                    "type": "assistant.response.cancelled",
+                                    "turn_id": previous_response_turn_id,
+                                }
                             )
 
                             if had_active_audio:

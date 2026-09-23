@@ -679,8 +679,14 @@ def test_voice_websocket_barge_in_cancels_previous_response_and_accepts_new_turn
             }
         )
 
-        cancelled = websocket.receive_json()
-        assert cancelled == {
+        cancelled_response = websocket.receive_json()
+        assert cancelled_response == {
+            "type": "assistant.response.cancelled",
+            "turn_id": "turn-1",
+        }
+
+        cancelled_audio = websocket.receive_json()
+        assert cancelled_audio == {
             "type": "assistant.audio.cancelled",
         }
 
@@ -864,6 +870,12 @@ def test_voice_websocket_cancel_interrupts_in_flight_assistant_response(
                 "turn_id": "turn-1",
             }
         )
+
+        cancelled_response = websocket.receive_json()
+        assert cancelled_response == {
+            "type": "assistant.response.cancelled",
+            "turn_id": "turn-1",
+        }
 
         cancelled_audio = websocket.receive_json()
         assert cancelled_audio == {
