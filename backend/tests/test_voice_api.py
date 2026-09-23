@@ -2656,11 +2656,10 @@ def test_voice_websocket_exercises_real_stt_tts_orchestrators_end_to_end(
 
         started = websocket.receive_json()
 
-        assert started == {
-            "type": "turn.started",
-            "turn_id": "turn-e2e-1",
-            "stt_stream_id": "e2e-stt-stream-1",
-        }
+        assert started["type"] == "turn.started"
+        assert started["turn_id"] == "turn-e2e-1"
+        assert started["stt_stream_id"] == "e2e-stt-stream-1"
+        assert started["started_at"]
 
         websocket.send_bytes(b"input-audio")
 
