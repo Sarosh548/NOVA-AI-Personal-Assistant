@@ -489,6 +489,47 @@ async def _run_tts_output(
             pass
 
 
+async def _run_voice_session_lease_heartbeat(
+    *,
+    service: VoiceSessionLeaseService,
+    user_id: str,
+    session_id: str,
+    interval_seconds: int,
+    stop_event: asyncio.Event,
+    failure_event: asyncio.Event,
+    failure_state: dict[str, str],
+) -> None:
+    while True:
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=interval_seconds,
+            )
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            renewed = await asyncio.to_thread(
+                service.heartbeat,
+                user_id=user_id,
+                session_id=session_id,
+            )
+        except Exception:
+            failure_state["code"] = (
+                "voice_session_lease_unavailable"
+            )
+            failure_event.set()
+            return
+
+        if not renewed:
+            failure_state["code"] = (
+                "voice_session_lease_expired"
+            )
+            failure_event.set()
+            return
+
+
 async def _cancel_voice_response(
     *,
     assistant_execution_task: asyncio.Task[None] | None,
@@ -875,6 +916,11 @@ async def voice_websocket(
     auto_turn_events: asyncio.Queue[dict] = asyncio.Queue(maxsize=1)
     conversation_execution_service = None
     session = None
+    voice_session_lease_heartbeat_task: asyncio.Task[None] | None = None
+    voice_session_lease_failure_wait_task: asyncio.Task[bool] | None = None
+    voice_session_lease_failure_event = asyncio.Event()
+    voice_session_lease_stop_event = asyncio.Event()
+    voice_session_lease_failure_state: dict[str, str] = {}
 
     _validate_origin(
         websocket
@@ -894,7 +940,6 @@ async def voice_websocket(
         )
     )
     voice_session_lease_held = False
-    last_voice_session_lease_heartbeat = time.monotonic()
 
     await websocket.accept()
 
@@ -990,7 +1035,24 @@ async def voice_websocket(
             return
 
         voice_session_lease_held = True
-        last_voice_session_lease_heartbeat = time.monotonic()
+
+        voice_session_lease_heartbeat_task = asyncio.create_task(
+            _run_voice_session_lease_heartbeat(
+                service=voice_session_lease_service,
+                user_id=context.user.id,
+                session_id=session.session_id,
+                interval_seconds=(
+                    voice_settings
+                    .voice_session_lease_heartbeat_interval_seconds
+                ),
+                stop_event=voice_session_lease_stop_event,
+                failure_event=voice_session_lease_failure_event,
+                failure_state=voice_session_lease_failure_state,
+            )
+        )
+        voice_session_lease_failure_wait_task = asyncio.create_task(
+            voice_session_lease_failure_event.wait()
+        )
 
         log_voice_event(
             event="session_started",
@@ -1052,20 +1114,66 @@ async def voice_websocket(
                 session_remaining,
             )
 
+            receive_task = asyncio.create_task(
+                websocket.receive()
+            )
+            auto_turn_task = None
+
             if (
-                time.monotonic()
-                - last_voice_session_lease_heartbeat
-                >= (
-                    voice_settings
-                    .voice_session_lease_heartbeat_interval_seconds
-                )
+                session.active_turn is not None
+                and transcript_task is not None
+                and not transcript_task.done()
             ):
-                try:
-                    lease_renewed = voice_session_lease_service.heartbeat(
-                        user_id=context.user.id,
-                        session_id=session.session_id,
+                auto_turn_task = asyncio.create_task(
+                    auto_turn_events.get()
+                )
+
+            wait_tasks = [
+                receive_task,
+                voice_session_lease_failure_wait_task,
+            ]
+
+            if auto_turn_task is not None:
+                wait_tasks.append(auto_turn_task)
+
+            done, _pending = await asyncio.wait(
+                wait_tasks,
+                timeout=receive_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if (
+                voice_session_lease_failure_wait_task
+                in done
+            ):
+                failure_code = voice_session_lease_failure_state.get(
+                    "code"
+                )
+
+                if failure_code == (
+                    "voice_session_lease_expired"
+                ):
+                    voice_metrics.record_error(
+                        stage="session",
+                        code=failure_code,
                     )
-                except Exception:
+                    log_voice_event(
+                        event=failure_code,
+                        session_id=session.session_id,
+                        code=failure_code,
+                        recoverable=True,
+                    )
+                    await _send_error(
+                        websocket,
+                        code=failure_code,
+                        message="Voice session lease expired.",
+                        recoverable=True,
+                        recovery_action="reconnect",
+                    )
+                    await websocket.close(
+                        code=1013
+                    )
+                else:
                     voice_metrics.record_error(
                         stage="session",
                         code="voice_session_lease_unavailable",
@@ -1088,56 +1196,8 @@ async def voice_websocket(
                     await websocket.close(
                         code=status.WS_1011_INTERNAL_ERROR
                     )
-                    return
 
-                if not lease_renewed:
-                    voice_metrics.record_error(
-                        stage="session",
-                        code="voice_session_lease_expired",
-                    )
-                    log_voice_event(
-                        event="voice_session_lease_expired",
-                        session_id=session.session_id,
-                        code="voice_session_lease_expired",
-                        recoverable=True,
-                    )
-                    await _send_error(
-                        websocket,
-                        code="voice_session_lease_expired",
-                        message="Voice session lease expired.",
-                        recoverable=True,
-                        recovery_action="reconnect",
-                    )
-                    await websocket.close(
-                        code=1013
-                    )
-                    return
-
-                last_voice_session_lease_heartbeat = time.monotonic()
-
-            receive_task = asyncio.create_task(
-                websocket.receive()
-            )
-            auto_turn_task = None
-
-            if (
-                session.active_turn is not None
-                and transcript_task is not None
-                and not transcript_task.done()
-            ):
-                auto_turn_task = asyncio.create_task(
-                    auto_turn_events.get()
-                )
-
-            done, _pending = await asyncio.wait(
-                (
-                    [receive_task]
-                    if auto_turn_task is None
-                    else [receive_task, auto_turn_task]
-                ),
-                timeout=receive_timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+                return
 
             if not done:
                 for task in (
@@ -2113,6 +2173,30 @@ async def voice_websocket(
         return
 
     finally:
+        voice_session_lease_stop_event.set()
+
+        if voice_session_lease_heartbeat_task is not None:
+            if not voice_session_lease_heartbeat_task.done():
+                voice_session_lease_heartbeat_task.cancel()
+
+            try:
+                await voice_session_lease_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        if voice_session_lease_failure_wait_task is not None:
+            if not voice_session_lease_failure_wait_task.done():
+                voice_session_lease_failure_wait_task.cancel()
+
+            try:
+                await voice_session_lease_failure_wait_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
         previous_tts_task = tts_task
         previous_execution_task = assistant_execution_task
         previous_response_bridge = assistant_response_bridge

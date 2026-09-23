@@ -134,6 +134,9 @@ class FakeVoiceSessionLeaseService:
         lease_seconds,
     ):
         self.lease_seconds = lease_seconds
+        self.heartbeat_calls = 0
+        self.heartbeat_result = True
+        self.heartbeat_event = threading.Event()
         self.instances.append(self)
 
     def acquire(
@@ -169,6 +172,12 @@ class FakeVoiceSessionLeaseService:
         user_id,
         session_id,
     ):
+        self.heartbeat_calls += 1
+        self.heartbeat_event.set()
+
+        if not self.heartbeat_result:
+            return False
+
         return self.active_sessions.get(
             user_id
         ) == session_id
@@ -831,6 +840,103 @@ def test_voice_websocket_enforces_turn_start_rate_limit(
     )
 
 
+
+
+def test_voice_websocket_renews_session_lease_while_idle(
+    monkeypatch,
+):
+    import api.voice as voice_module
+
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    voice_settings = voice_module.get_voice_settings().model_copy(
+        update={
+            "voice_session_lease_heartbeat_interval_seconds": 0.01,
+        }
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_voice_settings",
+        lambda: voice_settings,
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        lease_service = (
+            FakeVoiceSessionLeaseService.instances[-1]
+        )
+
+        assert lease_service.heartbeat_event.wait(
+            timeout=1
+        )
+        assert lease_service.heartbeat_calls > 0
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        pong = websocket.receive_json()
+        assert pong["type"] == "session.pong"
+
+
+def test_voice_websocket_closes_when_session_lease_heartbeat_expires(
+    monkeypatch,
+):
+    import api.voice as voice_module
+
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    voice_settings = voice_module.get_voice_settings().model_copy(
+        update={
+            "voice_session_lease_heartbeat_interval_seconds": 0.01,
+        }
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_voice_settings",
+        lambda: voice_settings,
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        lease_service = (
+            FakeVoiceSessionLeaseService.instances[-1]
+        )
+        lease_service.heartbeat_result = False
+
+        error = websocket.receive_json()
+
+        assert error == {
+            "type": "error",
+            "code": "voice_session_lease_expired",
+            "message": "Voice session lease expired.",
+            "recoverable": True,
+            "recovery_action": "reconnect",
+        }
 
 
 def test_voice_websocket_limits_one_active_session_per_user(
