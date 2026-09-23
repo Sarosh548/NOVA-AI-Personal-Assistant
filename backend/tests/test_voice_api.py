@@ -10,13 +10,30 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from api.voice import router
+from api.voice import (
+    VoiceWebSocketSendError,
+    router,
+)
 from services.voice_stt_orchestrator import (
     VoiceSTTOrchestratorError,
 )
 from services.voice_tts_orchestrator import (
     VoiceTTSOrchestratorError,
 )
+
+
+class BlockingVoiceWebSocket:
+    def __init__(self):
+        self.closed_code = None
+
+    async def send_json(self, _payload):
+        await asyncio.sleep(1)
+
+    async def send_bytes(self, _payload):
+        await asyncio.sleep(1)
+
+    async def close(self, *, code):
+        self.closed_code = code
 
 
 class FakeVoiceConversationExecutionService:
@@ -236,6 +253,66 @@ class FakeVoiceRateLimitService:
             remaining=0,
             reset_after_seconds=17,
         )
+
+
+def test_websocket_json_send_fails_fast_on_deadline(monkeypatch):
+    import api.voice as voice_module
+
+    timeout_settings = voice_module.get_voice_settings().model_copy(
+        update={
+            "voice_websocket_send_timeout_seconds": 0.01,
+        }
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_voice_settings",
+        lambda: timeout_settings,
+    )
+
+    websocket = BlockingVoiceWebSocket()
+
+    with pytest.raises(
+        VoiceWebSocketSendError,
+        match="send deadline",
+    ):
+        asyncio.run(
+            voice_module._send_websocket_json(
+                websocket,
+                {"type": "test"},
+            )
+        )
+
+    assert websocket.closed_code == 1011
+
+
+def test_websocket_bytes_send_fails_fast_on_deadline(monkeypatch):
+    import api.voice as voice_module
+
+    timeout_settings = voice_module.get_voice_settings().model_copy(
+        update={
+            "voice_websocket_send_timeout_seconds": 0.01,
+        }
+    )
+    monkeypatch.setattr(
+        voice_module,
+        "get_voice_settings",
+        lambda: timeout_settings,
+    )
+
+    websocket = BlockingVoiceWebSocket()
+
+    with pytest.raises(
+        VoiceWebSocketSendError,
+        match="send deadline",
+    ):
+        asyncio.run(
+            voice_module._send_websocket_bytes(
+                websocket,
+                b"audio",
+            )
+        )
+
+    assert websocket.closed_code == 1011
 
 
 def _build_app() -> FastAPI:
