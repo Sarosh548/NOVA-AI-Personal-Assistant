@@ -11,6 +11,7 @@ from services.api_observability import (
     JsonLogFormatter,
     configure_api_logging,
     log_api_request,
+    log_voice_event,
 )
 
 
@@ -164,3 +165,42 @@ def test_observability_settings_are_environment_driven(
 
     assert settings.api_log_level == "DEBUG"
     assert settings.api_log_format == "text"
+
+
+def test_voice_lifecycle_log_contains_only_safe_operational_metadata(
+    caplog,
+):
+    with caplog.at_level(
+        logging.INFO,
+        logger="nova.voice",
+    ):
+        log_voice_event(
+            event="assistant_response_completed",
+            session_id="session-safe",
+            turn_id="turn-safe",
+            provider="elevenlabs",
+            code="ok",
+            recoverable=False,
+            duration_ms=-3.25,
+        )
+
+    record = next(
+        item
+        for item in caplog.records
+        if item.name == "nova.voice"
+        and item.getMessage()
+        == "Voice lifecycle event"
+    )
+
+    assert record.nova_context == {
+        "event": "assistant_response_completed",
+        "session_id": "session-safe",
+        "turn_id": "turn-safe",
+        "provider": "elevenlabs",
+        "code": "ok",
+        "recoverable": False,
+        "duration_ms": 0.0,
+    }
+    assert "user_id" not in record.nova_context
+    assert "transcript" not in record.nova_context
+    assert "access_token" not in record.nova_context

@@ -209,3 +209,61 @@ def log_api_exception(
             )
         },
     )
+
+def log_voice_event(
+    *,
+    event: str,
+    session_id: str,
+    turn_id: str | None = None,
+    provider: str | None = None,
+    code: str | None = None,
+    recoverable: bool | None = None,
+    duration_ms: float | None = None,
+) -> None:
+    """
+    Record a structured realtime voice lifecycle event.
+
+    Only safe operational metadata is accepted. User identifiers,
+    transcripts, authorization data, request bodies, provider secrets,
+    and provider payloads must never be passed here.
+    """
+
+    context: dict[str, Any] = {
+        "event": str(event).strip() or "unknown",
+        "session_id": str(session_id).strip() or "unknown",
+    }
+
+    if turn_id is not None:
+        context["turn_id"] = (
+            str(turn_id).strip() or "unknown"
+        )
+
+    if provider is not None:
+        context["provider"] = (
+            str(provider).strip() or "unknown"
+        )
+
+    if code is not None:
+        context["code"] = (
+            str(code).strip() or "unknown"
+        )
+
+    if recoverable is not None:
+        context["recoverable"] = bool(
+            recoverable
+        )
+
+    if duration_ms is not None:
+        context["duration_ms"] = round(
+            max(0.0, float(duration_ms)),
+            3,
+        )
+
+    logging.getLogger(
+        "nova.voice"
+    ).info(
+        "Voice lifecycle event",
+        extra={
+            "nova_context": context
+        },
+    )
