@@ -73,6 +73,9 @@ from services.voice_response_stream_bridge import (
 from services.voice_metrics import (
     voice_metrics,
 )
+from services.api_observability import (
+    log_voice_event,
+)
 from services.voice_session_service import (
     VoiceProtocolError,
     VoiceSessionService,
@@ -355,6 +358,8 @@ async def _run_tts_output(
     websocket: WebSocket,
     orchestrator: VoiceTTSOrchestrator,
     response_bridge: VoiceResponseStreamBridge,
+    session_id: str,
+    turn_id: str,
 ) -> None:
     timing_state: dict[str, float | bool | None] = {
         "first_text_sent_at": None,
@@ -409,6 +414,14 @@ async def _run_tts_output(
         voice_metrics.record_error(
             stage="tts",
             code="assistant_audio_failed",
+        )
+        log_voice_event(
+            event="assistant_audio_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            provider="elevenlabs",
+            code="assistant_audio_failed",
+            recoverable=True,
         )
 
         try:
@@ -541,6 +554,12 @@ async def _run_voice_assistant_execution(
             stage="llm",
             code="assistant_execution_failed",
         )
+        log_voice_event(
+            event="assistant_execution_failed",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            code="assistant_execution_failed",
+        )
 
         if response_bridge is not None:
             try:
@@ -578,6 +597,12 @@ async def _run_voice_assistant_execution(
     if response_payload.get("error"):
         voice_metrics.record_error(
             stage="llm",
+            code="assistant_execution_failed",
+        )
+        log_voice_event(
+            event="assistant_execution_failed",
+            session_id=session.session_id,
+            turn_id=turn_id,
             code="assistant_execution_failed",
         )
 
@@ -651,6 +676,18 @@ async def _run_voice_assistant_execution(
             time.monotonic()
             - turn_started_monotonic
         )
+
+    response_duration_ms = (
+        time.monotonic()
+        - response_started_monotonic
+    ) * 1000
+
+    log_voice_event(
+        event="assistant_response_completed",
+        session_id=session.session_id,
+        turn_id=turn_id,
+        duration_ms=response_duration_ms,
+    )
 
     if response_bridge is not None:
         await response_bridge.finish()
@@ -753,6 +790,14 @@ async def _relay_transcripts(
             stage="stt",
             code="stt_error",
         )
+        log_voice_event(
+            event="turn_failed",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            provider="deepgram",
+            code="stt_error",
+            recoverable=True,
+        )
 
         try:
             session_service.cancel_turn(
@@ -841,6 +886,10 @@ async def voice_websocket(
             session_service.create_session(
                 context.user.id
             )
+        )
+        log_voice_event(
+            event="session_started",
+            session_id=session.session_id,
         )
         stt_orchestrator = _build_voice_stt_orchestrator(
             voice_settings
@@ -1223,6 +1272,13 @@ async def voice_websocket(
                                 stage="stt",
                                 code="stt_start_failed",
                             )
+                            log_voice_event(
+                                event="turn_start_failed",
+                                session_id=session.session_id,
+                                turn_id=event["turn_id"],
+                                provider="deepgram",
+                                code="stt_start_failed",
+                            )
 
                             session_service.cancel_turn(
                                 session=session,
@@ -1240,6 +1296,12 @@ async def voice_websocket(
                         voice_metrics.record_provider_event(
                             provider="deepgram",
                             event="stream_started",
+                        )
+                        log_voice_event(
+                            event="turn_started",
+                            session_id=session.session_id,
+                            turn_id=event["turn_id"],
+                            provider="deepgram",
                         )
 
                         await websocket.send_json(
@@ -1415,6 +1477,12 @@ async def voice_websocket(
                                         provider="elevenlabs",
                                         event="stream_started",
                                     )
+                                    log_voice_event(
+                                        event="tts_stream_started",
+                                        session_id=session.session_id,
+                                        turn_id=turn_id,
+                                        provider="elevenlabs",
+                                    )
 
                                     await websocket.send_json(
                                         {
@@ -1458,6 +1526,8 @@ async def voice_websocket(
                                             response_bridge=(
                                                 assistant_response_bridge
                                             ),
+                                            session_id=session.session_id,
+                                            turn_id=turn_id,
                                         )
                                     )
                                 except (
@@ -1473,6 +1543,13 @@ async def voice_websocket(
                                     )
                                     voice_metrics.record_error(
                                         stage="tts",
+                                        code="assistant_audio_start_failed",
+                                    )
+                                    log_voice_event(
+                                        event="tts_stream_start_failed",
+                                        session_id=session.session_id,
+                                        turn_id=turn_id,
+                                        provider="elevenlabs",
                                         code="assistant_audio_start_failed",
                                     )
 
@@ -1578,6 +1655,12 @@ async def voice_websocket(
                                 response_bridge=previous_response_bridge,
                             )
 
+                            log_voice_event(
+                                event="assistant_response_cancelled",
+                                session_id=session.session_id,
+                                turn_id=previous_response_turn_id,
+                            )
+
                             await websocket.send_json(
                                 {
                                     "type": "assistant.response.cancelled",
@@ -1620,6 +1703,12 @@ async def voice_websocket(
                                 pass
 
                         transcript_task = None
+
+                        log_voice_event(
+                            event="turn_cancelled",
+                            session_id=session.session_id,
+                            turn_id=turn_id,
+                        )
 
                         await websocket.send_json(
                             event
@@ -1858,6 +1947,15 @@ async def voice_websocket(
                 pass
 
         if session is not None:
+            log_voice_event(
+                event="session_closed",
+                session_id=session.session_id,
+                turn_id=(
+                    session.active_turn.turn_id
+                    if session.active_turn is not None
+                    else assistant_turn_id
+                ),
+            )
             session_service.close_session(
                 session
             )
