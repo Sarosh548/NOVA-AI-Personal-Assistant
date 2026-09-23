@@ -84,6 +84,9 @@ from services.voice_stt_orchestrator import (
     VoiceSTTOrchestrator,
     VoiceSTTOrchestratorError,
 )
+from services.voice_session_lease_service import (
+    VoiceSessionLeaseService,
+)
 
 
 router = APIRouter(
@@ -884,6 +887,14 @@ async def voice_websocket(
     current_turn_started_monotonic: float | None = None
 
     voice_rate_limit_service = RateLimitService()
+    voice_session_lease_service = VoiceSessionLeaseService(
+        lease_seconds=(
+            voice_settings
+            .voice_session_lease_duration_seconds
+        )
+    )
+    voice_session_lease_held = False
+    last_voice_session_lease_heartbeat = time.monotonic()
 
     await websocket.accept()
 
@@ -919,6 +930,68 @@ async def voice_websocket(
                 context.user.id
             )
         )
+
+        try:
+            lease_decision = voice_session_lease_service.acquire(
+                user_id=context.user.id,
+                session_id=session.session_id,
+            )
+        except Exception:
+            voice_metrics.record_error(
+                stage="session",
+                code="voice_session_lease_unavailable",
+            )
+            log_voice_event(
+                event="voice_session_lease_unavailable",
+                session_id=session.session_id,
+                code="voice_session_lease_unavailable",
+                recoverable=True,
+            )
+            await _send_error(
+                websocket,
+                code="voice_session_lease_unavailable",
+                message=(
+                    "NOVA could not reserve the voice session."
+                ),
+                recoverable=True,
+                recovery_action="reconnect",
+            )
+            await websocket.close(
+                code=status.WS_1011_INTERNAL_ERROR
+            )
+            return
+
+        if not lease_decision.acquired:
+            voice_metrics.record_error(
+                stage="session",
+                code="voice_session_limit_exceeded",
+            )
+            log_voice_event(
+                event="voice_session_limit_exceeded",
+                session_id=session.session_id,
+                code="voice_session_limit_exceeded",
+                recoverable=True,
+            )
+            await _send_error(
+                websocket,
+                code="voice_session_limit_exceeded",
+                message=(
+                    "A voice session is already active for this user."
+                ),
+                recoverable=True,
+                recovery_action="retry_after_reset",
+                retry_after_seconds=(
+                    lease_decision.retry_after_seconds
+                ),
+            )
+            await websocket.close(
+                code=1013
+            )
+            return
+
+        voice_session_lease_held = True
+        last_voice_session_lease_heartbeat = time.monotonic()
+
         log_voice_event(
             event="session_started",
             session_id=session.session_id,
@@ -978,6 +1051,69 @@ async def voice_websocket(
                 .voice_session_idle_timeout_seconds,
                 session_remaining,
             )
+
+            if (
+                time.monotonic()
+                - last_voice_session_lease_heartbeat
+                >= (
+                    voice_settings
+                    .voice_session_lease_heartbeat_interval_seconds
+                )
+            ):
+                try:
+                    lease_renewed = voice_session_lease_service.heartbeat(
+                        user_id=context.user.id,
+                        session_id=session.session_id,
+                    )
+                except Exception:
+                    voice_metrics.record_error(
+                        stage="session",
+                        code="voice_session_lease_unavailable",
+                    )
+                    log_voice_event(
+                        event="voice_session_lease_unavailable",
+                        session_id=session.session_id,
+                        code="voice_session_lease_unavailable",
+                        recoverable=True,
+                    )
+                    await _send_error(
+                        websocket,
+                        code="voice_session_lease_unavailable",
+                        message=(
+                            "NOVA could not renew the voice session."
+                        ),
+                        recoverable=True,
+                        recovery_action="reconnect",
+                    )
+                    await websocket.close(
+                        code=status.WS_1011_INTERNAL_ERROR
+                    )
+                    return
+
+                if not lease_renewed:
+                    voice_metrics.record_error(
+                        stage="session",
+                        code="voice_session_lease_expired",
+                    )
+                    log_voice_event(
+                        event="voice_session_lease_expired",
+                        session_id=session.session_id,
+                        code="voice_session_lease_expired",
+                        recoverable=True,
+                    )
+                    await _send_error(
+                        websocket,
+                        code="voice_session_lease_expired",
+                        message="Voice session lease expired.",
+                        recoverable=True,
+                        recovery_action="reconnect",
+                    )
+                    await websocket.close(
+                        code=1013
+                    )
+                    return
+
+                last_voice_session_lease_heartbeat = time.monotonic()
 
             receive_task = asyncio.create_task(
                 websocket.receive()
@@ -2018,6 +2154,20 @@ async def voice_websocket(
                 await stt_orchestrator.close_session()
             except Exception:
                 pass
+
+        if (
+            session is not None
+            and voice_session_lease_held
+        ):
+            try:
+                voice_session_lease_service.release(
+                    user_id=context.user.id,
+                    session_id=session.session_id,
+                )
+            except Exception:
+                pass
+
+            voice_session_lease_held = False
 
         if session is not None:
             log_voice_event(

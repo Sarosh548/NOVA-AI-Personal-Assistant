@@ -18,6 +18,7 @@ from models.user_notification_preferences import (
 from models.auth_identity import AuthIdentity
 from models.user_session import UserSession
 from models.refresh_token_history import RefreshTokenHistory
+from models.voice_session_lease import VoiceSessionLease
 
 
 def initialize_database() -> None:

@@ -123,6 +123,72 @@ class RecordingVoiceMetrics:
         self.errors.append((stage, code))
 
 
+
+class FakeVoiceSessionLeaseService:
+    active_sessions = {}
+    instances = []
+
+    def __init__(
+        self,
+        *,
+        lease_seconds,
+    ):
+        self.lease_seconds = lease_seconds
+        self.instances.append(self)
+
+    def acquire(
+        self,
+        *,
+        user_id,
+        session_id,
+    ):
+        from types import SimpleNamespace
+
+        active_session_id = self.active_sessions.get(
+            user_id
+        )
+
+        if active_session_id is not None:
+            return SimpleNamespace(
+                acquired=False,
+                lease_until=None,
+                retry_after_seconds=23,
+            )
+
+        self.active_sessions[user_id] = session_id
+
+        return SimpleNamespace(
+            acquired=True,
+            lease_until=None,
+            retry_after_seconds=0,
+        )
+
+    def heartbeat(
+        self,
+        *,
+        user_id,
+        session_id,
+    ):
+        return self.active_sessions.get(
+            user_id
+        ) == session_id
+
+    def release(
+        self,
+        *,
+        user_id,
+        session_id,
+    ):
+        if (
+            self.active_sessions.get(user_id)
+            != session_id
+        ):
+            return False
+
+        del self.active_sessions[user_id]
+        return True
+
+
 class FakeVoiceRateLimitService:
     instances = []
 
@@ -420,6 +486,15 @@ def _patch_auth(
         voice_module,
         "_resolve_authenticated_context",
         lambda _token: _fake_context(),
+    )
+
+    FakeVoiceSessionLeaseService.instances = []
+    FakeVoiceSessionLeaseService.active_sessions = {}
+
+    monkeypatch.setattr(
+        voice_module,
+        "VoiceSessionLeaseService",
+        FakeVoiceSessionLeaseService,
     )
 
     return voice_module
@@ -754,6 +829,61 @@ def test_voice_websocket_enforces_turn_start_rate_limit(
     assert FakeVoiceSTTOrchestrator.instances[0].turn_id == (
         "turn-rate-1"
     )
+
+
+
+
+def test_voice_websocket_limits_one_active_session_per_user(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    import api.voice as voice_module
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as first:
+        first_ready = first.receive_json()
+
+        assert first_ready["type"] == "session.ready"
+
+        with client.websocket_connect(
+            "/voice/ws",
+            headers={
+                "Authorization": "Bearer test-token",
+            },
+        ) as second:
+            error = second.receive_json()
+
+            assert error == {
+                "type": "error",
+                "code": "voice_session_limit_exceeded",
+                "message": (
+                    "A voice session is already active "
+                    "for this user."
+                ),
+                "recoverable": True,
+                "recovery_action": "retry_after_reset",
+                "retry_after_seconds": 23,
+            }
+
+        first.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        pong = first.receive_json()
+
+        assert pong["type"] == "session.pong"
 
 
 def test_voice_websocket_supports_browser_style_authentication(
