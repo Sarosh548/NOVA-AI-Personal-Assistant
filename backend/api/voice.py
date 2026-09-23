@@ -394,10 +394,18 @@ async def _run_tts_output(
         TTSRuntimeError,
         ValueError,
     ) as exc:
-        voice_metrics.record_provider_event(
-            provider="elevenlabs",
-            event="stream_failed",
-        )
+        if isinstance(
+            exc,
+            (
+                VoiceTTSOrchestratorError,
+                TTSRuntimeError,
+            ),
+        ):
+            voice_metrics.record_provider_event(
+                provider="elevenlabs",
+                event="stream_failed",
+            )
+
         voice_metrics.record_error(
             stage="tts",
             code="assistant_audio_failed",
