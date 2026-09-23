@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+__pycache__
+.pytest_cache
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+.env
+.env.*
+backend/tests
+backend/manual_intent_live.py
+backend/test_openai.py
