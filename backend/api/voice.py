@@ -859,14 +859,22 @@ async def voice_websocket(
             if receive_task in done:
                 message = receive_task.result()
 
-                if auto_turn_task is not None and auto_turn_task in done:
-                    auto_turn_event = auto_turn_task.result()
-                    try:
-                        auto_turn_events.put_nowait(
-                            auto_turn_event
-                        )
-                    except asyncio.QueueFull:
-                        pass
+                if auto_turn_task is not None:
+                    if auto_turn_task.done():
+                        auto_turn_event = auto_turn_task.result()
+                        try:
+                            auto_turn_events.put_nowait(
+                                auto_turn_event
+                            )
+                        except asyncio.QueueFull:
+                            pass
+                    else:
+                        auto_turn_task.cancel()
+
+                        try:
+                            await auto_turn_task
+                        except asyncio.CancelledError:
+                            pass
             else:
                 auto_turn_event = auto_turn_task.result()
 
