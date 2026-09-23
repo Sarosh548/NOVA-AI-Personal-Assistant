@@ -149,6 +149,34 @@ async def test_bridge_finish_preserves_buffered_deltas() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bridge_finish_bounds_terminal_enqueue_when_queue_is_full() -> None:
+    bridge = VoiceResponseStreamBridge(
+        loop=asyncio.get_running_loop(),
+        max_queue_items=1,
+        enqueue_timeout_seconds=0.05,
+    )
+
+    await asyncio.to_thread(
+        bridge.on_delta,
+        "buffered",
+    )
+
+    await bridge.finish()
+
+    received: list[str] = []
+
+    with pytest.raises(
+        VoiceResponseStreamBridgeError,
+        match="terminal delivery deadline",
+    ):
+        async for delta in bridge.text_deltas():
+            received.append(delta)
+
+    assert received == []
+
+
+
+@pytest.mark.asyncio
 async def test_bridge_abort_terminates_consumer() -> None:
     bridge = VoiceResponseStreamBridge(
         loop=asyncio.get_running_loop(),

@@ -205,7 +205,7 @@ class VoiceResponseStreamBridge:
 
             self._terminal_enqueued = True
 
-        await self._queue.put(
+        await self._enqueue_terminal(
             _BridgeTerminal()
         )
 
@@ -246,7 +246,7 @@ class VoiceResponseStreamBridge:
         self._drain_queue()
 
         if enqueue_terminal:
-            await self._queue.put(
+            await self._enqueue_terminal(
                 _BridgeTerminal(
                     error_message=failure_message
                 )
@@ -307,11 +307,47 @@ class VoiceResponseStreamBridge:
 
         self._drain_queue()
 
-        await self._queue.put(
+        await self._enqueue_terminal(
             _BridgeTerminal(
                 error_message=failure_message
             )
         )
+
+    async def _enqueue_terminal(
+        self,
+        terminal: _BridgeTerminal,
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                self._queue.put(terminal),
+                timeout=self._enqueue_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            message = (
+                "Response stream terminal delivery deadline was exceeded."
+            )
+
+            with self._state_lock:
+                if self._failure_message is None:
+                    self._failure_message = message
+
+                failure_message = (
+                    self._failure_message
+                )
+                self._closed = True
+                self._terminal_enqueued = True
+
+            self._drain_queue()
+
+            try:
+                self._queue.put_nowait(
+                    _BridgeTerminal(
+                        error_message=failure_message
+                    )
+                )
+            except asyncio.QueueFull:
+                # Queue producers are closed before terminal recovery.
+                return
 
     def _mark_failed_from_thread(
         self,
