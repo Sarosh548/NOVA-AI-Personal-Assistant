@@ -1202,13 +1202,22 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
 
         error_message = None
         while error_message is None:
-            message = websocket.receive_json()
+            message = websocket.receive()
 
-            if message["type"] == "error":
-                error_message = message
-            elif message["type"] == "assistant.response":
+            if message.get("bytes") is not None:
                 continue
-            else:
+
+            text_data = message.get("text")
+            if text_data is None:
+                continue
+
+            payload = json.loads(text_data)
+
+            if payload["type"] == "error":
+                error_message = payload
+                continue
+
+            if payload["type"] == "assistant.response":
                 continue
 
         assert error_message["code"] == "assistant_audio_failed"
