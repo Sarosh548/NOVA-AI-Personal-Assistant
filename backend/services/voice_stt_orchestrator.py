@@ -297,6 +297,8 @@ class VoiceSTTOrchestrator:
             if not turn.final_event.done():
                 turn.final_event.set_exception(exc)
 
+            self._drain_events(turn.events)
+
             try:
                 turn.events.put_nowait(exc)
             except asyncio.QueueFull:
