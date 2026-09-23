@@ -1181,6 +1181,9 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
         )
         websocket.receive_json()
 
+        fake_tts = FakeVoiceTTSOrchestrator.instances[0]
+        fake_tts.emit_error = True
+
         websocket.send_bytes(
             b"tts-failure-input"
         )
@@ -1198,7 +1201,6 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
         assert websocket.receive_json()["type"] == "assistant.audio.started"
 
         fake_tts = FakeVoiceTTSOrchestrator.instances[0]
-        fake_tts.emit_error = True
 
         error_message = None
         while error_message is None:
