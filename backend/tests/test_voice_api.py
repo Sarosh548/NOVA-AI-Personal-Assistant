@@ -91,6 +91,38 @@ class FakeVoiceConversationExecutionService:
         return dict(self.response_payload)
 
 
+class RecordingVoiceMetrics:
+    def __init__(self):
+        self.stt_finalization = []
+        self.llm_first_delta = []
+        self.tts_first_audio = []
+        self.turn_response = []
+        self.turn_total = []
+        self.provider_events = []
+        self.errors = []
+
+    def observe_stt_finalization(self, duration_seconds):
+        self.stt_finalization.append(duration_seconds)
+
+    def observe_llm_first_delta(self, duration_seconds):
+        self.llm_first_delta.append(duration_seconds)
+
+    def observe_tts_first_audio(self, duration_seconds):
+        self.tts_first_audio.append(duration_seconds)
+
+    def observe_turn_response(self, duration_seconds):
+        self.turn_response.append(duration_seconds)
+
+    def observe_turn_total(self, duration_seconds):
+        self.turn_total.append(duration_seconds)
+
+    def record_provider_event(self, *, provider, event):
+        self.provider_events.append((provider, event))
+
+    def record_error(self, *, stage, code):
+        self.errors.append((stage, code))
+
+
 def _build_app() -> FastAPI:
     app = FastAPI()
     app.state.conversation_execution_service = (
@@ -1686,3 +1718,49 @@ def test_voice_websocket_audio_output_failure_does_not_break_session(
         pong = websocket.receive_json()
         assert pong["type"] == "session.pong"
 
+
+
+def test_voice_websocket_records_performance_metrics(monkeypatch):
+    voice_module = _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    metrics = RecordingVoiceMetrics()
+    monkeypatch.setattr(voice_module, "voice_metrics", metrics)
+
+    client = TestClient(_build_app())
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={"Authorization": "Bearer test-token"},
+    ) as websocket:
+        websocket.receive_json()
+        websocket.send_json({"type": "turn.start", "turn_id": "turn-metrics"})
+        websocket.receive_json()
+        websocket.send_bytes(b"input-audio")
+        websocket.receive_json()
+        websocket.send_json({"type": "turn.commit", "turn_id": "turn-metrics"})
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        seen_response = False
+        seen_audio_final = False
+        while not (seen_response and seen_audio_final):
+            message = websocket.receive()
+            if message.get("bytes") is not None:
+                continue
+            payload = json.loads(message["text"])
+            if payload["type"] == "assistant.response":
+                seen_response = True
+            if payload["type"] == "assistant.audio.final":
+                seen_audio_final = True
+
+    assert metrics.stt_finalization
+    assert metrics.llm_first_delta
+    assert metrics.tts_first_audio
+    assert metrics.turn_response
+    assert metrics.turn_total
+    assert ("deepgram", "stream_started") in metrics.provider_events
+    assert ("elevenlabs", "stream_started") in metrics.provider_events
