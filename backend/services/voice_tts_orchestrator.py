@@ -30,6 +30,7 @@ class _VoiceTTSTurn:
     ]
     relay_task: asyncio.Task[None] | None = None
     consumer_claimed: bool = False
+    cancelled: bool = False
 
 
 class VoiceTTSOrchestrator:
@@ -282,6 +283,8 @@ class VoiceTTSOrchestrator:
         self,
         turn: _VoiceTTSTurn,
     ) -> None:
+        turn.cancelled = True
+
         try:
             await self.runtime.cancel_turn(
                 session_id=turn.request.session_id,
