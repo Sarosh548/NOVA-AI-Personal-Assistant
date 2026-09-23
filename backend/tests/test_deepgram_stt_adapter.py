@@ -326,6 +326,28 @@ async def test_stream_sends_binary_audio():
 
 
 @pytest.mark.asyncio
+async def test_stream_reports_unexpected_provider_eof():
+    websocket = FakeDeepgramWebSocket()
+
+    stream = DeepgramSTTStream(
+        websocket=websocket,
+        request=_request(),
+        settings=_settings(),
+    )
+
+    await websocket.incoming.put(None)
+
+    with pytest.raises(
+        STTAdapterError,
+        match="connection closed unexpectedly",
+    ):
+        async for _event in stream.events():
+            pass
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
 async def test_stream_finish_sends_finalize_message():
     websocket = FakeDeepgramWebSocket()
 

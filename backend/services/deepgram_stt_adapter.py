@@ -313,6 +313,14 @@ class DeepgramSTTStream(STTStream):
                     )
                     return
 
+            if not self._cancelled and not self._closed:
+                await self._events.put(
+                    STTAdapterError(
+                        "Deepgram STT connection closed unexpectedly."
+                    )
+                )
+                return
+
         except asyncio.CancelledError:
             raise
         except ConnectionClosed as exc:
