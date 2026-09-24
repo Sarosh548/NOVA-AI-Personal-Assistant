@@ -51,27 +51,41 @@ def _tts_provider_settings() -> TTSProviderSettings:
     )
 
 
-def _production_settings() -> Settings:
-    return Settings(
-        auth_jwt_secret_key=(
+def _production_settings(
+    **overrides,
+) -> Settings:
+    values = {
+        "auth_jwt_secret_key": (
             "production-secret-value-that-is"
             "-longer-than-thirty-two-characters"
         ),
-        integration_token_encryption_key=(
+        "integration_token_encryption_key": (
             "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
         ),
-        notification_default_channel="webhook",
-        notification_webhook_url=(
+        "notification_default_channel": "webhook",
+        "notification_webhook_url": (
             "https://notify.example.com/nova"
         ),
-        calendar_google_client_id="google-production-client",
-        calendar_google_client_secret="google-production-secret",
-        calendar_google_redirect_uri=(
+        "calendar_google_client_id": "google-production-client",
+        "calendar_google_client_secret": "google-production-secret",
+        "calendar_google_redirect_uri": (
             "https://api.example.com/integrations/google/calendar/callback"
         ),
-        calendar_google_scopes=(
+        "calendar_google_scopes": (
             "https://www.googleapis.com/auth/calendar.events"
         ),
+    }
+    values.update(overrides)
+
+    return Settings(
+        auth_jwt_secret_key=values["auth_jwt_secret_key"],
+        integration_token_encryption_key=values["integration_token_encryption_key"],
+        notification_default_channel=values["notification_default_channel"],
+        notification_webhook_url=values["notification_webhook_url"],
+        calendar_google_client_id=values["calendar_google_client_id"],
+        calendar_google_client_secret=values["calendar_google_client_secret"],
+        calendar_google_redirect_uri=values["calendar_google_redirect_uri"],
+        calendar_google_scopes=values["calendar_google_scopes"],
     )
 
 
