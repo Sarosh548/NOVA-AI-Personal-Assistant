@@ -2760,3 +2760,99 @@ def test_voice_websocket_exercises_real_stt_tts_orchestrators_end_to_end(
         "Sure,",
         "done.",
     ]
+
+
+
+def test_voice_websocket_preserves_web_sources(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    app = _build_app()
+
+    app.state.conversation_execution_service.response_payload[
+        "web_sources"
+    ] = [
+        {
+            "label": "Web Source 1",
+            "title": "FastAPI Release",
+            "url": "https://example.com/fastapi",
+            "published_date": "2026-09-21",
+            "score": 0.98,
+        }
+    ]
+
+    client = TestClient(app)
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-web-sources",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(
+            b"web-search-input"
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-web-sources",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == (
+            "transcript.final"
+        )
+        assert websocket.receive_json()["type"] == (
+            "turn.committed"
+        )
+        assert websocket.receive_json()["type"] == (
+            "assistant.audio.started"
+        )
+
+        response_message = None
+        audio_final_seen = False
+
+        while not (
+            response_message is not None
+            and audio_final_seen
+        ):
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(
+                message["text"]
+            )
+
+            if payload["type"] == "assistant.response":
+                response_message = payload
+
+            elif payload["type"] == "assistant.audio.final":
+                audio_final_seen = True
+
+        assert response_message is not None
+        assert response_message["web_sources"] == [
+            {
+                "label": "Web Source 1",
+                "title": "FastAPI Release",
+                "url": "https://example.com/fastapi",
+                "published_date": "2026-09-21",
+                "score": 0.98,
+            }
+        ]
