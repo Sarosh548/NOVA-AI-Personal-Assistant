@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import (
     APIRouter,
     Depends,
+    Header,
     HTTPException,
     Query,
     Response,
@@ -30,6 +31,10 @@ from services.google_calendar_service import (
     GoogleCalendarAPIError,
     GoogleCalendarService,
 )
+from services.idempotency_service import IdempotencyService
+
+
+idempotency_service = IdempotencyService()
 
 
 router = APIRouter(
@@ -339,15 +344,80 @@ def create_calendar_event(
     send_updates: CalendarSendUpdates = Query(
         default="all",
     ),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
 ) -> dict:
+    event_payload = _event_payload(
+        request
+    )
+
+    claim = None
+
+    if idempotency_key is not None:
+        request_hash = (
+            IdempotencyService.build_request_hash(
+                {
+                    "calendar_id": calendar_id,
+                    "send_updates": send_updates,
+                    "event": event_payload,
+                }
+            )
+        )
+
+        try:
+            claim = idempotency_service.claim_or_replay(
+                user_id=current_user_id,
+                endpoint=(
+                    "/integrations/google/calendar/events"
+                ),
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        if claim["status"] == "conflict":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Idempotency-Key was already used "
+                    "for a different request."
+                ),
+            )
+
+        if claim["status"] == "in_progress":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This request is already being processed."
+                ),
+                headers={
+                    "Retry-After": "1",
+                },
+            )
+
+        if claim["status"] == "replay":
+            return claim["response_body"]
+
     try:
-        return calendar_service.create_event(
-            user_id=current_user_id,
-            calendar_id=calendar_id,
-            event=_event_payload(
-                request
-            ),
-            send_updates=send_updates,
+        create_kwargs = {
+            "user_id": current_user_id,
+            "calendar_id": calendar_id,
+            "event": event_payload,
+            "send_updates": send_updates,
+        }
+
+        if idempotency_key is not None:
+            create_kwargs["idempotency_key"] = idempotency_key
+
+        response_payload = calendar_service.create_event(
+            **create_kwargs
         )
 
     except (
@@ -355,9 +425,32 @@ def create_calendar_event(
         ValueError,
         TypeError,
     ) as exc:
+        if claim is not None and claim.get("claim_token"):
+            try:
+                idempotency_service.fail(
+                    record_id=claim["record_id"],
+                    claim_token=claim["claim_token"],
+                    error="Calendar event creation failed.",
+                )
+            except Exception:
+                pass
+
         _raise_calendar_error(
             exc
         )
+
+    if claim is not None and claim.get("claim_token"):
+        try:
+            idempotency_service.complete(
+                record_id=claim["record_id"],
+                claim_token=claim["claim_token"],
+                response_status=status.HTTP_201_CREATED,
+                response_body=response_payload,
+            )
+        except Exception:
+            pass
+
+    return response_payload
 
 
 @router.get(
