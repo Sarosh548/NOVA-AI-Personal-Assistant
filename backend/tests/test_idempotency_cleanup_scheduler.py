@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 from models.idempotency_record import (
     IdempotencyRecord,
 )
+from services.idempotency_cleanup_scheduler import (
+    IdempotencyCleanupScheduler,
+)
 from services.idempotency_service import (
     IdempotencyService,
 )
@@ -272,3 +275,76 @@ def test_purge_expired_records_normalizes_timezone_aware_now():
         teardown_runtime(
             db_engine
         )
+
+
+
+class FakeIdempotencyService:
+    def __init__(self):
+        self.calls = []
+
+    def purge_expired_records(
+        self,
+        *,
+        limit,
+    ):
+        self.calls.append(limit)
+        return 3
+
+
+@pytest.mark.asyncio
+async def test_cleanup_scheduler_processes_one_batch():
+    fake = FakeIdempotencyService()
+
+    scheduler = IdempotencyCleanupScheduler(
+        interval_seconds=10,
+        idempotency_service=fake,
+        batch_size=25,
+    )
+
+    assert await scheduler.process_expired_records() == 3
+    assert fake.calls == [25]
+
+
+def test_cleanup_scheduler_rejects_invalid_configuration():
+    with pytest.raises(
+        ValueError,
+        match="interval_seconds",
+    ):
+        IdempotencyCleanupScheduler(
+            interval_seconds=9
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="batch_size",
+    ):
+        IdempotencyCleanupScheduler(
+            interval_seconds=10,
+            batch_size=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_scheduler_stops_after_one_cycle(
+    monkeypatch,
+):
+    fake = FakeIdempotencyService()
+
+    scheduler = IdempotencyCleanupScheduler(
+        interval_seconds=10,
+        idempotency_service=fake,
+        batch_size=25,
+    )
+
+    async def stop_sleep(_seconds):
+        scheduler.stop()
+
+    monkeypatch.setattr(
+        "services.idempotency_cleanup_scheduler.asyncio.sleep",
+        stop_sleep,
+    )
+
+    await scheduler.run()
+
+    assert fake.calls == [25]
+    assert scheduler._running is False
