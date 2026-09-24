@@ -590,6 +590,7 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
         backoff_waits.append(timeout)
         awaitable.close()
         raise asyncio.TimeoutError
+        raise asyncio.TimeoutError
 
     scheduler.process_due_workflows = flaky_cycle
 
@@ -635,6 +636,7 @@ async def test_scheduler_cycle_backoff_caps_and_resets_after_success(monkeypatch
     async def fake_wait_for(awaitable, timeout):
         backoff_waits.append(timeout)
         awaitable.close()
+        raise asyncio.TimeoutError
 
     scheduler.process_due_workflows = flaky_cycle
 
