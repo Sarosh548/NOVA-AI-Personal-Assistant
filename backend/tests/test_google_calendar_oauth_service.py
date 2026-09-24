@@ -635,3 +635,214 @@ def test_disconnect_is_user_scoped_and_removes_connection(
         teardown_runtime(
             engine
         )
+
+
+def test_token_refresh_lease_allows_only_one_claim():
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        from sqlalchemy.orm import Session
+
+        import sqlalchemy as sa
+
+        with Session(
+            engine
+        ) as session:
+            session.execute(
+                sa.update(
+                    CalendarConnection
+                )
+                .where(
+                    CalendarConnection.user_id
+                    == "user-001"
+                )
+                .values(
+                    encrypted_access_token=(
+                        service.encryption_service.encrypt(
+                            "expired-access"
+                        )
+                    ),
+                    token_expires_at=(
+                        service._utc_now_naive()
+                        - timedelta(
+                            seconds=120
+                        )
+                    ),
+                )
+            )
+            session.commit()
+
+        monkeypatch = None
+
+        claim_one = service._claim_token_refresh(
+            user_id="user-001"
+        )
+        claim_two = service._claim_token_refresh(
+            user_id="user-001"
+        )
+
+        assert claim_one is None or isinstance(
+            claim_one,
+            dict,
+        )
+
+        assert claim_one is not None
+        assert claim_two is None
+
+        assert service._release_token_refresh(
+            user_id="user-001",
+            claim_token=claim_one["claim_token"],
+        ) is True
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_successful_token_refresh_clears_refresh_lease(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "expired-access",
+                "refresh_token": "stable-refresh",
+                "expires_in": 1,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_refresh_access_token",
+            lambda refresh_token: {
+                "access_token": "refreshed-access",
+                "expires_in": 3600,
+            },
+        )
+
+        assert service.get_valid_access_token(
+            user_id="user-001"
+        ) == "refreshed-access"
+
+        from sqlalchemy.orm import Session
+
+        with Session(
+            engine
+        ) as session:
+            connection = session.query(
+                CalendarConnection
+            ).one()
+
+            assert (
+                connection.token_refresh_claim_token
+                is None
+            )
+            assert (
+                connection.token_refresh_lease_until
+                is None
+            )
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_failed_token_refresh_releases_refresh_lease(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "expired-access",
+                "refresh_token": "stable-refresh",
+                "expires_in": 1,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
+        )
+
+        def fail_refresh(
+            refresh_token,
+        ):
+            raise ValueError(
+                "refresh failed"
+            )
+
+        monkeypatch.setattr(
+            service,
+            "_refresh_access_token",
+            fail_refresh,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="refresh failed",
+        ):
+            service.get_valid_access_token(
+                user_id="user-001"
+            )
+
+        from sqlalchemy.orm import Session
+
+        with Session(
+            engine
+        ) as session:
+            connection = session.query(
+                CalendarConnection
+            ).one()
+
+            assert (
+                connection.token_refresh_claim_token
+                is None
+            )
+            assert (
+                connection.token_refresh_lease_until
+                is None
+            )
+
+    finally:
+        teardown_runtime(
+            engine
+        )
