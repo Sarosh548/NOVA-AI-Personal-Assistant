@@ -316,11 +316,7 @@ idempotency_cleanup_scheduler = (
 notification_delivery_cleanup_scheduler = (
     NotificationDeliveryCleanupScheduler(
         interval_seconds=300,
-        retention_seconds=(
-            NotificationDeliveryCleanupScheduler.__init__.__defaults__[1]
-            if False
-            else 30 * 24 * 60 * 60
-        ),
+        retention_seconds=30 * 24 * 60 * 60,
         batch_size=500,
     )
 )
