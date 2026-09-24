@@ -311,6 +311,66 @@ def validate_runtime_configuration(
             "Production requires DATABASE_URL."
         )
 
+    notification_channel = str(
+        active_settings.notification_default_channel
+    ).strip().lower()
+
+    if notification_channel == "console":
+        raise ProductionConfigurationError(
+            "Production requires an external notification channel; "
+            "console is development-only."
+        )
+
+    if notification_channel == "webhook":
+        webhook_url = str(
+            active_settings.notification_webhook_url
+            or ""
+        ).strip()
+
+        if not webhook_url:
+            raise ProductionConfigurationError(
+                "Production notification webhook requires "
+                "NOTIFICATION_WEBHOOK_URL."
+            )
+
+        if not webhook_url.lower().startswith("https://"):
+            raise ProductionConfigurationError(
+                "Production notification webhook requires an HTTPS URL."
+            )
+
+    elif notification_channel == "email":
+        smtp_host = str(
+            active_settings.notification_smtp_host
+            or ""
+        ).strip()
+
+        smtp_from = str(
+            active_settings.notification_email_from_address
+            or ""
+        ).strip()
+
+        if not smtp_host or not smtp_from:
+            raise ProductionConfigurationError(
+                "Production email notifications require "
+                "NOTIFICATION_SMTP_HOST and "
+                "NOTIFICATION_EMAIL_FROM_ADDRESS."
+            )
+
+        if (
+            not active_settings.notification_smtp_starttls
+            and not active_settings.notification_smtp_use_ssl
+        ):
+            raise ProductionConfigurationError(
+                "Production email notifications require "
+                "STARTTLS or SSL."
+            )
+
+    else:
+        raise ProductionConfigurationError(
+            "Production notification channel must be "
+            "'email' or 'webhook'."
+        )
+
     if (
         not active_rate_limit_settings
         .api_rate_limit_enabled
