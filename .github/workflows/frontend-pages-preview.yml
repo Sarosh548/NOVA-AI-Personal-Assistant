@@ -1,5 +1,7 @@
 name: NOVA Frontend Pages Preview
 
+# Temporary public preview for frontend foundation review.
+
 on:
   push:
     branches:
