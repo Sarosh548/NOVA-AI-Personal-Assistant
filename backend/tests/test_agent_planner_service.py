@@ -58,6 +58,13 @@ def available_tools():
                 "update",
             ],
         },
+        {
+            "name": "web",
+            "description": "Search live web information.",
+            "actions": [
+                "search",
+            ],
+        },
     ]
 
 
@@ -341,7 +348,77 @@ def test_agent_planner_includes_tools_and_message_in_prompt():
         llm.received_instructions
     )
 
+    assert '"name": "web"' in (
+        llm.received_instructions
+    )
+
     assert (
         llm.received_user_input
         == "Create a task to learn LangGraph."
     )
+
+
+def test_agent_planner_creates_valid_web_research_step():
+    llm = FakeLLMService(
+        response="""
+{
+  "requires_tool": true,
+  "steps": [
+    {
+      "step_id": "step-1",
+      "tool": "web",
+      "action": "search",
+      "data": {
+        "web_action": "search",
+        "web_topic": "news",
+        "web_time_range": "day",
+        "query": "today's AI news headlines",
+        "max_results": "5"
+      },
+      "depends_on": []
+    },
+    {
+      "step_id": "step-2",
+      "tool": "task",
+      "action": "create",
+      "data": {
+        "task": "Review today's AI news"
+      },
+      "depends_on": ["step-1"]
+    }
+  ]
+}
+""",
+    )
+
+    service = AgentPlannerService(
+        llm_service=llm,
+    )
+
+    result = service.create_plan(
+        user_message=(
+            "Research today's AI news and create a task "
+            "to review it."
+        ),
+        understanding={
+            "intent": "planning",
+            "requires_tool": True,
+        },
+        history=[],
+        available_tools=available_tools(),
+    )
+
+    assert result.requires_tool is True
+    assert len(result.steps) == 2
+
+    web_step = result.steps[0]
+
+    assert web_step.tool == "web"
+    assert web_step.action == "search"
+    assert web_step.data["query"] == "today's AI news headlines"
+    assert web_step.data["topic"] == "news"
+    assert web_step.data["time_range"] == "day"
+    assert web_step.data["web_topic"] == "news"
+    assert web_step.data["web_time_range"] == "day"
+    assert web_step.data["max_results"] == 5
+    assert web_step.data["web_action"] == "search"
