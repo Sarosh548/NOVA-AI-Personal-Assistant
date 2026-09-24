@@ -10,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,21 @@ from models.oauth_state import OAuthState
 from services.token_encryption_service import (
     TokenEncryptionService,
 )
+
+
+class GoogleOAuthTokenError(ValueError):
+    """OAuth token endpoint failure with a machine-readable error code."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+    ):
+        super().__init__(
+            message
+        )
+        self.error_code = error_code
 
 
 class GoogleCalendarOAuthService:
@@ -596,6 +611,26 @@ class GoogleCalendarOAuthService:
 
                 return access_token
 
+            except GoogleOAuthTokenError as exc:
+                if exc.error_code == "invalid_grant":
+                    invalidated = (
+                        self._invalidate_connection_after_invalid_grant(
+                            user_id=normalized_user_id,
+                            claim_token=claim_token,
+                        )
+                    )
+
+                    if invalidated:
+                        raise ValueError(
+                            "Google access token refresh failed."
+                        ) from exc
+
+                self._release_token_refresh(
+                    user_id=normalized_user_id,
+                    claim_token=claim_token,
+                )
+                raise
+
             except Exception:
                 self._release_token_refresh(
                     user_id=normalized_user_id,
@@ -718,6 +753,35 @@ class GoogleCalendarOAuthService:
                     token_refresh_claim_token=None,
                     token_refresh_lease_until=None,
                     updated_at=now,
+                )
+            )
+
+            if result.rowcount != 1:
+                session.rollback()
+                return False
+
+            session.commit()
+            return True
+
+    def _invalidate_connection_after_invalid_grant(
+        self,
+        *,
+        user_id: str,
+        claim_token: str,
+    ) -> bool:
+        with Session(
+            self.engine
+        ) as session:
+            result = session.execute(
+                delete(
+                    CalendarConnection
+                ).where(
+                    CalendarConnection.user_id
+                    == user_id,
+                    CalendarConnection.provider
+                    == self.PROVIDER,
+                    CalendarConnection.token_refresh_claim_token
+                    == claim_token,
                 )
             )
 
@@ -881,8 +945,25 @@ class GoogleCalendarOAuthService:
             ) as response:
                 raw_body = response.read()
 
+        except HTTPError as exc:
+            raw_error_body = exc.read()
+            error_code = (
+                self._extract_oauth_error_code(
+                    raw_error_body
+                )
+            )
+
+            if error_code is not None:
+                raise GoogleOAuthTokenError(
+                    failure_message,
+                    error_code=error_code,
+                ) from exc
+
+            raise ValueError(
+                failure_message
+            ) from exc
+
         except (
-            HTTPError,
             URLError,
             OSError,
         ) as exc:
@@ -913,11 +994,56 @@ class GoogleCalendarOAuthService:
         if body.get(
             "error"
         ):
-            raise ValueError(
-                failure_message
+            error_code = body.get(
+                "error"
+            )
+
+            raise GoogleOAuthTokenError(
+                failure_message,
+                error_code=(
+                    error_code
+                    if isinstance(
+                        error_code,
+                        str,
+                    )
+                    else None
+                ),
             )
 
         return body
+
+    @staticmethod
+    def _extract_oauth_error_code(
+        raw_body: bytes,
+    ) -> str | None:
+        try:
+            body = json.loads(
+                raw_body.decode("utf-8")
+            )
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ):
+            return None
+
+        if not isinstance(
+            body,
+            dict,
+        ):
+            return None
+
+        error_code = body.get(
+            "error"
+        )
+
+        if not isinstance(
+            error_code,
+            str,
+        ):
+            return None
+
+        normalized = error_code.strip()
+        return normalized or None
 
     # =====================================================
     # VALIDATION / HELPERS
