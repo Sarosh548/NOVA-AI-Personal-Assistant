@@ -147,16 +147,29 @@ class GoogleCalendarToolService:
             )
 
         if action == "create":
+            create_kwargs = {
+                "user_id": user_id,
+                "event": self._require_event(
+                    data.get("event")
+                ),
+                "calendar_id": calendar_id,
+                "send_updates": self._send_updates(
+                    data
+                ),
+            }
+
+            idempotency_key = data.get(
+                "idempotency_key"
+            )
+
+            if idempotency_key is not None:
+                create_kwargs["idempotency_key"] = (
+                    idempotency_key
+                )
+
             return self._normalize_event_result(
                 self.calendar_service.create_event(
-                    user_id=user_id,
-                    event=self._require_event(
-                        data.get("event")
-                    ),
-                    calendar_id=calendar_id,
-                    send_updates=self._send_updates(
-                        data
-                    ),
+                    **create_kwargs
                 )
             )
 
@@ -247,7 +260,6 @@ class GoogleCalendarToolService:
 
         if isinstance(value, str):
             normalized = value.strip()
-
             if not normalized:
                 return None
 
