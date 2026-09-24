@@ -201,9 +201,11 @@ def test_production_requires_database_url():
         match="DATABASE_URL",
     ):
         validate_runtime_configuration(
-            settings=_settings(),
+            settings=_production_settings(),
             security_settings=_security_settings(),
             rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
             environ=environ,
         )
 
