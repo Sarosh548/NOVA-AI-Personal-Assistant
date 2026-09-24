@@ -66,6 +66,7 @@ class IdempotencyCleanupScheduler:
         )
         self.batch_size = batch_size
         self._running = False
+        self._stop_event: asyncio.Event | None = None
 
     def _process_expired_records_sync(self) -> int:
         """
@@ -91,6 +92,7 @@ class IdempotencyCleanupScheduler:
             return
 
         self._running = True
+        self._stop_event = asyncio.Event()
 
         logger.info(
             "NOVA idempotency cleanup scheduler started "
@@ -145,12 +147,19 @@ class IdempotencyCleanupScheduler:
                 if not self._running:
                     break
 
-                await asyncio.sleep(
-                    cycle_backoff_seconds
-                )
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=cycle_backoff_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                break
 
         finally:
             self._running = False
+            self._stop_event = None
 
             logger.info(
                 "NOVA idempotency cleanup scheduler stopped."
@@ -158,6 +167,9 @@ class IdempotencyCleanupScheduler:
 
     def stop(self) -> None:
         """
-        Stop the scheduler loop after the current cycle.
+        Stop the scheduler loop and wake any pending backoff wait.
         """
         self._running = False
+
+        if self._stop_event is not None:
+            self._stop_event.set()

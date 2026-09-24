@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -336,15 +337,17 @@ async def test_cleanup_scheduler_stops_after_one_cycle(
         batch_size=25,
     )
 
-    async def stop_sleep(_seconds):
+    async def process_cycle():
         scheduler.stop()
+        return 3
 
     monkeypatch.setattr(
-        "services.idempotency_cleanup_scheduler.asyncio.sleep",
-        stop_sleep,
+        scheduler,
+        "process_expired_records",
+        process_cycle,
     )
 
     await scheduler.run()
 
-    assert fake.calls == [25]
+    assert fake.calls == []
     assert scheduler._running is False
