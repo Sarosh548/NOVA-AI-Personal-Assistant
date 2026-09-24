@@ -92,8 +92,10 @@ jobs:
           trap cleanup EXIT
 
           docker compose -f docker-compose.local.yml up -d --build
-          curl --fail --retry 30 --retry-delay 2 --retry-all-errors             http://127.0.0.1:8000/health/live
-          curl --fail --retry 30 --retry-delay 2 --retry-all-errors             http://127.0.0.1:8000/health/ready
+          curl --fail --retry 90 --retry-delay 2 --retry-all-errors \
+            http://127.0.0.1:8000/health/live
+          curl --fail --retry 15 --retry-delay 2 --retry-all-errors \
+            http://127.0.0.1:8000/health/ready
 
           backend_id="$(docker compose -f docker-compose.local.yml ps -q backend)"
           test -n "$backend_id"
