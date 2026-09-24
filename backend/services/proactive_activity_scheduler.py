@@ -237,7 +237,7 @@ class ProactiveActivityScheduler:
             for event in events
         )
 
-    async def process_daily_activity_digests(
+    def _process_daily_activity_digests_sync(
         self,
         *,
         now: datetime | None = None,
@@ -387,6 +387,19 @@ class ProactiveActivityScheduler:
                 )
 
         return results
+
+    async def process_daily_activity_digests(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Run the blocking digest cycle outside the asyncio event loop.
+        """
+        return await asyncio.to_thread(
+            self._process_daily_activity_digests_sync,
+            now=now,
+        )
 
     async def run(self) -> None:
         if self._running:
