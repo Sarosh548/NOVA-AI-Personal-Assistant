@@ -75,6 +75,9 @@ from services.execution_context import (
 from services.execution_service import (
     NOVAExecutionService,
 )
+from services.idempotency_cleanup_scheduler import (
+    IdempotencyCleanupScheduler,
+)
 from services.idempotency_service import (
     IdempotencyService,
 )
@@ -299,7 +302,19 @@ user_notification_preferences_service = (
 
 idempotency_service = IdempotencyService()
 
+idempotency_cleanup_scheduler = (
+    IdempotencyCleanupScheduler(
+        interval_seconds=300,
+        idempotency_service=idempotency_service,
+        batch_size=500,
+    )
+)
+
 scheduler_task: asyncio.Task | None = None
+
+idempotency_cleanup_scheduler_task: (
+    asyncio.Task | None
+) = None
 
 autonomous_workflow_scheduler_task: (
     asyncio.Task | None
@@ -480,6 +495,7 @@ async def startup_event():
     validate_runtime_configuration()
 
     global scheduler_task
+    global idempotency_cleanup_scheduler_task
     global autonomous_workflow_scheduler_task
     global proactive_activity_scheduler_task
     global notification_service
@@ -522,6 +538,16 @@ async def startup_event():
         )
 
     if (
+        idempotency_cleanup_scheduler_task is None
+        or idempotency_cleanup_scheduler_task.done()
+    ):
+        idempotency_cleanup_scheduler_task = (
+            asyncio.create_task(
+                idempotency_cleanup_scheduler.run()
+            )
+        )
+
+    if (
         autonomous_workflow_scheduler_task is None
         or autonomous_workflow_scheduler_task.done()
     ):
@@ -546,6 +572,10 @@ async def startup_event():
     )
 
     logging.getLogger(__name__).info(
+        "NOVA idempotency cleanup scheduler started automatically."
+    )
+
+    logging.getLogger(__name__).info(
         "NOVA autonomous workflow scheduler started automatically."
     )
 
@@ -556,10 +586,12 @@ async def startup_event():
 
 async def shutdown_event():
     global scheduler_task
+    global idempotency_cleanup_scheduler_task
     global autonomous_workflow_scheduler_task
     global proactive_activity_scheduler_task
 
     reminder_scheduler.stop()
+    idempotency_cleanup_scheduler.stop()
     autonomous_workflow_scheduler.stop()
     proactive_activity_scheduler.stop()
 
@@ -570,6 +602,14 @@ async def shutdown_event():
             pass
 
         scheduler_task = None
+
+    if idempotency_cleanup_scheduler_task is not None:
+        try:
+            await idempotency_cleanup_scheduler_task
+        except asyncio.CancelledError:
+            pass
+
+        idempotency_cleanup_scheduler_task = None
 
     if autonomous_workflow_scheduler_task is not None:
         try:
@@ -589,6 +629,10 @@ async def shutdown_event():
 
     logging.getLogger(__name__).info(
         "NOVA reminder scheduler stopped."
+    )
+
+    logging.getLogger(__name__).info(
+        "NOVA idempotency cleanup scheduler stopped."
     )
 
     logging.getLogger(__name__).info(
