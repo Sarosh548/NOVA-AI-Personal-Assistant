@@ -97,6 +97,7 @@ class ProactiveActivityScheduler:
         )
 
         self._running = False
+        self._stop_event: asyncio.Event | None = None
 
     @staticmethod
     def _normalize_now(
@@ -406,6 +407,7 @@ class ProactiveActivityScheduler:
             return
 
         self._running = True
+        self._stop_event = asyncio.Event()
 
         logger.info(
             "NOVA proactive activity scheduler started "
@@ -460,12 +462,19 @@ class ProactiveActivityScheduler:
                 if not self._running:
                     break
 
-                await asyncio.sleep(
-                    cycle_backoff_seconds
-                )
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=cycle_backoff_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                break
 
         finally:
             self._running = False
+            self._stop_event = None
 
             logger.info(
                 "NOVA proactive activity scheduler stopped."
@@ -473,3 +482,6 @@ class ProactiveActivityScheduler:
 
     def stop(self) -> None:
         self._running = False
+
+        if self._stop_event is not None:
+            self._stop_event.set()
