@@ -65,6 +65,10 @@ class CalendarConnection(Base):
             "ix_calendar_connections_token_expires_at",
             "token_expires_at",
         ),
+        Index(
+            "ix_calendar_connections_token_refresh_lease_until",
+            "token_refresh_lease_until",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -104,6 +108,16 @@ class CalendarConnection(Base):
     )
 
     token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    token_refresh_claim_token: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    token_refresh_lease_until: Mapped[datetime | None] = mapped_column(
         DateTime,
         nullable=True,
     )
