@@ -695,3 +695,82 @@ def test_missing_calendar_connection_fails_before_provider_call():
         )
 
     assert oauth.access_token_calls == []
+
+def test_update_event_sends_if_match_header(
+    monkeypatch,
+):
+    service, _oauth = build_service()
+
+    captured = patch_response(
+        monkeypatch,
+        {
+            "id": "event-001",
+            "summary": "Renamed",
+            "etag": "\"etag-1\"",
+        },
+    )
+
+    result = service.update_event(
+        user_id="user-001",
+        event_id="event-001",
+        event={
+            "summary": "Renamed",
+        },
+        if_match="\"etag-1\"",
+    )
+
+    assert result["etag"] == "\"etag-1\""
+
+    headers = {
+        name.lower(): value
+        for name, value in captured["request"].header_items()
+    }
+
+    assert headers["if-match"] == "\"etag-1\""
+
+
+def test_delete_event_sends_if_match_header(
+    monkeypatch,
+):
+    service, _oauth = build_service()
+
+    captured = patch_response(
+        monkeypatch,
+        None,
+    )
+
+    result = service.delete_event(
+        user_id="user-001",
+        event_id="event-001",
+        if_match="\"etag-delete-1\"",
+    )
+
+    assert result == {
+        "deleted": True,
+        "event_id": "event-001",
+    }
+
+    headers = {
+        name.lower(): value
+        for name, value in captured["request"].header_items()
+    }
+
+    assert headers["if-match"] == "\"etag-delete-1\""
+
+
+def test_if_match_validation_rejects_empty_value():
+    service, _oauth = build_service()
+
+    with pytest.raises(
+        ValueError,
+        match="cannot be empty",
+    ):
+        service.update_event(
+            user_id="user-001",
+            event_id="event-001",
+            event={
+                "summary": "Renamed",
+            },
+            if_match="   ",
+        )
+

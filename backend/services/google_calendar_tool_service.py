@@ -179,27 +179,41 @@ class GoogleCalendarToolService:
         )
 
         if action == "update":
+            update_kwargs = {
+                "user_id": user_id,
+                "event_id": event_id,
+                "event": self._require_event(
+                    data.get("event")
+                ),
+                "calendar_id": calendar_id,
+                "send_updates": self._send_updates(
+                    data
+                ),
+            }
+
+            if data.get("if_match") is not None:
+                update_kwargs["if_match"] = data["if_match"]
+
             return self._normalize_event_result(
                 self.calendar_service.update_event(
-                    user_id=user_id,
-                    event_id=event_id,
-                    event=self._require_event(
-                        data.get("event")
-                    ),
-                    calendar_id=calendar_id,
-                    send_updates=self._send_updates(
-                        data
-                    ),
+                    **update_kwargs
                 )
             )
 
-        return self.calendar_service.delete_event(
-            user_id=user_id,
-            event_id=event_id,
-            calendar_id=calendar_id,
-            send_updates=self._send_updates(
+        delete_kwargs = {
+            "user_id": user_id,
+            "event_id": event_id,
+            "calendar_id": calendar_id,
+            "send_updates": self._send_updates(
                 data
             ),
+        }
+
+        if data.get("if_match") is not None:
+            delete_kwargs["if_match"] = data["if_match"]
+
+        return self.calendar_service.delete_event(
+            **delete_kwargs
         )
 
     @staticmethod

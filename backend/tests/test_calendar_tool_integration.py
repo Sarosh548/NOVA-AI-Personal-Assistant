@@ -423,3 +423,58 @@ def test_agent_graph_exposes_calendar_tool():
             ],
         }
     ]
+
+def test_calendar_adapter_forwards_if_match_for_mutations():
+    calendar_service = FakeCalendarService()
+    adapter = GoogleCalendarToolService(
+        calendar_service=calendar_service
+    )
+
+    update_result = adapter.execute(
+        user_id="user-001",
+        data={
+            "calendar_action": "update",
+            "event_id": "evt-1",
+            "if_match": "\"etag-update-1\"",
+            "event": {
+                "summary": "Updated",
+            },
+        },
+    )
+
+    assert update_result["success"] is True
+    assert calendar_service.calls[-1] == (
+        "update",
+        {
+            "user_id": "user-001",
+            "event_id": "evt-1",
+            "event": {
+                "summary": "Updated",
+            },
+            "calendar_id": None,
+            "send_updates": "all",
+            "if_match": "\"etag-update-1\"",
+        },
+    )
+
+    delete_result = adapter.execute(
+        user_id="user-001",
+        data={
+            "calendar_action": "delete",
+            "event_id": "evt-1",
+            "if_match": "\"etag-delete-1\"",
+        },
+    )
+
+    assert delete_result["success"] is True
+    assert calendar_service.calls[-1] == (
+        "delete",
+        {
+            "user_id": "user-001",
+            "event_id": "evt-1",
+            "calendar_id": None,
+            "send_updates": "all",
+            "if_match": "\"etag-delete-1\"",
+        },
+    )
+
