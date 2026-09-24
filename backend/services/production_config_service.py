@@ -49,6 +49,12 @@ KNOWN_INSECURE_PROVIDER_KEYS = {
     "ci-test-key",
 }
 
+KNOWN_INSECURE_WEB_SEARCH_KEYS = {
+    "test",
+    "test-key",
+    "ci-test-key",
+}
+
 
 class ProductionConfigurationError(
     RuntimeError
@@ -214,6 +220,27 @@ def validate_runtime_configuration(
     ):
         raise ProductionConfigurationError(
             "Production GROQ_API_KEY cannot "
+            "use a development or CI placeholder."
+        )
+
+    tavily_api_key = str(
+        source.get(
+            "TAVILY_API_KEY",
+            "",
+        )
+    ).strip()
+
+    if not tavily_api_key:
+        raise ProductionConfigurationError(
+            "Production requires TAVILY_API_KEY."
+        )
+
+    if tavily_api_key.lower() in (
+        value.lower()
+        for value in KNOWN_INSECURE_WEB_SEARCH_KEYS
+    ):
+        raise ProductionConfigurationError(
+            "Production TAVILY_API_KEY cannot "
             "use a development or CI placeholder."
         )
 

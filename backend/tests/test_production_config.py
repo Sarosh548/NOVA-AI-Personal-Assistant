@@ -70,6 +70,7 @@ def _production_environment() -> dict[str, str]:
             "postgresql+psycopg://user:password@db:5432/nova_db"
         ),
         "GROQ_API_KEY": "real-production-key",
+        "TAVILY_API_KEY": "real-web-search-production-key",
     }
 
 
@@ -163,6 +164,42 @@ def test_production_requires_groq_api_key():
     with pytest.raises(
         ProductionConfigurationError,
         match="GROQ_API_KEY",
+    ):
+        validate_runtime_configuration(
+            settings=_production_settings(),
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=environ,
+        )
+
+
+def test_production_requires_tavily_api_key():
+    environ = _production_environment()
+    del environ["TAVILY_API_KEY"]
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="TAVILY_API_KEY",
+    ):
+        validate_runtime_configuration(
+            settings=_production_settings(),
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=environ,
+        )
+
+
+def test_production_rejects_ci_tavily_placeholder():
+    environ = _production_environment()
+    environ["TAVILY_API_KEY"] = "ci-test-key"
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="TAVILY_API_KEY",
     ):
         validate_runtime_configuration(
             settings=_production_settings(),
