@@ -624,6 +624,7 @@ async def shutdown_event():
 
     reminder_scheduler.stop()
     idempotency_cleanup_scheduler.stop()
+    notification_delivery_cleanup_scheduler.stop()
     autonomous_workflow_scheduler.stop()
     proactive_activity_scheduler.stop()
 
