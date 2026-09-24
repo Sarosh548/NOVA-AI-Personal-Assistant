@@ -59,6 +59,9 @@ jobs:
       - name: Verify dependency consistency
         run: python -m pip check
 
+      - name: Validate local Docker Compose configuration
+        run: docker compose -f docker-compose.local.yml config --quiet
+
       - name: Enable pgvector extension
         working-directory: backend
         run: |
