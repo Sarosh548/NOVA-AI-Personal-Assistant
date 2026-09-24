@@ -1,12 +1,11 @@
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 
-const isGitHubPagesBuild = process.env.GITHUB_ACTIONS === "true"
-
-export default defineConfig({
-  base: isGitHubPagesBuild
-    ? "/NOVA-AI-Personal-Assistant/"
-    : "/",
+export default defineConfig(({ mode }) => ({
+  base:
+    mode === "github-pages"
+      ? "/NOVA-AI-Personal-Assistant/"
+      : "/",
   plugins: [react()],
   server: {
     host: "127.0.0.1",
@@ -18,4 +17,4 @@ export default defineConfig({
     port: 4173,
     strictPort: true,
   },
-})
+}))
