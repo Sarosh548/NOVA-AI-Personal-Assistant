@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from secrets import token_urlsafe
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -53,6 +54,9 @@ class GoogleCalendarOAuthService:
 
     STATE_TTL_SECONDS = 600
     TOKEN_EXPIRY_SKEW_SECONDS = 60
+    TOKEN_REFRESH_LEASE_SECONDS = 30
+    TOKEN_REFRESH_POLL_SECONDS = 0.25
+    TOKEN_REFRESH_WAIT_SECONDS = 12
     HTTP_TIMEOUT_SECONDS = 10
 
     def __init__(
@@ -403,6 +407,10 @@ class GoogleCalendarOAuthService:
         """
         Return a usable Google access token, refreshing it when
         the stored token is near expiry.
+
+        Refresh ownership is coordinated through a short durable
+        lease so concurrent API workers do not refresh the same
+        Google connection at the same time.
         """
         normalized_user_id = (
             self._validate_user_id(
@@ -412,90 +420,282 @@ class GoogleCalendarOAuthService:
 
         self._validate_oauth_configuration()
 
+        deadline = (
+            time.monotonic()
+            + self.TOKEN_REFRESH_WAIT_SECONDS
+        )
+
+        while True:
+            now = self._utc_now_naive()
+
+            with Session(
+                self.engine
+            ) as session:
+                connection = session.scalar(
+                    select(
+                        CalendarConnection
+                    ).where(
+                        CalendarConnection.user_id
+                        == normalized_user_id,
+                        CalendarConnection.provider
+                        == self.PROVIDER,
+                    )
+                )
+
+                if connection is None:
+                    raise ValueError(
+                        "Google Calendar is not connected."
+                    )
+
+                if (
+                    connection.token_expires_at is not None
+                    and connection.token_expires_at
+                    > now
+                    + timedelta(
+                        seconds=self.TOKEN_EXPIRY_SKEW_SECONDS
+                    )
+                ):
+                    return self.encryption_service.decrypt(
+                        connection.encrypted_access_token
+                    )
+
+            claim = self._claim_token_refresh(
+                user_id=normalized_user_id
+            )
+
+            if claim is None:
+                if (
+                    time.monotonic()
+                    >= deadline
+                ):
+                    raise ValueError(
+                        "Google access token refresh is already in progress."
+                    )
+
+                time.sleep(
+                    self.TOKEN_REFRESH_POLL_SECONDS
+                )
+                continue
+
+            claim_token = claim["claim_token"]
+            refresh_token = claim["refresh_token"]
+
+            try:
+                token_payload = (
+                    self._refresh_access_token(
+                        refresh_token
+                    )
+                )
+
+                access_token = token_payload.get(
+                    "access_token"
+                )
+
+                if not isinstance(
+                    access_token,
+                    str,
+                ) or not access_token:
+                    raise ValueError(
+                        "Google token refresh did not return an access token."
+                    )
+
+                expires_in = self._parse_expires_in(
+                    token_payload.get(
+                        "expires_in"
+                    )
+                )
+
+                if expires_in is None:
+                    raise ValueError(
+                        "Google token refresh did not return token expiry."
+                    )
+
+                finalized = (
+                    self._finalize_token_refresh(
+                        user_id=normalized_user_id,
+                        claim_token=claim_token,
+                        access_token=access_token,
+                        expires_at=(
+                            now
+                            + timedelta(
+                                seconds=expires_in
+                            )
+                        ),
+                    )
+                )
+
+                if not finalized:
+                    raise ValueError(
+                        "Google token refresh lease was lost."
+                    )
+
+                return access_token
+
+            except Exception:
+                self._release_token_refresh(
+                    user_id=normalized_user_id,
+                    claim_token=claim_token,
+                )
+                raise
+
+    # =====================================================
+    # TOKEN REFRESH COORDINATION
+    # =====================================================
+
+    def _claim_token_refresh(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, str] | None:
+        now = self._utc_now_naive()
+        claim_token = token_urlsafe(32)
+        lease_until = (
+            now
+            + timedelta(
+                seconds=self.TOKEN_REFRESH_LEASE_SECONDS
+            )
+        )
+
         with Session(
             self.engine
         ) as session:
-            connection = session.scalar(
-                select(
+            result = session.execute(
+                update(
                     CalendarConnection
-                ).where(
+                )
+                .where(
                     CalendarConnection.user_id
-                    == normalized_user_id,
+                    == user_id,
                     CalendarConnection.provider
                     == self.PROVIDER,
+                    (
+                        (
+                            CalendarConnection.token_expires_at
+                           .is_(None)
+                        )
+                        | (
+                            CalendarConnection.token_expires_at
+                            <= now
+                            + timedelta(
+                                seconds=self.TOKEN_EXPIRY_SKEW_SECONDS
+                            )
+                        )
+                    ),
+                    (
+                        (
+                            CalendarConnection.token_refresh_lease_until
+                            .is_(None)
+                        )
+                        | (
+                            CalendarConnection.token_refresh_lease_until
+                            <= now
+                        )
+                    ),
+                )
+                .values(
+                    token_refresh_claim_token=claim_token,
+                    token_refresh_lease_until=lease_until,
+                )
+                .returning(
+                    CalendarConnection.encrypted_refresh_token
                 )
             )
 
-            if connection is None:
-                raise ValueError(
-                    "Google Calendar is not connected."
-                )
+            row = result.first()
 
-            now = self._utc_now_naive()
-
-            if (
-                connection.token_expires_at is not None
-                and connection.token_expires_at
-                > now
-                + timedelta(
-                    seconds=self.TOKEN_EXPIRY_SKEW_SECONDS
-                )
-            ):
-                return self.encryption_service.decrypt(
-                    connection.encrypted_access_token
-                )
-
-            refresh_token = (
-                self.encryption_service.decrypt(
-                    connection.encrypted_refresh_token
-                )
-            )
-
-            token_payload = self._refresh_access_token(
-                refresh_token
-            )
-
-            access_token = token_payload.get(
-                "access_token"
-            )
-
-            if not isinstance(
-                access_token,
-                str,
-            ) or not access_token:
-                raise ValueError(
-                    "Google token refresh did not return an access token."
-                )
-
-            expires_in = self._parse_expires_in(
-                token_payload.get(
-                    "expires_in"
-                )
-            )
-
-            if expires_in is None:
-                raise ValueError(
-                    "Google token refresh did not return token expiry."
-                )
-
-            connection.encrypted_access_token = (
-                self.encryption_service.encrypt(
-                    access_token
-                )
-            )
-
-            connection.token_expires_at = (
-                now
-                + timedelta(
-                    seconds=expires_in
-                )
-            )
-
-            connection.updated_at = now
+            if row is None:
+                session.rollback()
+                return None
 
             session.commit()
 
-            return access_token
+            return {
+                "claim_token": claim_token,
+                "refresh_token": (
+                    self.encryption_service.decrypt(
+                        row[0]
+                    )
+                ),
+            }
+
+    def _finalize_token_refresh(
+        self,
+        *,
+        user_id: str,
+        claim_token: str,
+        access_token: str,
+        expires_at: datetime,
+    ) -> bool:
+        now = self._utc_now_naive()
+
+        with Session(
+            self.engine
+        ) as session:
+            result = session.execute(
+                update(
+                    CalendarConnection
+                )
+                .where(
+                    CalendarConnection.user_id
+                    == user_id,
+                    CalendarConnection.provider
+                    == self.PROVIDER,
+                    CalendarConnection.token_refresh_claim_token
+                    == claim_token,
+                )
+                .values(
+                    encrypted_access_token=(
+                        self.encryption_service.encrypt(
+                            access_token
+                        )
+                    ),
+                    token_expires_at=expires_at,
+                    token_refresh_claim_token=None,
+                    token_refresh_lease_until=None,
+                    updated_at=now,
+                )
+            )
+
+            if result.rowcount != 1:
+                session.rollback()
+                return False
+
+            session.commit()
+            return True
+
+    def _release_token_refresh(
+        self,
+        *,
+        user_id: str,
+        claim_token: str,
+    ) -> bool:
+        with Session(
+            self.engine
+        ) as session:
+            result = session.execute(
+                update(
+                    CalendarConnection
+                )
+                .where(
+                    CalendarConnection.user_id
+                    == user_id,
+                    CalendarConnection.provider
+                    == self.PROVIDER,
+                    CalendarConnection.token_refresh_claim_token
+                    == claim_token,
+                )
+                .values(
+                    token_refresh_claim_token=None,
+                    token_refresh_lease_until=None,
+                )
+            )
+
+            if result.rowcount != 1:
+                session.rollback()
+                return False
+
+            session.commit()
+            return True
 
     # =====================================================
     # OAUTH STATE
