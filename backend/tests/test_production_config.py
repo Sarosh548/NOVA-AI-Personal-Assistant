@@ -64,6 +64,14 @@ def _production_settings() -> Settings:
         notification_webhook_url=(
             "https://notify.example.com/nova"
         ),
+        calendar_google_client_id="google-production-client",
+        calendar_google_client_secret="google-production-secret",
+        calendar_google_redirect_uri=(
+            "https://api.example.com/integrations/google/calendar/callback"
+        ),
+        calendar_google_scopes=(
+            "https://www.googleapis.com/auth/calendar.events"
+        ),
     )
 
 
@@ -345,6 +353,118 @@ def test_production_accepts_secure_email_notification_configuration():
     )
 
     assert environment == "production"
+
+
+def test_production_requires_google_calendar_client_id():
+    settings = _production_settings()
+    settings.calendar_google_client_id = None
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="CALENDAR_GOOGLE_CLIENT_ID",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_google_calendar_client_secret():
+    settings = _production_settings()
+    settings.calendar_google_client_secret = None
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="CALENDAR_GOOGLE_CLIENT_SECRET",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_google_calendar_redirect_uri():
+    settings = _production_settings()
+    settings.calendar_google_redirect_uri = None
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="CALENDAR_GOOGLE_REDIRECT_URI",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_https_google_calendar_redirect_uri():
+    settings = _production_settings()
+    settings.calendar_google_redirect_uri = (
+        "http://api.example.com/integrations/google/calendar/callback"
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="HTTPS",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_rejects_local_google_calendar_redirect_uri():
+    settings = _production_settings()
+    settings.calendar_google_redirect_uri = (
+        "https://localhost/integrations/google/calendar/callback"
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="local/test host",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_google_calendar_scopes():
+    settings = _production_settings()
+    settings.calendar_google_scopes = ""
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="CALENDAR_GOOGLE_SCOPES",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
 
 
 def test_production_requires_api_rate_limiting():
