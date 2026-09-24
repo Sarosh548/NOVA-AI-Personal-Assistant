@@ -207,6 +207,94 @@ def test_list_events_uses_connection_calendar_and_paginates(
     ]
 
 
+def test_oauth_refresh_failure_is_normalized_as_authorization_error(
+    monkeypatch,
+):
+    service, oauth_service = build_service()
+
+    def fail_access_token(
+        *,
+        user_id,
+    ):
+        raise ValueError(
+            "Google token refresh failed."
+        )
+
+    monkeypatch.setattr(
+        oauth_service,
+        "get_valid_access_token",
+        fail_access_token,
+    )
+
+    with pytest.raises(
+        GoogleCalendarAPIError,
+        match="authorization is invalid or expired",
+    ) as exc_info:
+        service.list_events(
+            user_id="user-001"
+        )
+
+    assert exc_info.value.status_code == 401
+
+
+def test_calendar_not_connected_is_normalized_as_unauthorized(
+    monkeypatch,
+):
+    service, oauth_service = build_service()
+
+    def fail_access_token(
+        *,
+        user_id,
+    ):
+        raise ValueError(
+            "Google Calendar is not connected."
+        )
+
+    monkeypatch.setattr(
+        oauth_service,
+        "get_valid_access_token",
+        fail_access_token,
+    )
+
+    with pytest.raises(
+        GoogleCalendarAPIError,
+        match="authorization is invalid or expired",
+    ) as exc_info:
+        service.list_events(
+            user_id="user-001"
+        )
+
+    assert exc_info.value.status_code == 401
+
+
+def test_calendar_configuration_errors_are_not_hidden_as_auth_errors(
+    monkeypatch,
+):
+    service, oauth_service = build_service()
+
+    def fail_access_token(
+        *,
+        user_id,
+    ):
+        raise ValueError(
+            "Google Calendar OAuth is not configured: calendar_google_client_id."
+        )
+
+    monkeypatch.setattr(
+        oauth_service,
+        "get_valid_access_token",
+        fail_access_token,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="OAuth is not configured",
+    ):
+        service.list_events(
+            user_id="user-001"
+        )
+
+
 def test_list_events_validates_query_shape():
     service, _oauth = build_service()
 

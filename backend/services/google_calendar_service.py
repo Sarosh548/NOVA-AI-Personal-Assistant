@@ -591,12 +591,27 @@ class GoogleCalendarService:
         body: dict[str, Any] | None = None,
         if_match: str | None = None,
     ) -> dict[str, Any] | None:
-        access_token = (
-            self.oauth_service
-            .get_valid_access_token(
-                user_id=user_id
+        try:
+            access_token = (
+                self.oauth_service
+                .get_valid_access_token(
+                    user_id=user_id
+                )
             )
-        )
+        except ValueError as exc:
+            message = str(exc).strip().lower()
+
+            if (
+                message == "google calendar is not connected."
+                or "token refresh" in message
+                or "authorization is invalid" in message
+            ):
+                raise GoogleCalendarAPIError(
+                    "Google Calendar authorization is invalid or expired.",
+                    status_code=401,
+                ) from exc
+
+            raise
 
         url = (
             self.BASE_URL
