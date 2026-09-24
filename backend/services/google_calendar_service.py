@@ -787,7 +787,6 @@ class GoogleCalendarService:
 
         return normalized
 
-    def _validate_send_updates(
     @staticmethod
     def _normalize_idempotency_key(
         value: Any,
@@ -833,6 +832,8 @@ class GoogleCalendarService:
             canonical.encode("utf-8")
         ).hexdigest()
 
+    @classmethod
+    def _validate_send_updates(
         cls,
         value: Any,
     ) -> str:
