@@ -225,7 +225,7 @@ class GoogleCalendarOAuthService:
             else None
         )
 
-        scopes = self._normalize_scopes(
+        scopes = self._validate_granted_scopes(
             token_payload.get(
                 "scope"
             )
@@ -902,6 +902,54 @@ class GoogleCalendarOAuthService:
             raw_scopes
             or self.DEFAULT_SCOPES
         )
+
+    def _validate_granted_scopes(
+        self,
+        scope: Any,
+    ) -> str:
+        requested_scope = (
+            self._normalize_scopes(
+                self._get_scopes()
+            )
+        )
+
+        requested_scopes = set(
+            requested_scope.split()
+        )
+
+        if isinstance(
+            scope,
+            str,
+        ) and scope.strip():
+            granted_scope = self._normalize_scopes(
+                scope
+            )
+        else:
+            # OAuth permits omitting the scope response field
+            # when the granted scope is identical to the
+            # requested scope.
+            granted_scope = requested_scope
+
+        granted_scopes = set(
+            granted_scope.split()
+        )
+
+        missing_scopes = sorted(
+            requested_scopes
+            - granted_scopes
+        )
+
+        if missing_scopes:
+            raise ValueError(
+                "Google OAuth response did not grant "
+                "the required Calendar scope(s): "
+                + ", ".join(
+                    missing_scopes
+                )
+                + "."
+            )
+
+        return granted_scope
 
     @staticmethod
     def _normalize_scopes(
