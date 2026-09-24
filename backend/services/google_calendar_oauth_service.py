@@ -48,6 +48,10 @@ class GoogleCalendarOAuthService:
         "https://oauth2.googleapis.com/token"
     )
 
+    REVOCATION_ENDPOINT = (
+        "https://oauth2.googleapis.com/revoke"
+    )
+
     DEFAULT_SCOPES = (
         "https://www.googleapis.com/auth/calendar.events"
     )
@@ -390,12 +394,71 @@ class GoogleCalendarOAuthService:
             if connection is None:
                 return False
 
+            refresh_token = (
+                self.encryption_service.decrypt(
+                    connection.encrypted_refresh_token
+                )
+            )
+
+            self._revoke_token(
+                refresh_token
+            )
+
             session.delete(
                 connection
             )
             session.commit()
 
             return True
+
+    def _revoke_token(
+        self,
+        refresh_token: str,
+    ) -> None:
+        encoded_payload = urlencode(
+            {
+                "token": refresh_token,
+            }
+        ).encode("utf-8")
+
+        request = Request(
+            self.REVOCATION_ENDPOINT,
+            data=encoded_payload,
+            headers={
+                "Content-Type": (
+                    "application/x-www-form-urlencoded"
+                ),
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urlopen(
+                request,
+                timeout=self.HTTP_TIMEOUT_SECONDS,
+            ) as response:
+                if getattr(
+                    response,
+                    "status",
+                    200,
+                ) != 200:
+                    raise ValueError(
+                        "Google Calendar access revocation failed."
+                    )
+
+                response.read()
+
+        except ValueError:
+            raise
+        except (
+            HTTPError,
+            URLError,
+            OSError,
+        ) as exc:
+            raise ValueError(
+                "Google Calendar access revocation failed."
+            ) from exc
 
     # =====================================================
     # ACCESS TOKEN LIFECYCLE
