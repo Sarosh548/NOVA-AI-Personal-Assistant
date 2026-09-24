@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -336,6 +336,106 @@ class NotificationDeliveryService:
 
             session.commit()
             return True
+
+    DEFAULT_RETENTION_SECONDS = 30 * 24 * 60 * 60
+
+    def purge_expired_deliveries(
+        self,
+        *,
+        retention_seconds: int = DEFAULT_RETENTION_SECONDS,
+        limit: int = 500,
+        now: datetime | None = None,
+    ) -> int:
+        """
+        Delete terminal notification deliveries older than the
+        configured retention window.
+
+        Active processing claims are never deleted.
+        """
+
+        normalized_retention = int(
+            retention_seconds
+        )
+
+        if normalized_retention < 1:
+            raise ValueError(
+                "retention_seconds must be at least 1"
+            )
+
+        normalized_limit = int(
+            limit
+        )
+
+        if not 1 <= normalized_limit <= 5000:
+            raise ValueError(
+                "limit must be between 1 and 5000"
+            )
+
+        reference_now = (
+            now
+            if now is not None
+            else self._now()
+        )
+
+        if reference_now.tzinfo is not None:
+            reference_now = (
+                reference_now
+                .astimezone(timezone.utc)
+                .replace(tzinfo=None)
+            )
+
+        cutoff = (
+            reference_now
+            - timedelta(
+                seconds=normalized_retention
+            )
+        )
+
+        with Session(self.engine) as session:
+            records = session.scalars(
+                select(NotificationDelivery)
+                .where(
+                    NotificationDelivery.status.in_(
+                        ["sent", "failed"]
+                    ),
+                    NotificationDelivery.updated_at
+                    <= cutoff,
+                )
+                .order_by(
+                    NotificationDelivery.updated_at.asc(),
+                    NotificationDelivery.id.asc(),
+                )
+                .with_for_update(
+                    skip_locked=True
+                )
+                .limit(normalized_limit)
+            ).all()
+
+            if not records:
+                session.rollback()
+                return 0
+
+            record_ids = [
+                record.id
+                for record in records
+            ]
+
+            result = session.execute(
+                delete(NotificationDelivery).where(
+                    NotificationDelivery.id.in_(
+                        record_ids
+                    ),
+                    NotificationDelivery.status.in_(
+                        ["sent", "failed"]
+                    ),
+                    NotificationDelivery.updated_at
+                    <= cutoff,
+                )
+            )
+
+            session.commit()
+
+            return int(result.rowcount or 0)
 
     def get_delivery(
         self,
