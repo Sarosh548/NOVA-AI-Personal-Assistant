@@ -70,6 +70,20 @@ class NotificationDeliveryCleanupScheduler:
             limit=self.batch_size,
         )
 
+    def _process_expired_deliveries_sync(self) -> int:
+        """
+        Purge one bounded batch of expired terminal records.
+        """
+        return self.purge_expired_deliveries()
+
+    async def process_expired_deliveries(self) -> int:
+        """
+        Run the blocking cleanup cycle outside the asyncio event loop.
+        """
+        return await asyncio.to_thread(
+            self._process_expired_deliveries_sync
+        )
+
     async def run(self) -> None:
         if self._running:
             return
@@ -91,7 +105,7 @@ class NotificationDeliveryCleanupScheduler:
         try:
             while self._running:
                 try:
-                    deleted = self.purge_expired_deliveries()
+                    deleted = await self.process_expired_deliveries()
 
                     if deleted:
                         logger.info(
