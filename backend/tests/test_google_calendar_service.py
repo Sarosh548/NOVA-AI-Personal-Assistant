@@ -370,6 +370,126 @@ def test_create_event_posts_event_and_send_updates(
     }
 
 
+def test_create_event_with_idempotency_key_sets_stable_event_id(
+    monkeypatch,
+):
+    service, _oauth = build_service()
+
+    captured = patch_response(
+        monkeypatch,
+        {
+            "id": "event-001",
+        },
+    )
+
+    result = service.create_event(
+        user_id="user-001",
+        event={
+            "summary": "Team meeting",
+            "start": {
+                "dateTime": (
+                    "2026-09-20T10:00:00+05:00"
+                )
+            },
+            "end": {
+                "dateTime": (
+                    "2026-09-20T11:00:00+05:00"
+                )
+            },
+        },
+        idempotency_key="calendar-request-1",
+    )
+
+    assert result["id"] == "event-001"
+
+    import hashlib
+    import json
+
+    expected_id = hashlib.sha256(
+        "user-001:calendar-request-1".encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+    payload = json.loads(
+        captured["request"].data.decode(
+            "utf-8"
+        )
+    )
+
+    assert payload["id"] == expected_id
+
+
+def test_create_event_recovers_existing_event_after_duplicate_id(
+    monkeypatch,
+):
+    service, _oauth = build_service()
+
+    import hashlib
+    from urllib.error import HTTPError
+
+    expected_id = hashlib.sha256(
+        "user-001:calendar-request-2".encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+    calls = []
+
+    def fake_urlopen(
+        request,
+        timeout,
+    ):
+        calls.append(
+            request
+        )
+
+        if request.method == "POST":
+            raise HTTPError(
+                request.full_url,
+                409,
+                "duplicate",
+                {},
+                BytesIO(),
+            )
+
+        return FakeHTTPResponse(
+            b'{"id":"' + expected_id.encode("utf-8") + b'","summary":"Recovered"}'
+        )
+
+    monkeypatch.setattr(
+        "services.google_calendar_service.urlopen",
+        fake_urlopen,
+    )
+
+    result = service.create_event(
+        user_id="user-001",
+        event={
+            "summary": "Recovered",
+            "start": {
+                "dateTime": (
+                    "2026-09-20T10:00:00+05:00"
+                )
+            },
+            "end": {
+                "dateTime": (
+                    "2026-09-20T11:00:00+05:00"
+                )
+            },
+        },
+        idempotency_key="calendar-request-2",
+    )
+
+    assert result == {
+        "id": expected_id,
+        "summary": "Recovered",
+    }
+
+    assert [request.method for request in calls] == [
+        "POST",
+        "GET",
+    ]
+
 def test_update_event_uses_patch_and_requires_paired_times(
     monkeypatch,
 ):
