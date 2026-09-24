@@ -406,12 +406,18 @@ def create_calendar_event(
             return claim["response_body"]
 
     try:
+        create_kwargs = {
+            "user_id": current_user_id,
+            "calendar_id": calendar_id,
+            "event": event_payload,
+            "send_updates": send_updates,
+        }
+
+        if idempotency_key is not None:
+            create_kwargs["idempotency_key"] = idempotency_key
+
         response_payload = calendar_service.create_event(
-            user_id=current_user_id,
-            calendar_id=calendar_id,
-            event=event_payload,
-            send_updates=send_updates,
-            idempotency_key=idempotency_key,
+            **create_kwargs
         )
 
     except (
