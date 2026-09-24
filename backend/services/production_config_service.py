@@ -7,9 +7,13 @@ from config import (
     RateLimitSettings,
     SecuritySettings,
     Settings,
+    STTProviderSettings,
+    TTSProviderSettings,
     get_rate_limit_settings,
     get_security_settings,
     get_settings,
+    get_stt_provider_settings,
+    get_tts_provider_settings,
 )
 
 
@@ -34,6 +38,12 @@ KNOWN_INSECURE_JWT_SECRETS = {
 }
 
 KNOWN_INSECURE_GROQ_KEYS = {
+    "test",
+    "test-key",
+    "ci-test-key",
+}
+
+KNOWN_INSECURE_PROVIDER_KEYS = {
     "test",
     "test-key",
     "ci-test-key",
@@ -76,6 +86,8 @@ def validate_runtime_configuration(
     settings: Settings | None = None,
     security_settings: SecuritySettings | None = None,
     rate_limit_settings: RateLimitSettings | None = None,
+    stt_provider_settings: STTProviderSettings | None = None,
+    tts_provider_settings: TTSProviderSettings | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> str:
     """
@@ -115,6 +127,18 @@ def validate_runtime_configuration(
         rate_limit_settings
         if rate_limit_settings is not None
         else get_rate_limit_settings()
+    )
+
+    active_stt_provider_settings = (
+        stt_provider_settings
+        if stt_provider_settings is not None
+        else get_stt_provider_settings()
+    )
+
+    active_tts_provider_settings = (
+        tts_provider_settings
+        if tts_provider_settings is not None
+        else get_tts_provider_settings()
     )
 
     if (
@@ -192,6 +216,61 @@ def validate_runtime_configuration(
             "Production GROQ_API_KEY cannot "
             "use a development or CI placeholder."
         )
+
+    deepgram_api_key = active_stt_provider_settings.deepgram_api_key
+
+    if deepgram_api_key is None or not deepgram_api_key.strip():
+        raise ProductionConfigurationError(
+            "Production requires DEEPGRAM_API_KEY."
+        )
+
+    if deepgram_api_key.strip().lower() in {
+        value.lower()
+        for value in KNOWN_INSECURE_PROVIDER_KEYS
+    }:
+        raise ProductionConfigurationError(
+            "Production DEEPGRAM_API_KEY cannot "
+            "use a development or CI placeholder."
+        )
+
+    elevenlabs_api_key = active_tts_provider_settings.elevenlabs_api_key
+
+    if elevenlabs_api_key is None or not elevenlabs_api_key.strip():
+        raise ProductionConfigurationError(
+            "Production requires ELEVENLABS_API_KEY."
+        )
+
+    if elevenlabs_api_key.strip().lower() in {
+        value.lower()
+        for value in KNOWN_INSECURE_PROVIDER_KEYS
+    }:
+        raise ProductionConfigurationError(
+            "Production ELEVENLABS_API_KEY cannot "
+            "use a development or CI placeholder."
+        )
+
+    elevenlabs_voice_id = active_tts_provider_settings.elevenlabs_voice_id
+
+    if elevenlabs_voice_id is None or not elevenlabs_voice_id.strip():
+        raise ProductionConfigurationError(
+            "Production requires ELEVENLABS_VOICE_ID."
+        )
+
+    integration_encryption_key = active_settings.integration_token_encryption_key
+
+    if integration_encryption_key is None or not integration_encryption_key.strip():
+        raise ProductionConfigurationError(
+            "Production requires INTEGRATION_TOKEN_ENCRYPTION_KEY."
+        )
+
+    from services.token_encryption_service import TokenEncryptionService
+
+    try:
+        TokenEncryptionService(integration_encryption_key)
+    except ValueError as exc:
+        raise ProductionConfigurationError(
+            "Production INTEGRATION_TOKEN_ENCRYPTION_KEY is invalid."
+        ) from exc
 
     database_url = str(
         source.get(
