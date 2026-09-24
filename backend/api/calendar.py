@@ -223,6 +223,16 @@ def google_calendar_callback(
     ] = None,
 ) -> CalendarConnectionResponse:
     if error is not None:
+        try:
+            service.cancel_authorization(
+                state=state,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(

@@ -277,6 +277,61 @@ def test_oauth_state_is_single_use():
         )
 
 
+
+def test_cancel_authorization_consumes_pending_state(
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+        state = create_state(
+            service
+        )
+
+        service.cancel_authorization(
+            state=state
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="Invalid or expired OAuth state",
+        ):
+            service._consume_state(
+                state
+            )
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_cancel_authorization_rejects_unknown_state(
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="Invalid or expired OAuth state",
+        ):
+            service.cancel_authorization(
+                state="unknown-state"
+            )
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+
 def test_expired_oauth_state_is_rejected():
     engine = build_runtime()
 

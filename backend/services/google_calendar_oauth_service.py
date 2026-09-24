@@ -347,6 +347,23 @@ class GoogleCalendarOAuthService:
 
     # =====================================================
     # CONNECTION STATUS / DISCONNECT
+    def cancel_authorization(
+        self,
+        *,
+        state: str,
+    ) -> None:
+        """
+        Atomically consume a pending OAuth state when Google
+        returns an authorization denial or cancellation.
+        """
+        normalized_state = self._validate_state(
+            state
+        )
+
+        self._consume_state(
+            normalized_state
+        )
+
     # =====================================================
 
     def get_connection(
