@@ -199,6 +199,7 @@ async def test_reminder_scheduler_stop_wakes_backoff_wait(
     )
 
     assert scheduler._running is False
+    assert scheduler._stop_event is None
 
 
 @pytest.mark.asyncio
@@ -234,6 +235,7 @@ async def test_autonomous_workflow_scheduler_stop_wakes_backoff_wait(
     )
 
     assert scheduler._running is False
+    assert scheduler._stop_event is None
 
 
 @pytest.mark.asyncio
@@ -269,3 +271,4 @@ async def test_proactive_activity_scheduler_stop_wakes_backoff_wait(
     )
 
     assert scheduler._running is False
+    assert scheduler._stop_event is None
