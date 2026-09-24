@@ -1132,6 +1132,7 @@ def test_disconnect_removes_connection_when_google_reports_invalid_token(
 
         def already_revoked(
             refresh_token,
+            **_kwargs,
         ):
             raise HTTPError(
                 service.REVOCATION_ENDPOINT,
