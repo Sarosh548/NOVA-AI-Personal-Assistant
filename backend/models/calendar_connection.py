@@ -108,6 +108,16 @@ class CalendarConnection(Base):
         nullable=True,
     )
 
+    token_refresh_claim_token: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    token_refresh_lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     scopes: Mapped[str] = mapped_column(
         Text,
         nullable=False,
