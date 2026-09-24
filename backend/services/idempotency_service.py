@@ -6,7 +6,7 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -320,6 +320,103 @@ class IdempotencyService:
 
             session.commit()
             return True
+
+    def purge_expired_records(
+        self,
+        *,
+        limit: int = 500,
+        now: datetime | None = None,
+    ) -> int:
+        """
+        Remove expired terminal idempotency records in small batches.
+
+        Processing claims are intentionally excluded so a slow or
+        long-running request cannot be deleted while it is still
+        executing. Row locks prevent the cleanup worker from racing
+        with request reclamation of the same expired record.
+        """
+        if not isinstance(
+            limit,
+            int,
+        ) or isinstance(
+            limit,
+            bool,
+        ):
+            raise ValueError(
+                "limit must be an integer."
+            )
+
+        if not 1 <= limit <= 5000:
+            raise ValueError(
+                "limit must be between 1 and 5000."
+            )
+
+        reference_now = (
+            now
+            if now is not None
+            else self._now()
+        )
+
+        if reference_now.tzinfo is not None:
+            reference_now = (
+                reference_now
+                .astimezone(timezone.utc)
+                .replace(tzinfo=None)
+            )
+
+        with Session(
+            self.engine
+        ) as session:
+            record_ids = [
+                record_id
+                for (record_id,) in session.execute(
+                    select(
+                        IdempotencyRecord.id
+                    )
+                    .where(
+                        IdempotencyRecord.status.in_(
+                            [
+                                "completed",
+                                "failed",
+                            ]
+                        ),
+                        IdempotencyRecord.expires_at
+                        <= reference_now,
+                    )
+                    .with_for_update(
+                        skip_locked=True
+                    )
+                    .limit(limit)
+                ).all()
+            ]
+
+            if not record_ids:
+                session.rollback()
+                return 0
+
+            result = session.execute(
+                delete(
+                    IdempotencyRecord
+                ).where(
+                    IdempotencyRecord.id.in_(
+                        record_ids
+                    ),
+                    IdempotencyRecord.status.in_(
+                        [
+                            "completed",
+                            "failed",
+                        ]
+                    ),
+                    IdempotencyRecord.expires_at
+                    <= reference_now,
+                )
+            )
+
+            session.commit()
+
+            return int(
+                result.rowcount
+            )
 
     def fail(
         self,
