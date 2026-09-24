@@ -26,6 +26,7 @@ class FakeGoogleCalendarOAuthService:
         )
         self.connect_calls = []
         self.complete_calls = []
+        self.cancel_calls = []
         self.status_connection = None
         self.disconnect_result = True
         self.disconnect_calls = []
@@ -39,6 +40,15 @@ class FakeGoogleCalendarOAuthService:
             user_id
         )
         return self.authorization_url
+
+    def cancel_authorization(
+        self,
+        *,
+        state,
+    ):
+        self.cancel_calls.append(
+            state
+        )
 
     def complete_authorization(
         self,
@@ -251,6 +261,9 @@ def test_callback_google_denial_is_rejected(
         "not completed."
     )
     assert service.complete_calls == []
+    assert service.cancel_calls == [
+        "test-state"
+    ]
 
 
 def test_callback_without_code_is_rejected(
