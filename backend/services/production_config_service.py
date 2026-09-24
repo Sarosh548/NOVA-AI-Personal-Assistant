@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlparse
 from collections.abc import Mapping
 
 from config import (
@@ -401,10 +402,7 @@ def validate_runtime_configuration(
             "Production requires CALENDAR_GOOGLE_REDIRECT_URI."
         )
 
-    parsed_calendar_redirect_uri = __import__(
-        "urllib.parse",
-        fromlist=["urlparse"],
-    ).urlparse(
+    parsed_calendar_redirect_uri = urlparse(
         calendar_redirect_uri
     )
 
