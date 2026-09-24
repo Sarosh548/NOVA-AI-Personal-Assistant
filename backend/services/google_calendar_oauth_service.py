@@ -483,8 +483,21 @@ class GoogleCalendarOAuthService:
 
         except ValueError:
             raise
+        except HTTPError as exc:
+            raw_error_body = exc.read()
+            error_code = (
+                self._extract_oauth_error_code(
+                    raw_error_body
+                )
+            )
+
+            if error_code == "invalid_token":
+                return
+
+            raise ValueError(
+                "Google Calendar access revocation failed."
+            ) from exc
         except (
-            HTTPError,
             URLError,
             OSError,
         ) as exc:
