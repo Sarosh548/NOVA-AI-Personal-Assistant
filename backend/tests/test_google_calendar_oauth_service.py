@@ -300,6 +300,98 @@ def test_expired_oauth_state_is_rejected():
         )
 
 
+def test_complete_authorization_rejects_missing_required_granted_scope(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+                "expires_in": 3600,
+                "scope": (
+                    "https://www.googleapis.com/auth/calendar.events.readonly"
+                ),
+            },
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="did not grant the required Calendar scope",
+        ):
+            service.complete_authorization(
+                state=state,
+                code="authorization-code",
+            )
+
+        from sqlalchemy.orm import Session
+
+        with Session(
+            engine
+        ) as session:
+            assert (
+                session.query(
+                    CalendarConnection
+                ).count()
+                == 0
+            )
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_complete_authorization_uses_requested_scope_when_response_omits_scope(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+                "expires_in": 3600,
+            },
+        )
+
+        result = service.complete_authorization(
+            state=state,
+            code="authorization-code",
+        )
+
+        assert (
+            result["scopes"]
+            == "https://www.googleapis.com/auth/calendar.events"
+        )
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
 def test_complete_authorization_persists_encrypted_tokens(
     monkeypatch,
 ):
