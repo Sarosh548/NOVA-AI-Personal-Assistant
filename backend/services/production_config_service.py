@@ -56,6 +56,10 @@ KNOWN_INSECURE_WEB_SEARCH_KEYS = {
     "ci-test-key",
 }
 
+SUPPORTED_PRODUCTION_CALENDAR_SCOPES = {
+    "https://www.googleapis.com/auth/calendar.events",
+}
+
 
 class ProductionConfigurationError(
     RuntimeError
@@ -422,12 +426,29 @@ def validate_runtime_configuration(
             "use a local/test host."
         )
 
-    if not str(
-        active_settings.calendar_google_scopes
-        or ""
-    ).strip():
+    calendar_scopes = " ".join(
+        str(
+            active_settings.calendar_google_scopes
+            or ""
+        ).split()
+    )
+
+    if not calendar_scopes:
         raise ProductionConfigurationError(
             "Production requires CALENDAR_GOOGLE_SCOPES."
+        )
+
+    configured_calendar_scopes = set(
+        calendar_scopes.split()
+    )
+
+    if configured_calendar_scopes != (
+        SUPPORTED_PRODUCTION_CALENDAR_SCOPES
+    ):
+        raise ProductionConfigurationError(
+            "Production CALENDAR_GOOGLE_SCOPES must "
+            "use only the supported least-privilege "
+            "Calendar scope."
         )
 
     if (
