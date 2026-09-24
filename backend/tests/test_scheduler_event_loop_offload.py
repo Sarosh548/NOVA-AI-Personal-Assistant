@@ -130,3 +130,36 @@ async def test_idempotency_cleanup_scheduler_offloads_blocking_cycle(
         ("sync_cycle", (), {}),
         "sync",
     ]
+
+@pytest.mark.asyncio
+async def test_notification_delivery_cleanup_scheduler_offloads_blocking_cycle(
+    monkeypatch,
+):
+    from services.notification_delivery_cleanup_scheduler import (
+        NotificationDeliveryCleanupScheduler,
+    )
+
+    scheduler = NotificationDeliveryCleanupScheduler()
+    calls = []
+
+    def sync_cycle():
+        calls.append("sync")
+        return 3
+
+    async def fake_to_thread(func, *args, **kwargs):
+        calls.append((func.__name__, args, kwargs))
+        return func(*args, **kwargs)
+
+    scheduler._process_expired_deliveries_sync = sync_cycle
+    monkeypatch.setattr(
+        "services.notification_delivery_cleanup_scheduler.asyncio.to_thread",
+        fake_to_thread,
+    )
+
+    result = await scheduler.process_expired_deliveries()
+
+    assert result == 3
+    assert calls == [
+        ("sync_cycle", (), {}),
+        "sync",
+    ]
