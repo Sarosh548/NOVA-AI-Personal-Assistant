@@ -753,14 +753,29 @@ class DurableWorkflowExecutionService:
         Execute one claimed step through the central ToolRouter.
         """
 
+        execution_data = dict(
+            step.get("data")
+            or {}
+        )
+
+        if (
+            step.get("tool") == "calendar"
+            and step.get("action") == "create"
+            and "idempotency_key" not in execution_data
+        ):
+            workflow_id = step.get("workflow_id")
+            step_id = step.get("step_id")
+
+            if workflow_id is not None and step_id:
+                execution_data["idempotency_key"] = (
+                    f"workflow:{workflow_id}:step:{step_id}"
+                )
+
         try:
             result = self.tool_router.execute(
                 intent=step["tool"],
                 user_id=user_id,
-                data=dict(
-                    step.get("data")
-                    or {}
-                ),
+                data=execution_data,
             )
 
         except Exception:
