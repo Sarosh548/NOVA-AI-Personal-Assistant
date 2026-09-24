@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 import time
+
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -107,6 +108,9 @@ from services.proactive_activity_notification_service import (
 )
 from services.proactive_activity_scheduler import (
     ProactiveActivityScheduler,
+)
+from services.production_config_service import (
+    validate_runtime_configuration,
 )
 from services.reminder_scheduler import (
     ReminderScheduler,
@@ -469,8 +473,11 @@ async def request_id_middleware(
     response.headers["X-Request-ID"] = request_id
     return response
 
+
 async def startup_event():
     configure_api_logging()
+
+    validate_runtime_configuration()
 
     global scheduler_task
     global autonomous_workflow_scheduler_task

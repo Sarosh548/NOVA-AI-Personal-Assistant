@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+import pytest
+
+from config import (
+    RateLimitSettings,
+    SecuritySettings,
+    Settings,
+)
+from services.production_config_service import (
+    ProductionConfigurationError,
+    validate_runtime_configuration,
+)
+
+
+def _settings() -> Settings:
+    return Settings(
+        auth_jwt_secret_key=(
+            "production-secret-value-that-is"
+            "-longer-than-thirty-two-characters"
+        ),
+    )
+
+
+def _security_settings() -> SecuritySettings:
+    return SecuritySettings(
+        api_trusted_hosts="api.example.com",
+        security_hsts_enabled=True,
+    )
+
+
+def _rate_limit_settings() -> RateLimitSettings:
+    return RateLimitSettings(
+        api_rate_limit_enabled=True,
+        voice_rate_limit_enabled=True,
+    )
+
+
+def _production_environment() -> dict[str, str]:
+    return {
+        "NOVA_ENV": "production",
+        "DATABASE_URL": (
+            "postgresql+psycopg://user:password@db:5432/nova_db"
+        ),
+        "GROQ_API_KEY": "real-production-key",
+    }
+
+
+def test_development_environment_keeps_existing_flexible_defaults():
+    environment = validate_runtime_configuration(
+        environ={
+            "NOVA_ENV": "development",
+        }
+    )
+
+    assert environment == "development"
+
+
+def test_test_environment_keeps_existing_flexible_defaults():
+    environment = validate_runtime_configuration(
+        environ={
+            "NOVA_ENV": "test",
+        }
+    )
+
+    assert environment == "test"
+
+
+def test_production_accepts_explicit_secure_configuration():
+    environment = validate_runtime_configuration(
+        settings=_settings(),
+        security_settings=_security_settings(),
+        rate_limit_settings=_rate_limit_settings(),
+        environ=_production_environment(),
+    )
+
+    assert environment == "production"
+
+
+def test_unknown_environment_is_rejected():
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="NOVA_ENV must be one of",
+    ):
+        validate_runtime_configuration(
+            environ={
+                "NOVA_ENV": "staging",
+            }
+        )
+
+
+def test_production_requires_hsts():
+    security_settings = SecuritySettings(
+        api_trusted_hosts="api.example.com",
+        security_hsts_enabled=False,
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="SECURITY_HSTS_ENABLED",
+    ):
+        validate_runtime_configuration(
+            settings=_settings(),
+            security_settings=security_settings,
+            rate_limit_settings=_rate_limit_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_rejects_local_trusted_hosts():
+    security_settings = SecuritySettings(
+        api_trusted_hosts="localhost,api.example.com",
+        security_hsts_enabled=True,
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="local/test hosts",
+    ):
+        validate_runtime_configuration(
+            settings=_settings(),
+            security_settings=security_settings,
+            rate_limit_settings=_rate_limit_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_groq_api_key():
+    environ = _production_environment()
+    del environ["GROQ_API_KEY"]
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="GROQ_API_KEY",
+    ):
+        validate_runtime_configuration(
+            settings=_settings(),
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            environ=environ,
+        )
+
+
+def test_production_rejects_ci_groq_placeholder():
+    environ = _production_environment()
+    environ["GROQ_API_KEY"] = "ci-test-key"
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="CI placeholder",
+    ):
+        validate_runtime_configuration(
+            settings=_settings(),
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            environ=environ,
+        )
+
+
+def test_production_requires_database_url():
+    environ = _production_environment()
+    del environ["DATABASE_URL"]
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="DATABASE_URL",
+    ):
+        validate_runtime_configuration(
+            settings=_settings(),
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            environ=environ,
+        )
+
+
+def test_production_rejects_insecure_jwt_placeholder():
+    settings = Settings(
+        auth_jwt_secret_key=(
+            "local-test-auth-jwt-secret-key-32-characters"
+        )
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="AUTH_JWT_SECRET_KEY",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_api_rate_limiting():
+    rate_limit_settings = RateLimitSettings(
+        api_rate_limit_enabled=False,
+        voice_rate_limit_enabled=True,
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="API rate limiting",
+    ):
+        validate_runtime_configuration(
+            settings=_settings(),
+            security_settings=_security_settings(),
+            rate_limit_settings=rate_limit_settings,
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_voice_rate_limiting():
+    rate_limit_settings = RateLimitSettings(
+        api_rate_limit_enabled=True,
+        voice_rate_limit_enabled=False,
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="voice rate limiting",
+    ):
+        validate_runtime_configuration(
+            settings=_settings(),
+            security_settings=_security_settings(),
+            rate_limit_settings=rate_limit_settings,
+            environ=_production_environment(),
+        )
