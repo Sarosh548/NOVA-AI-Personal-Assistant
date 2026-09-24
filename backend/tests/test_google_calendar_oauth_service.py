@@ -729,6 +729,81 @@ def test_disconnect_is_user_scoped_and_removes_connection(
         )
 
 
+def test_revoke_token_posts_refresh_token_without_requiring_json_body(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        captured = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(
+                self,
+            ):
+                return self
+
+            def __exit__(
+                self,
+                exc_type,
+                exc,
+                traceback,
+            ):
+                return None
+
+            def read(
+                self,
+            ):
+                return b""
+
+        def fake_urlopen(
+            request,
+            timeout,
+        ):
+            captured["url"] = request.full_url
+            captured["method"] = request.method
+            captured["body"] = request.data
+            captured["content_type"] = (
+                request.headers["Content-type"]
+            )
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr(
+            "services.google_calendar_oauth_service.urlopen",
+            fake_urlopen,
+        )
+
+        service._revoke_token(
+            "refresh-secret"
+        )
+
+        assert captured["url"] == (
+            service.REVOCATION_ENDPOINT
+        )
+        assert captured["method"] == "POST"
+        assert captured["body"] == (
+            b"token=refresh-secret"
+        )
+        assert captured["content_type"] == (
+            "application/x-www-form-urlencoded"
+        )
+        assert captured["timeout"] == (
+            service.HTTP_TIMEOUT_SECONDS
+        )
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
 def test_disconnect_revokes_refresh_token_before_removing_connection(
     monkeypatch,
 ):
