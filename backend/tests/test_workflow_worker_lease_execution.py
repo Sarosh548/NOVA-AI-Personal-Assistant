@@ -39,7 +39,10 @@ class FakeToolRouter:
         }
 
 
-def build_runtime():
+def build_runtime(
+    *,
+    workflow_lease_seconds=300,
+):
     db_engine = create_engine(
         "sqlite://",
         connect_args={
@@ -58,7 +61,9 @@ def build_runtime():
 
     service = WorkflowService(
         db_engine=db_engine,
-        workflow_lease_seconds=300,
+        workflow_lease_seconds=(
+            workflow_lease_seconds
+        ),
     )
 
     return db_engine, service
@@ -372,6 +377,99 @@ def test_executor_propagates_workflow_claim_token_and_heartbeats(
         assert len(
             tool_router.calls
         ) == 1
+
+    finally:
+        teardown_runtime(
+            db_engine
+        )
+
+
+
+def test_executor_heartbeats_during_long_running_tool_execution():
+    import time
+
+    db_engine, service = build_runtime(
+        workflow_lease_seconds=2,
+    )
+
+    try:
+        workflow = create_workflow(
+            service
+        )
+
+        class SlowToolRouter(FakeToolRouter):
+            def execute(
+                self,
+                *,
+                intent,
+                user_id,
+                data,
+            ):
+                self.calls.append(
+                    {
+                        "intent": intent,
+                        "user_id": user_id,
+                        "data": dict(data),
+                    }
+                )
+
+                time.sleep(2.5)
+
+                return {
+                    "success": True,
+                    "result": {
+                        "executed": True,
+                    },
+                    "error": None,
+                }
+
+        tool_router = SlowToolRouter()
+
+        execution_service = (
+            DurableWorkflowExecutionService(
+                workflow_service=service,
+                tool_router=tool_router,
+            )
+        )
+
+        heartbeat_calls = []
+        original_heartbeat = (
+            service.heartbeat_workflow
+        )
+
+        def tracked_heartbeat(
+            *,
+            user_id,
+            workflow_id,
+            claim_token,
+            now=None,
+        ):
+            heartbeat_calls.append(
+                {
+                    "user_id": user_id,
+                    "workflow_id": workflow_id,
+                    "claim_token": claim_token,
+                }
+            )
+
+            return original_heartbeat(
+                user_id=user_id,
+                workflow_id=workflow_id,
+                claim_token=claim_token,
+                now=now,
+            )
+
+        service.heartbeat_workflow = tracked_heartbeat
+
+        result = execution_service.execute(
+            user_id="user-001",
+            workflow_id=workflow["id"],
+        )
+
+        assert result["success"] is True
+        assert result["status"] == "completed"
+        assert len(heartbeat_calls) >= 3
+        assert len(tool_router.calls) == 1
 
     finally:
         teardown_runtime(
