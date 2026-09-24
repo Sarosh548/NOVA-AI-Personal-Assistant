@@ -516,7 +516,7 @@ class GoogleCalendarOAuthService:
                         claim_token=claim_token,
                         access_token=access_token,
                         expires_at=(
-                            now
+                            self._utc_now_naive()
                             + timedelta(
                                 seconds=expires_in
                             )
