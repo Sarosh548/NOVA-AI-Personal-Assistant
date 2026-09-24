@@ -165,9 +165,11 @@ def test_production_requires_groq_api_key():
         match="GROQ_API_KEY",
     ):
         validate_runtime_configuration(
-            settings=_settings(),
+            settings=_production_settings(),
             security_settings=_security_settings(),
             rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
             environ=environ,
         )
 
@@ -234,9 +236,11 @@ def test_production_requires_api_rate_limiting():
         match="API rate limiting",
     ):
         validate_runtime_configuration(
-            settings=_settings(),
+            settings=_production_settings(),
             security_settings=_security_settings(),
             rate_limit_settings=rate_limit_settings,
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
             environ=_production_environment(),
         )
 
@@ -377,8 +381,10 @@ def test_production_requires_voice_rate_limiting():
         match="voice rate limiting",
     ):
         validate_runtime_configuration(
-            settings=_settings(),
+            settings=_production_settings(),
             security_settings=_security_settings(),
             rate_limit_settings=rate_limit_settings,
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
             environ=_production_environment(),
         )
