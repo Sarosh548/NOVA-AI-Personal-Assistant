@@ -119,4 +119,9 @@ class NotificationDelivery(Base):
             "user_id",
             "created_at",
         ),
+        Index(
+            "ix_notification_deliveries_status_updated",
+            "status",
+            "updated_at",
+        ),
     )
