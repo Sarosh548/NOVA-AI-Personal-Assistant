@@ -1,3 +1,5 @@
+import pytest
+
 from services.planner_service import (
     PlanStep,
     PlannerService,
@@ -484,3 +486,168 @@ def test_planner_rejects_unsupported_multi_step_action():
     assert plan.requires_tool is False
     assert plan.steps == ()
     assert "not supported" in plan.reason
+
+
+def test_planner_normalizes_single_step_web_payload():
+    planner = PlannerService()
+
+    understanding = {
+        "intent": "web",
+        "requires_tool": True,
+        "web_action": "search",
+        "web_topic": "news",
+        "web_time_range": "day",
+        "query": "latest AI news",
+        "max_results": "5",
+    }
+
+    available_tools = [
+        {
+            "name": "web",
+            "description": "Search live web information.",
+            "actions": ["search"],
+        }
+    ]
+
+    plan = planner.create_plan(
+        understanding=understanding,
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is True
+    assert plan.tool == "web"
+    assert plan.action == "search"
+
+    assert plan.data["query"] == "latest AI news"
+    assert plan.data["topic"] == "news"
+    assert plan.data["time_range"] == "day"
+    assert plan.data["web_topic"] == "news"
+    assert plan.data["web_time_range"] == "day"
+    assert plan.data["max_results"] == 5
+    assert plan.data["action"] == "search"
+    assert plan.data["web_action"] == "search"
+
+    assert plan.steps[0].data["topic"] == "news"
+    assert plan.steps[0].data["time_range"] == "day"
+
+
+def test_planner_normalizes_multi_step_web_payload():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "web",
+            "description": "Search live web information.",
+            "actions": ["search"],
+        }
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "web",
+                "action": "search",
+                "data": {
+                    "web_action": "search",
+                    "web_topic": "finance",
+                    "web_time_range": "week",
+                    "query": "USD to PKR exchange rate",
+                    "max_results": 3,
+                },
+                "depends_on": [],
+            }
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is True
+    assert len(plan.steps) == 1
+
+    step = plan.steps[0]
+
+    assert step.data["query"] == "USD to PKR exchange rate"
+    assert step.data["topic"] == "finance"
+    assert step.data["time_range"] == "week"
+    assert step.data["web_topic"] == "finance"
+    assert step.data["web_time_range"] == "week"
+    assert step.data["max_results"] == 3
+    assert step.data["action"] == "search"
+    assert step.data["web_action"] == "search"
+
+
+def test_planner_rejects_web_search_without_query():
+    planner = PlannerService()
+
+    available_tools = [
+        {
+            "name": "web",
+            "description": "Search live web information.",
+            "actions": ["search"],
+        }
+    ]
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "web",
+                "action": "search",
+                "data": {
+                    "web_topic": "news",
+                },
+                "depends_on": [],
+            }
+        ],
+        available_tools=available_tools,
+    )
+
+    assert plan.requires_tool is False
+    assert plan.tool is None
+    assert plan.action is None
+    assert plan.steps == ()
+    assert "requires a non-empty query" in plan.reason
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("web_topic", "sports"),
+        ("web_time_range", "hour"),
+        ("max_results", 11),
+        ("max_results", 0),
+    ],
+)
+def test_planner_rejects_invalid_web_search_payload(field, value):
+    planner = PlannerService()
+
+    data = {
+        "query": "AI news",
+        "web_topic": "general",
+        "web_time_range": "day",
+        "max_results": 5,
+    }
+    data[field] = value
+
+    plan = planner.create_multi_step_plan(
+        steps=[
+            {
+                "step_id": "step-1",
+                "tool": "web",
+                "action": "search",
+                "data": data,
+                "depends_on": [],
+            }
+        ],
+        available_tools=[
+            {
+                "name": "web",
+                "description": "Search live web information.",
+                "actions": ["search"],
+            }
+        ],
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "invalid" in plan.reason

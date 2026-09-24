@@ -166,6 +166,27 @@ class PlannerService:
             tool=tool,
         )
 
+        normalized_plan_data, validation_error = (
+            self._normalize_and_validate_tool_data(
+                tool=tool,
+                action=action,
+                data=plan_data,
+                step_id="step-1",
+            )
+        )
+
+        if validation_error is not None:
+            return PlanDecision(
+                requires_tool=False,
+                tool=None,
+                action=None,
+                data={},
+                reason=validation_error,
+                steps=(),
+            )
+
+        plan_data = normalized_plan_data
+
         step = PlanStep(
             step_id="step-1",
             tool=tool,
@@ -313,6 +334,22 @@ class PlannerService:
                     f"Data for plan step '{step_id}' "
                     "must be a dictionary."
                 )
+
+            normalized_data, validation_error = (
+                self._normalize_and_validate_tool_data(
+                    tool=tool,
+                    action=action,
+                    data=data,
+                    step_id=step_id,
+                )
+            )
+
+            if validation_error is not None:
+                return self._invalid_multi_step_plan(
+                    validation_error
+                )
+
+            data = normalized_data
 
             raw_dependencies = raw_step.get(
                 "depends_on",
@@ -494,6 +531,146 @@ class PlannerService:
                 )
 
         return None
+
+    def _normalize_and_validate_tool_data(
+        self,
+        *,
+        tool: str,
+        action: str,
+        data: dict[str, Any],
+        step_id: str,
+    ) -> tuple[dict[str, Any], str | None]:
+        """
+        Normalize tool-specific execution data and fail closed
+        when a required payload contract is incomplete.
+
+        Web search is normalized here because the understanding
+        layer uses web_* field names while ToolRouter consumes
+        provider-neutral execution fields.
+        """
+
+        normalized = dict(data)
+
+        if tool != "web":
+            return normalized, None
+
+        if action != "search":
+            return (
+                normalized,
+                (
+                    f"Web step '{step_id}' must use "
+                    "the 'search' action."
+                ),
+            )
+
+        query = normalized.get("query")
+
+        if query is None or not str(query).strip():
+            return (
+                normalized,
+                (
+                    f"Web search step '{step_id}' "
+                    "requires a non-empty query."
+                ),
+            )
+
+        normalized["query"] = str(query).strip()
+        normalized["action"] = "search"
+        normalized["web_action"] = "search"
+
+        topic = normalized.get(
+            "web_topic",
+            normalized.get("topic"),
+        )
+
+        if topic is None:
+            topic = "general"
+
+        topic = str(topic).strip().lower()
+
+        if topic not in {
+            "general",
+            "news",
+            "finance",
+        }:
+            return (
+                normalized,
+                (
+                    f"Web search step '{step_id}' "
+                    "has an invalid topic."
+                ),
+            )
+
+        normalized["web_topic"] = topic
+        normalized["topic"] = topic
+
+        time_range = normalized.get(
+            "web_time_range",
+            normalized.get("time_range"),
+        )
+
+        if time_range is not None:
+            time_range = (
+                str(time_range).strip().lower()
+            )
+
+            if time_range not in {
+                "day",
+                "week",
+                "month",
+                "year",
+            }:
+                return (
+                    normalized,
+                    (
+                        f"Web search step '{step_id}' "
+                        "has an invalid time range."
+                    ),
+                )
+
+            normalized["web_time_range"] = time_range
+            normalized["time_range"] = time_range
+        else:
+            normalized["web_time_range"] = None
+            normalized["time_range"] = None
+
+        max_results = normalized.get(
+            "max_results"
+        )
+
+        if max_results is not None:
+            if isinstance(max_results, bool):
+                return (
+                    normalized,
+                    (
+                        f"Web search step '{step_id}' "
+                        "has an invalid max_results value."
+                    ),
+                )
+
+            try:
+                max_results = int(max_results)
+            except (TypeError, ValueError):
+                return (
+                    normalized,
+                    (
+                        f"Web search step '{step_id}' "
+                        "has an invalid max_results value."
+                    ),
+                )
+
+            if not 1 <= max_results <= 10:
+                return (
+                    normalized,
+                    (
+                        f"Web search step '{step_id}' "
+                        "has an invalid max_results value."
+                    ),
+                )
+
+            normalized["max_results"] = max_results
+
+        return normalized, None
 
     def _find_tool(
         self,
