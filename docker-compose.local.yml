@@ -21,6 +21,24 @@ services:
       retries: 20
       start_period: 5s
 
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/nova_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      [
+        "python",
+        "-m",
+        "alembic",
+        "upgrade",
+        "head"
+      ]
+
   backend:
     build:
       context: .
@@ -37,14 +55,8 @@ services:
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
-    command:
-      [
-        "sh",
-        "-c",
-        "python -m alembic upgrade head && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1"
-      ]
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
