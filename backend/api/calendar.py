@@ -145,6 +145,7 @@ def _raise_calendar_error(
             403,
             404,
             409,
+            412,
             429,
         }:
             raise HTTPException(
@@ -501,16 +502,27 @@ def update_calendar_event(
     send_updates: CalendarSendUpdates = Query(
         default="all",
     ),
+    if_match: str | None = Header(
+        default=None,
+        alias="If-Match",
+    ),
 ) -> dict:
     try:
-        return calendar_service.update_event(
-            user_id=current_user_id,
-            event_id=event_id,
-            calendar_id=calendar_id,
-            event=_event_payload(
+        update_kwargs = {
+            "user_id": current_user_id,
+            "event_id": event_id,
+            "calendar_id": calendar_id,
+            "event": _event_payload(
                 request
             ),
-            send_updates=send_updates,
+            "send_updates": send_updates,
+        }
+
+        if if_match is not None:
+            update_kwargs["if_match"] = if_match
+
+        return calendar_service.update_event(
+            **update_kwargs
         )
 
     except (
@@ -540,13 +552,24 @@ def delete_calendar_event(
     send_updates: CalendarSendUpdates = Query(
         default="all",
     ),
+    if_match: str | None = Header(
+        default=None,
+        alias="If-Match",
+    ),
 ) -> CalendarEventDeleteResponse:
     try:
+        delete_kwargs = {
+            "user_id": current_user_id,
+            "event_id": event_id,
+            "calendar_id": calendar_id,
+            "send_updates": send_updates,
+        }
+
+        if if_match is not None:
+            delete_kwargs["if_match"] = if_match
+
         result = calendar_service.delete_event(
-            user_id=current_user_id,
-            event_id=event_id,
-            calendar_id=calendar_id,
-            send_updates=send_updates,
+            **delete_kwargs
         )
 
     except (
