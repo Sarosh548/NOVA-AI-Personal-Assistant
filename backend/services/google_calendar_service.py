@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import hashlib
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -333,6 +334,7 @@ class GoogleCalendarService:
         event: dict[str, Any],
         calendar_id: str | None = None,
         send_updates: str = DEFAULT_SEND_UPDATES,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """
         Create a Calendar event.
@@ -361,18 +363,48 @@ class GoogleCalendarService:
             "/events"
         )
 
-        response = self._request(
-            user_id=user_id,
-            method="POST",
-            path=path,
-            query=[
-                (
-                    "sendUpdates",
-                    normalized_send_updates,
-                )
-            ],
-            body=payload,
+        normalized_idempotency_key = (
+            self._normalize_idempotency_key(
+                idempotency_key
+            )
         )
+
+        if normalized_idempotency_key is not None:
+            payload["id"] = (
+                self._build_idempotent_event_id(
+                    user_id=user_id,
+                    idempotency_key=(
+                        normalized_idempotency_key
+                    ),
+                )
+            )
+
+        try:
+            response = self._request(
+                user_id=user_id,
+                method="POST",
+                path=path,
+                query=[
+                    (
+                        "sendUpdates",
+                        normalized_send_updates,
+                    )
+                ],
+                body=payload,
+            )
+
+        except GoogleCalendarAPIError as exc:
+            if (
+                normalized_idempotency_key is None
+                or exc.status_code != 409
+            ):
+                raise
+
+            return self.get_event(
+                user_id=user_id,
+                event_id=payload["id"],
+                calendar_id=calendar,
+            )
 
         if not isinstance(
             response,
@@ -755,8 +787,52 @@ class GoogleCalendarService:
 
         return normalized
 
-    @classmethod
     def _validate_send_updates(
+    @staticmethod
+    def _normalize_idempotency_key(
+        value: Any,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        if not isinstance(
+            value,
+            str,
+        ):
+            raise ValueError(
+                "idempotency_key must be a string."
+            )
+
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError(
+                "idempotency_key cannot be empty."
+            )
+
+        if len(normalized) > 255:
+            raise ValueError(
+                "idempotency_key cannot exceed 255 characters."
+            )
+
+        return normalized
+
+    @staticmethod
+    def _build_idempotent_event_id(
+        *,
+        user_id: str,
+        idempotency_key: str,
+    ) -> str:
+        canonical = (
+            str(user_id).strip()
+            + ":"
+            + idempotency_key
+        )
+
+        return hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+
         cls,
         value: Any,
     ) -> str:
