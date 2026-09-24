@@ -637,7 +637,9 @@ def test_disconnect_is_user_scoped_and_removes_connection(
         )
 
 
-def test_token_refresh_lease_allows_only_one_claim():
+def test_token_refresh_lease_allows_only_one_claim(
+    monkeypatch,
+):
     engine = build_runtime()
 
     try:
@@ -647,6 +649,21 @@ def test_token_refresh_lease_allows_only_one_claim():
 
         state = create_state(
             service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "expired-access",
+                "refresh_token": "stable-refresh",
+                "expires_in": 1,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
         )
 
         from sqlalchemy.orm import Session
@@ -665,33 +682,21 @@ def test_token_refresh_lease_allows_only_one_claim():
                     == "user-001"
                 )
                 .values(
-                    encrypted_access_token=(
-                        service.encryption_service.encrypt(
-                            "expired-access"
-                        )
-                    ),
                     token_expires_at=(
                         service._utc_now_naive()
                         - timedelta(
                             seconds=120
                         )
-                    ),
+                    )
                 )
             )
             session.commit()
-
-        monkeypatch = None
 
         claim_one = service._claim_token_refresh(
             user_id="user-001"
         )
         claim_two = service._claim_token_refresh(
             user_id="user-001"
-        )
-
-        assert claim_one is None or isinstance(
-            claim_one,
-            dict,
         )
 
         assert claim_one is not None
