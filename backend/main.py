@@ -274,6 +274,7 @@ reminder_scheduler = ReminderScheduler(
     interval_seconds=5,
     reminder_service=reminder_service,
     notification_service=notification_service,
+    batch_size=50,
 )
 
 autonomous_workflow_scheduler = (
