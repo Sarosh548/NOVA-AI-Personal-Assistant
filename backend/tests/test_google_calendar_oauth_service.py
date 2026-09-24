@@ -729,6 +729,123 @@ def test_disconnect_is_user_scoped_and_removes_connection(
         )
 
 
+def test_disconnect_revokes_refresh_token_before_removing_connection(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "access",
+                "refresh_token": "refresh-secret",
+                "expires_in": 3600,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
+        )
+
+        revoked_tokens = []
+
+        monkeypatch.setattr(
+            service,
+            "_revoke_token",
+            lambda refresh_token: revoked_tokens.append(
+                refresh_token
+            ),
+        )
+
+        assert service.disconnect(
+            user_id="user-001"
+        ) is True
+
+        assert revoked_tokens == [
+            "refresh-secret"
+        ]
+
+        assert service.get_connection(
+            user_id="user-001"
+        ) is None
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_disconnect_preserves_connection_when_remote_revocation_fails(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "access",
+                "refresh_token": "refresh-secret",
+                "expires_in": 3600,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
+        )
+
+        def fail_revocation(
+            refresh_token,
+        ):
+            raise ValueError(
+                "Google Calendar access revocation failed."
+            )
+
+        monkeypatch.setattr(
+            service,
+            "_revoke_token",
+            fail_revocation,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="access revocation failed",
+        ):
+            service.disconnect(
+                user_id="user-001"
+            )
+
+        assert service.get_connection(
+            user_id="user-001"
+        ) is not None
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
 def test_token_refresh_lease_allows_only_one_claim(
     monkeypatch,
 ):
