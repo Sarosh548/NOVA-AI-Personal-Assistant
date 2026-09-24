@@ -14,6 +14,8 @@ USER_TIMEZONE = "Asia/Karachi"
 
 class ReminderService:
     CLAIM_LEASE_SECONDS = 300
+    DEFAULT_CLAIM_BATCH_SIZE = 100
+    MAX_CLAIM_BATCH_SIZE = 500
 
     def __init__(self, engine=None):
         self.engine = (
@@ -323,6 +325,7 @@ class ReminderService:
         self,
         *,
         now: datetime | None = None,
+        batch_size: int = DEFAULT_CLAIM_BATCH_SIZE,
     ) -> list[dict]:
         """
         Atomically claim due or stale-processing reminders.
@@ -333,6 +336,19 @@ class ReminderService:
         Every claim receives a unique token so a worker that loses
         its lease cannot finalize the reminder later.
         """
+
+        normalized_batch_size = int(batch_size)
+
+        if normalized_batch_size < 1:
+            raise ValueError(
+                "batch_size must be at least 1."
+            )
+
+        if normalized_batch_size > self.MAX_CLAIM_BATCH_SIZE:
+            raise ValueError(
+                "batch_size must not exceed "
+                f"{self.MAX_CLAIM_BATCH_SIZE}."
+            )
 
         current_time = (
             now
@@ -375,6 +391,8 @@ class ReminderService:
         ).order_by(
             Reminder.reminder_time.asc(),
             Reminder.id.asc(),
+        ).limit(
+            normalized_batch_size
         ).with_for_update(
             skip_locked=True
         )

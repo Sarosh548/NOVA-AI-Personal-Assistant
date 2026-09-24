@@ -10,8 +10,11 @@ class FakeReminderService:
     def __init__(self):
         self.completed_calls = []
         self.pending_calls = []
+        self.batch_sizes = []
 
-    def claim_due_reminders(self):
+    def claim_due_reminders(self, *, batch_size):
+        self.batch_sizes.append(batch_size)
+
         return [
             {
                 "id": 101,
@@ -96,6 +99,8 @@ async def test_scheduler_processes_due_reminder_after_successful_notification():
     )
 
     await scheduler.process_due_reminders()
+
+    assert reminder_service.batch_sizes == [50]
 
     assert reminder_service.completed_calls == [
         {
@@ -362,3 +367,17 @@ async def test_scheduler_cycle_backoff_caps_and_resets_after_success(monkeypatch
     ]
     assert scheduler._running is False
 
+
+
+@pytest.mark.parametrize(
+    "batch_size",
+    [0, ReminderScheduler.MAX_BATCH_SIZE + 1],
+)
+def test_scheduler_rejects_invalid_batch_size(batch_size):
+    with pytest.raises(
+        ValueError,
+        match="batch_size",
+    ):
+        ReminderScheduler(
+            batch_size=batch_size,
+        )

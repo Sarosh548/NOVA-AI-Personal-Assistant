@@ -30,6 +30,8 @@ class ReminderScheduler:
     """
 
     MAX_CYCLE_BACKOFF_SECONDS = 60
+    DEFAULT_BATCH_SIZE = 50
+    MAX_BATCH_SIZE = 500
 
     def __init__(
         self,
@@ -39,6 +41,7 @@ class ReminderScheduler:
         activity_event_service: (
             ActivityEventService | None
         ) = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ):
         if interval_seconds < 1:
             raise ValueError(
@@ -49,6 +52,17 @@ class ReminderScheduler:
             raise ValueError(
                 "interval_seconds must not exceed "
                 "MAX_CYCLE_BACKOFF_SECONDS"
+            )
+
+        if batch_size < 1:
+            raise ValueError(
+                "batch_size must be at least 1"
+            )
+
+        if batch_size > ReminderScheduler.MAX_BATCH_SIZE:
+            raise ValueError(
+                "batch_size must not exceed "
+                "MAX_BATCH_SIZE"
             )
 
         self.interval_seconds = interval_seconds
@@ -62,6 +76,7 @@ class ReminderScheduler:
             if notification_service is not None
             else NotificationService()
         )
+        self.batch_size = batch_size
         self.activity_event_service = (
             activity_event_service
             if activity_event_service is not None
@@ -71,7 +86,7 @@ class ReminderScheduler:
 
     def _process_due_reminders_sync(self) -> None:
         """
-        Find and process all due reminders.
+        Find and process one bounded batch of due reminders.
 
         A reminder is completed only after the notification
         service confirms successful delivery.
@@ -79,7 +94,9 @@ class ReminderScheduler:
 
         reminders = (
             self.reminder_service
-            .claim_due_reminders()
+            .claim_due_reminders(
+                batch_size=self.batch_size,
+            )
         )
 
         for reminder in reminders:
