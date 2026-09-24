@@ -65,6 +65,10 @@ class CalendarConnection(Base):
             "ix_calendar_connections_token_expires_at",
             "token_expires_at",
         ),
+        Index(
+            "ix_calendar_connections_token_refresh_lease_until",
+            "token_refresh_lease_until",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
