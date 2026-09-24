@@ -449,6 +449,39 @@ def test_production_rejects_local_google_calendar_redirect_uri():
         )
 
 
+def test_production_accepts_supported_google_calendar_scope():
+    settings = _production_settings(
+        calendar_google_scopes=(
+            "  https://www.googleapis.com/auth/calendar.events  "
+        )
+    )
+
+    assert (
+        validate_runtime_configuration(
+            settings=settings,
+            environ=_production_environment(),
+        )
+        == "production"
+    )
+
+
+def test_production_rejects_unsupported_google_calendar_scope():
+    settings = _production_settings(
+        calendar_google_scopes=(
+            "https://www.googleapis.com/auth/calendar"
+        )
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="supported least-privilege",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            environ=_production_environment(),
+        )
+
+
 def test_production_requires_google_calendar_scopes():
     settings = _production_settings()
     settings.calendar_google_scopes = ""
