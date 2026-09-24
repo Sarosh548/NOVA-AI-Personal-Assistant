@@ -607,3 +607,99 @@ def test_calendar_api_does_not_accept_user_id_from_request(
 
     assert action == "list"
     assert payload["user_id"] == "user-001"
+
+def test_update_calendar_event_passes_if_match_header(
+    authenticated_client,
+):
+    client, service = authenticated_client
+
+    response = client.patch(
+        "/integrations/google/calendar/events/event-001",
+        headers={
+            "If-Match": "\"etag-update-1\"",
+        },
+        json={
+            "summary": "Renamed",
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.calls[0] == (
+        "update",
+        {
+            "user_id": "user-001",
+            "event_id": "event-001",
+            "calendar_id": None,
+            "event": {
+                "summary": "Renamed",
+            },
+            "send_updates": "all",
+            "if_match": "\"etag-update-1\"",
+        },
+    )
+
+
+def test_delete_calendar_event_passes_if_match_header(
+    authenticated_client,
+):
+    client, service = authenticated_client
+
+    response = client.delete(
+        "/integrations/google/calendar/events/event-001",
+        headers={
+            "If-Match": "\"etag-delete-1\"",
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.calls[0] == (
+        "delete",
+        {
+            "user_id": "user-001",
+            "event_id": "event-001",
+            "calendar_id": None,
+            "send_updates": "all",
+            "if_match": "\"etag-delete-1\"",
+        },
+    )
+
+
+def test_calendar_provider_412_is_preserved(
+    authenticated_client,
+):
+    client, _service = authenticated_client
+
+    from services.google_calendar_service import (
+        GoogleCalendarAPIError,
+    )
+
+    class StaleCalendarService(FakeCalendarService):
+        def update_event(self, **_kwargs):
+            raise GoogleCalendarAPIError(
+                "Google Calendar event version is stale.",
+                status_code=412,
+            )
+
+    replacement = StaleCalendarService()
+
+    main.app.dependency_overrides[
+        get_google_calendar_service
+    ] = lambda: replacement
+
+    response = client.patch(
+        "/integrations/google/calendar/events/event-stale",
+        headers={
+            "If-Match": "\"stale-etag\"",
+        },
+        json={
+            "summary": "Renamed",
+        },
+    )
+
+    assert response.status_code == 412
+    assert response.json() == {
+        "detail": (
+            "Google Calendar event version is stale."
+        )
+    }
+
