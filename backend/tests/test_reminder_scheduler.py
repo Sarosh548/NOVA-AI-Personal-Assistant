@@ -102,7 +102,8 @@ async def test_scheduler_processes_due_reminder_after_successful_notification():
 
     assert reminder_service.batch_sizes == [50]
 
-    assert reminder_service.completed_calls == [        {
+    assert reminder_service.completed_calls == [
+        {
             "reminder_id": 101,
             "claim_token": CLAIM_TOKEN,
         }
