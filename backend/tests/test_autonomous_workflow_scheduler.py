@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import asyncio
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
@@ -588,7 +589,6 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
     async def fake_wait_for(awaitable, timeout):
         backoff_waits.append(timeout)
         awaitable.close()
-        raise asyncio.TimeoutError
         raise asyncio.TimeoutError
 
     scheduler.process_due_workflows = flaky_cycle
