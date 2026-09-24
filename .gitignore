@@ -4,3 +4,7 @@ __pycache__/
 .env
 .vscode/
 pgvector/
+node_modules/
+dist/
+frontend/.eslintcache
+frontend/.vite/
