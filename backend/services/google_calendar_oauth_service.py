@@ -305,6 +305,8 @@ class GoogleCalendarOAuthService:
                 connection.token_expires_at = (
                     token_expires_at
                 )
+                connection.token_refresh_claim_token = None
+                connection.token_refresh_lease_until = None
                 connection.scopes = scopes
                 connection.updated_at = now
 
