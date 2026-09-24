@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
 
 import main
@@ -14,6 +16,11 @@ from api.auth import (
 from api.calendar import (
     get_google_calendar_service,
 )
+from api.calendar import (
+    idempotency_service as calendar_idempotency_service,
+)
+from models.idempotency_record import IdempotencyRecord
+from services.idempotency_service import IdempotencyService
 
 
 class FakeCalendarService:
@@ -123,6 +130,31 @@ def _authenticated_context(
 def authenticated_client():
     service = FakeCalendarService()
 
+    idempotency_engine = create_engine(
+        "sqlite://",
+        connect_args={
+            "check_same_thread": False,
+        },
+        poolclass=StaticPool,
+    )
+
+    IdempotencyRecord.__table__.create(
+        bind=idempotency_engine
+    )
+
+    test_idempotency_service = IdempotencyService(
+        db_engine=idempotency_engine
+    )
+
+    import api.calendar as calendar_api
+
+    original_idempotency_service = (
+        calendar_api.idempotency_service
+    )
+    calendar_api.idempotency_service = (
+        test_idempotency_service
+    )
+
     main.app.dependency_overrides[
         get_current_auth_context
     ] = lambda: _authenticated_context()
@@ -147,6 +179,15 @@ def authenticated_client():
             get_google_calendar_service,
             None,
         )
+
+        calendar_api.idempotency_service = (
+            original_idempotency_service
+        )
+
+        IdempotencyRecord.__table__.drop(
+            bind=idempotency_engine
+        )
+        idempotency_engine.dispose()
 
 
 def test_calendar_events_require_authentication():
@@ -277,6 +318,103 @@ def test_create_calendar_event_serializes_datetime_and_uses_auth_user(
             }
         ],
     }
+
+
+def test_create_calendar_event_replays_with_idempotency_key(
+    authenticated_client,
+):
+    client, service = authenticated_client
+
+    payload = {
+        "summary": "Idempotent meeting",
+        "start": {
+            "dateTime": (
+                "2026-09-21T15:00:00+05:00"
+            )
+        },
+        "end": {
+            "dateTime": (
+                "2026-09-21T16:00:00+05:00"
+            )
+        },
+    }
+
+    first = client.post(
+        "/integrations/google/calendar/events",
+        headers={
+            "Idempotency-Key": "calendar-api-request-1",
+        },
+        json=payload,
+    )
+
+    second = client.post(
+        "/integrations/google/calendar/events",
+        headers={
+            "Idempotency-Key": "calendar-api-request-1",
+        },
+        json=payload,
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json() == second.json()
+    assert len(service.calls) == 1
+
+
+def test_create_calendar_event_rejects_idempotency_key_conflict(
+    authenticated_client,
+):
+    client, service = authenticated_client
+
+    first = client.post(
+        "/integrations/google/calendar/events",
+        headers={
+            "Idempotency-Key": "calendar-api-request-2",
+        },
+        json={
+            "summary": "First meeting",
+            "start": {
+                "dateTime": (
+                    "2026-09-21T15:00:00+05:00"
+                )
+            },
+            "end": {
+                "dateTime": (
+                    "2026-09-21T16:00:00+05:00"
+                )
+            },
+        },
+    )
+
+    second = client.post(
+        "/integrations/google/calendar/events",
+        headers={
+            "Idempotency-Key": "calendar-api-request-2",
+        },
+        json={
+            "summary": "Different meeting",
+            "start": {
+                "dateTime": (
+                    "2026-09-21T17:00:00+05:00"
+                )
+            },
+            "end": {
+                "dateTime": (
+                    "2026-09-21T18:00:00+05:00"
+                )
+            },
+        },
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert second.json() == {
+        "detail": (
+            "Idempotency-Key was already used "
+            "for a different request."
+        )
+    }
+    assert len(service.calls) == 1
 
 
 def test_create_calendar_event_rejects_malformed_boundary(
