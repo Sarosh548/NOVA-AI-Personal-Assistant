@@ -810,6 +810,20 @@ async def _run_voice_assistant_execution(
                         {},
                     )
                 ),
+                "web_sources": (
+                    response_payload.get(
+                        "web_sources",
+                        [],
+                    )
+                    if isinstance(
+                        response_payload.get(
+                            "web_sources",
+                            [],
+                        ),
+                        list,
+                    )
+                    else []
+                ),
             }
         )
     except WebSocketDisconnect:
