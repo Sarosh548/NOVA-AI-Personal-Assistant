@@ -1101,6 +1101,68 @@ def test_disconnect_revokes_refresh_token_before_removing_connection(
         )
 
 
+def test_disconnect_removes_connection_when_google_reports_invalid_token(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "access",
+                "refresh_token": "already-revoked-refresh",
+                "expires_in": 3600,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
+        )
+
+        def already_revoked(
+            refresh_token,
+            **_kwargs,
+        ):
+            raise HTTPError(
+                service.REVOCATION_ENDPOINT,
+                400,
+                "invalid token",
+                {},
+                BytesIO(
+                    b'{"error":"invalid_token","error_description":"Token expired or revoked"}'
+                ),
+            )
+
+        monkeypatch.setattr(
+            "services.google_calendar_oauth_service.urlopen",
+            already_revoked,
+        )
+
+        assert service.disconnect(
+            user_id="user-001"
+        ) is True
+
+        assert service.get_connection(
+            user_id="user-001"
+        ) is None
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
 def test_disconnect_preserves_connection_when_remote_revocation_fails(
     monkeypatch,
 ):
