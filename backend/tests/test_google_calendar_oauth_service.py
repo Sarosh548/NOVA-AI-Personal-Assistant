@@ -707,6 +707,12 @@ def test_disconnect_is_user_scoped_and_removes_connection(
             code="code",
         )
 
+        monkeypatch.setattr(
+            service,
+            "_revoke_token",
+            lambda refresh_token: None,
+        )
+
         assert service.disconnect(
             user_id="different-user"
         ) is False
