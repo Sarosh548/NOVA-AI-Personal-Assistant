@@ -60,6 +60,10 @@ def _production_settings() -> Settings:
         integration_token_encryption_key=(
             "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
         ),
+        notification_default_channel="webhook",
+        notification_webhook_url=(
+            "https://notify.example.com/nova"
+        ),
     )
 
 
@@ -264,6 +268,83 @@ def test_production_rejects_insecure_jwt_placeholder():
             rate_limit_settings=_rate_limit_settings(),
             environ=_production_environment(),
         )
+
+
+def test_production_rejects_console_notification_channel():
+    settings = _production_settings()
+    settings.notification_default_channel = "console"
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="external notification channel",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_webhook_notification_url():
+    settings = _production_settings()
+    settings.notification_webhook_url = None
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="NOTIFICATION_WEBHOOK_URL",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_requires_https_webhook_notification_url():
+    settings = _production_settings()
+    settings.notification_webhook_url = (
+        "http://notify.example.com/nova"
+    )
+
+    with pytest.raises(
+        ProductionConfigurationError,
+        match="HTTPS",
+    ):
+        validate_runtime_configuration(
+            settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
+            environ=_production_environment(),
+        )
+
+
+def test_production_accepts_secure_email_notification_configuration():
+    settings = _production_settings()
+    settings.notification_default_channel = "email"
+    settings.notification_webhook_url = None
+    settings.notification_smtp_host = "smtp.example.com"
+    settings.notification_email_from_address = "nova@example.com"
+    settings.notification_smtp_starttls = True
+    settings.notification_smtp_use_ssl = False
+
+    environment = validate_runtime_configuration(
+        settings=settings,
+        security_settings=_security_settings(),
+        rate_limit_settings=_rate_limit_settings(),
+        stt_provider_settings=_stt_provider_settings(),
+        tts_provider_settings=_tts_provider_settings(),
+        environ=_production_environment(),
+    )
+
+    assert environment == "production"
 
 
 def test_production_requires_api_rate_limiting():
