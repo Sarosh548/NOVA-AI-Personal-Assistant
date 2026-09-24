@@ -217,6 +217,16 @@ For calendar:
     preserve event_id and calendar_id.
 - preserve send_updates only when explicitly requested.
 
+For web:
+- search:
+    data must contain action="search" and a concise non-empty query.
+    Use topic as one of general, news, or finance.
+    Use time_range as one of day, week, month, or year when requested.
+    Use max_results only when requested and keep it between 1 and 10.
+    The planner may use web_topic/web_time_range from the
+    understanding layer; the deterministic planner normalizes those
+    fields to the web tool's execution payload.
+
 
 Return exactly this structure:
 
