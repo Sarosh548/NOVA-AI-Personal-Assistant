@@ -730,7 +730,6 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
         backoff_waits.append(timeout)
         awaitable.close()
         raise asyncio.TimeoutError
-        raise asyncio.TimeoutError
 
     scheduler.process_daily_activity_digests = flaky_cycle
 
