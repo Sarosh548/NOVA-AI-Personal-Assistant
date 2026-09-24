@@ -69,7 +69,7 @@ class ReminderScheduler:
         )
         self._running = False
 
-    async def process_due_reminders(self) -> None:
+    def _process_due_reminders_sync(self) -> None:
         """
         Find and process all due reminders.
 
@@ -248,6 +248,14 @@ class ReminderScheduler:
                         "processing failure.",
                         reminder_id,
                     )
+
+    async def process_due_reminders(self) -> None:
+        """
+        Run the blocking reminder cycle outside the asyncio event loop.
+        """
+        await asyncio.to_thread(
+            self._process_due_reminders_sync
+        )
 
     def _record_activity_event(
         self,
