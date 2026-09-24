@@ -371,6 +371,67 @@ def validate_runtime_configuration(
             "'email' or 'webhook'."
         )
 
+    calendar_client_id = str(
+        active_settings.calendar_google_client_id
+        or ""
+    ).strip()
+
+    calendar_client_secret = str(
+        active_settings.calendar_google_client_secret
+        or ""
+    ).strip()
+
+    calendar_redirect_uri = str(
+        active_settings.calendar_google_redirect_uri
+        or ""
+    ).strip()
+
+    if not calendar_client_id:
+        raise ProductionConfigurationError(
+            "Production requires CALENDAR_GOOGLE_CLIENT_ID."
+        )
+
+    if not calendar_client_secret:
+        raise ProductionConfigurationError(
+            "Production requires CALENDAR_GOOGLE_CLIENT_SECRET."
+        )
+
+    if not calendar_redirect_uri:
+        raise ProductionConfigurationError(
+            "Production requires CALENDAR_GOOGLE_REDIRECT_URI."
+        )
+
+    parsed_calendar_redirect_uri = __import__(
+        "urllib.parse",
+        fromlist=["urlparse"],
+    ).urlparse(
+        calendar_redirect_uri
+    )
+
+    if parsed_calendar_redirect_uri.scheme != "https":
+        raise ProductionConfigurationError(
+            "Production CALENDAR_GOOGLE_REDIRECT_URI must use HTTPS."
+        )
+
+    redirect_host = (
+        parsed_calendar_redirect_uri.hostname
+        or ""
+    ).strip().lower()
+
+    if redirect_host in LOCAL_TRUSTED_HOSTS:
+        raise ProductionConfigurationError(
+            "Production CALENDAR_GOOGLE_REDIRECT_URI cannot "
+            "use a local/test host."
+        )
+
+    if not str(
+        active_settings.calendar_google_scopes
+        or ""
+    ).strip():
+        raise ProductionConfigurationError(
+            "Production requires CALENDAR_GOOGLE_SCOPES."
+        )
+
     if (
         not active_rate_limit_settings
         .api_rate_limit_enabled
