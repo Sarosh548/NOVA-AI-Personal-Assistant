@@ -62,6 +62,7 @@ class NotificationDeliveryCleanupScheduler:
             else NotificationDeliveryService()
         )
         self._running = False
+        self._stop_event: asyncio.Event | None = None
 
     def purge_expired_deliveries(self) -> int:
         return self.delivery_service.purge_expired_deliveries(
@@ -74,6 +75,7 @@ class NotificationDeliveryCleanupScheduler:
             return
 
         self._running = True
+        self._stop_event = asyncio.Event()
 
         logger.info(
             "NOVA notification delivery cleanup scheduler started "
@@ -134,12 +136,19 @@ class NotificationDeliveryCleanupScheduler:
                 if not self._running:
                     break
 
-                await asyncio.sleep(
-                    cycle_backoff_seconds
-                )
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=cycle_backoff_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                break
 
         finally:
             self._running = False
+            self._stop_event = None
 
             logger.info(
                 "NOVA notification delivery cleanup scheduler stopped."
@@ -147,3 +156,6 @@ class NotificationDeliveryCleanupScheduler:
 
     def stop(self) -> None:
         self._running = False
+
+        if self._stop_event is not None:
+            self._stop_event.set()
