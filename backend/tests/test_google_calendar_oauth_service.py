@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from io import BytesIO
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -15,6 +17,7 @@ from models.oauth_state import OAuthState
 from models.user import User
 from services.google_calendar_oauth_service import (
     GoogleCalendarOAuthService,
+    GoogleOAuthTokenError,
 )
 from services.token_encryption_service import (
     TokenEncryptionService,
@@ -671,6 +674,182 @@ def test_get_valid_access_token_refreshes_expired_token(
         assert refreshed_calls == [
             "stable-refresh"
         ]
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+
+def test_invalid_grant_refresh_invalidates_local_connection(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "expired-access",
+                "refresh_token": "revoked-refresh",
+                "expires_in": 1,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
+        )
+
+        def fail_refresh(
+            refresh_token,
+        ):
+            raise GoogleOAuthTokenError(
+                "Google access token refresh failed.",
+                error_code="invalid_grant",
+            )
+
+        monkeypatch.setattr(
+            service,
+            "_refresh_access_token",
+            fail_refresh,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="access token refresh failed",
+        ):
+            service.get_valid_access_token(
+                user_id="user-001"
+            )
+
+        assert service.get_connection(
+            user_id="user-001"
+        ) is None
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_invalid_grant_does_not_delete_a_newer_refresh_claim(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        state = create_state(
+            service
+        )
+
+        monkeypatch.setattr(
+            service,
+            "_exchange_authorization_code",
+            lambda code: {
+                "access_token": "expired-access",
+                "refresh_token": "stable-refresh",
+                "expires_in": 1,
+            },
+        )
+
+        service.complete_authorization(
+            state=state,
+            code="code",
+        )
+
+        claim = service._claim_token_refresh(
+            user_id="user-001"
+        )
+
+        assert claim is not None
+
+        service._release_token_refresh(
+            user_id="user-001",
+            claim_token=claim["claim_token"],
+        )
+
+        newer_claim = service._claim_token_refresh(
+            user_id="user-001"
+        )
+
+        assert newer_claim is not None
+        assert newer_claim["claim_token"] != claim["claim_token"]
+
+        assert service._invalidate_connection_after_invalid_grant(
+            user_id="user-001",
+            claim_token=claim["claim_token"],
+        ) is False
+
+        assert service.get_connection(
+            user_id="user-001"
+        ) is not None
+
+        assert service._release_token_refresh(
+            user_id="user-001",
+            claim_token=newer_claim["claim_token"],
+        ) is True
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_post_form_preserves_invalid_grant_error_code(
+    monkeypatch,
+):
+    engine = build_runtime()
+
+    try:
+        service = build_service(
+            engine
+        )
+
+        def fake_urlopen(
+            request,
+            timeout,
+        ):
+            raise HTTPError(
+                request.full_url,
+                400,
+                "invalid grant",
+                {},
+                BytesIO(
+                    b'{"error":"invalid_grant","error_description":"Token has been revoked."}'
+                ),
+            )
+
+        monkeypatch.setattr(
+            "services.google_calendar_oauth_service.urlopen",
+            fake_urlopen,
+        )
+
+        with pytest.raises(
+            GoogleOAuthTokenError,
+            match="access token refresh failed",
+        ) as exc_info:
+            service._refresh_access_token(
+                "revoked-refresh"
+            )
+
+        assert exc_info.value.error_code == (
+            "invalid_grant"
+        )
 
     finally:
         teardown_runtime(
