@@ -428,6 +428,7 @@ class GoogleCalendarService:
         event: dict[str, Any],
         calendar_id: str | None = None,
         send_updates: str = DEFAULT_SEND_UPDATES,
+        if_match: str | None = None,
     ) -> dict[str, Any]:
         """
         Partially update a Calendar event using Google's PATCH API.
@@ -472,6 +473,10 @@ class GoogleCalendarService:
             )
         )
 
+        normalized_if_match = self._normalize_if_match(
+            if_match
+        )
+
         if not payload:
             raise ValueError(
                 "Calendar event update cannot be empty."
@@ -495,6 +500,7 @@ class GoogleCalendarService:
                 )
             ],
             body=payload,
+            if_match=normalized_if_match,
         )
 
         if not isinstance(
@@ -518,6 +524,7 @@ class GoogleCalendarService:
         event_id: str,
         calendar_id: str | None = None,
         send_updates: str = DEFAULT_SEND_UPDATES,
+        if_match: str | None = None,
     ) -> dict[str, Any]:
         """
         Delete a Calendar event.
@@ -541,6 +548,10 @@ class GoogleCalendarService:
             )
         )
 
+        normalized_if_match = self._normalize_if_match(
+            if_match
+        )
+
         path = (
             f"/calendars/"
             f"{quote(calendar, safe='')}"
@@ -558,6 +569,7 @@ class GoogleCalendarService:
                     normalized_send_updates,
                 )
             ],
+            if_match=normalized_if_match,
         )
 
         return {
@@ -577,6 +589,7 @@ class GoogleCalendarService:
         path: str,
         query: list[tuple[str, str]] | None = None,
         body: dict[str, Any] | None = None,
+        if_match: str | None = None,
     ) -> dict[str, Any] | None:
         access_token = (
             self.oauth_service
@@ -605,6 +618,9 @@ class GoogleCalendarService:
             ),
             "Accept": "application/json",
         }
+
+        if if_match is not None:
+            headers["If-Match"] = if_match
 
         encoded_body = None
 
@@ -698,6 +714,10 @@ class GoogleCalendarService:
             message = (
                 "Google Calendar reported a resource conflict."
             )
+        elif status_code == 412:
+            message = (
+                "Google Calendar event version is stale."
+            )
         elif status_code == 429:
             message = (
                 "Google Calendar rate limit was reached."
@@ -783,6 +803,35 @@ class GoogleCalendarService:
         if not normalized:
             raise ValueError(
                 f"{field_name} cannot be empty."
+            )
+
+        return normalized
+
+    @staticmethod
+    def _normalize_if_match(
+        value: Any,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        if not isinstance(
+            value,
+            str,
+        ):
+            raise ValueError(
+                "if_match must be a string."
+            )
+
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError(
+                "if_match cannot be empty."
+            )
+
+        if len(normalized) > 1000:
+            raise ValueError(
+                "if_match cannot exceed 1000 characters."
             )
 
         return normalized
