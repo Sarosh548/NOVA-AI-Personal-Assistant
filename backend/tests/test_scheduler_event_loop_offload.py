@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from services.autonomous_workflow_scheduler import (
@@ -163,3 +165,110 @@ async def test_notification_delivery_cleanup_scheduler_offloads_blocking_cycle(
         ("sync_cycle", (), {}),
         "sync",
     ]
+
+@pytest.mark.asyncio
+async def test_reminder_scheduler_stop_wakes_backoff_wait(
+    monkeypatch,
+):
+    scheduler = ReminderScheduler()
+    cycle_done = asyncio.Event()
+
+    async def fake_cycle():
+        cycle_done.set()
+
+    monkeypatch.setattr(
+        scheduler,
+        "process_due_reminders",
+        fake_cycle,
+    )
+
+    task = asyncio.create_task(scheduler.run())
+
+    await asyncio.wait_for(
+        cycle_done.wait(),
+        timeout=0.5,
+    )
+
+    assert scheduler._running is True
+
+    scheduler.stop()
+
+    await asyncio.wait_for(
+        task,
+        timeout=0.5,
+    )
+
+    assert scheduler._running is False
+    assert scheduler._stop_event is None
+
+
+@pytest.mark.asyncio
+async def test_autonomous_workflow_scheduler_stop_wakes_backoff_wait(
+    monkeypatch,
+):
+    scheduler = AutonomousWorkflowScheduler()
+    cycle_done = asyncio.Event()
+
+    async def fake_cycle():
+        cycle_done.set()
+
+    monkeypatch.setattr(
+        scheduler,
+        "process_due_workflows",
+        fake_cycle,
+    )
+
+    task = asyncio.create_task(scheduler.run())
+
+    await asyncio.wait_for(
+        cycle_done.wait(),
+        timeout=0.5,
+    )
+
+    assert scheduler._running is True
+
+    scheduler.stop()
+
+    await asyncio.wait_for(
+        task,
+        timeout=0.5,
+    )
+
+    assert scheduler._running is False
+    assert scheduler._stop_event is None
+
+
+@pytest.mark.asyncio
+async def test_proactive_activity_scheduler_stop_wakes_backoff_wait(
+    monkeypatch,
+):
+    scheduler = ProactiveActivityScheduler()
+    cycle_done = asyncio.Event()
+
+    async def fake_cycle():
+        cycle_done.set()
+
+    monkeypatch.setattr(
+        scheduler,
+        "process_daily_activity_digests",
+        fake_cycle,
+    )
+
+    task = asyncio.create_task(scheduler.run())
+
+    await asyncio.wait_for(
+        cycle_done.wait(),
+        timeout=0.5,
+    )
+
+    assert scheduler._running is True
+
+    scheduler.stop()
+
+    await asyncio.wait_for(
+        task,
+        timeout=0.5,
+    )
+
+    assert scheduler._running is False
+    assert scheduler._stop_event is None

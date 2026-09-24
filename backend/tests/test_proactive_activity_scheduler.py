@@ -714,7 +714,7 @@ def test_scheduler_supports_dst_timezone():
 async def test_scheduler_run_survives_cycle_failure(monkeypatch):
     scheduler = ProactiveActivityScheduler()
     calls = []
-    sleeps = []
+    backoff_waits = []
 
     async def flaky_cycle():
         calls.append("cycle")
@@ -726,14 +726,17 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
 
         scheduler.stop()
 
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
+    async def fake_wait_for(awaitable, timeout):
+        backoff_waits.append(timeout)
+        awaitable.close()
+        raise asyncio.TimeoutError
+        raise asyncio.TimeoutError
 
     scheduler.process_daily_activity_digests = flaky_cycle
 
     monkeypatch.setattr(
-        "services.proactive_activity_scheduler.asyncio.sleep",
-        fake_sleep,
+        "services.proactive_activity_scheduler.asyncio.wait_for",
+        fake_wait_for,
     )
 
     await scheduler.run()
@@ -742,7 +745,7 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
         "cycle",
         "cycle",
     ]
-    assert sleeps == [
+    assert backoff_waits == [
         scheduler.interval_seconds
     ]
     assert scheduler._running is False
@@ -752,7 +755,7 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
 async def test_scheduler_cycle_backoff_caps_and_resets_after_success(monkeypatch):
     scheduler = ProactiveActivityScheduler()
     calls = []
-    sleeps = []
+    backoff_waits = []
 
     async def flaky_cycle():
         calls.append("cycle")
@@ -770,14 +773,16 @@ async def test_scheduler_cycle_backoff_caps_and_resets_after_success(monkeypatch
         if len(calls) == 8:
             scheduler.stop()
 
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
+    async def fake_wait_for(awaitable, timeout):
+        backoff_waits.append(timeout)
+        awaitable.close()
+        raise asyncio.TimeoutError
 
     scheduler.process_daily_activity_digests = flaky_cycle
 
     monkeypatch.setattr(
-        "services.proactive_activity_scheduler.asyncio.sleep",
-        fake_sleep,
+        "services.proactive_activity_scheduler.asyncio.wait_for",
+        fake_wait_for,
     )
 
     await scheduler.run()
@@ -792,7 +797,7 @@ async def test_scheduler_cycle_backoff_caps_and_resets_after_success(monkeypatch
         "cycle",
         "cycle",
     ]
-    assert sleeps == [
+    assert backoff_waits == [
         scheduler.interval_seconds,
         scheduler.interval_seconds * 2,
         scheduler.interval_seconds * 4,

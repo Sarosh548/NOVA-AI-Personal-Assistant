@@ -116,6 +116,7 @@ class AutonomousWorkflowScheduler:
 
         self.batch_size = batch_size
         self._running = False
+        self._stop_event: asyncio.Event | None = None
 
     def _process_due_workflows_sync(self) -> None:
         """
@@ -354,6 +355,7 @@ class AutonomousWorkflowScheduler:
             return
 
         self._running = True
+        self._stop_event = asyncio.Event()
 
         logger.info(
             "NOVA autonomous workflow scheduler started "
@@ -408,12 +410,19 @@ class AutonomousWorkflowScheduler:
                 if not self._running:
                     break
 
-                await asyncio.sleep(
-                    cycle_backoff_seconds
-                )
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=cycle_backoff_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                break
 
         finally:
             self._running = False
+            self._stop_event = None
 
             logger.info(
                 "NOVA autonomous workflow scheduler stopped."
@@ -421,3 +430,6 @@ class AutonomousWorkflowScheduler:
 
     def stop(self) -> None:
         self._running = False
+
+        if self._stop_event is not None:
+            self._stop_event.set()
