@@ -178,7 +178,10 @@ class FakeReminderService:
     ):
         return True
 
-    def claim_due_reminders(self):
+    def claim_due_reminders(
+        self,
+        batch_size=50,
+    ):
         return [
             {
                 "id": 601,

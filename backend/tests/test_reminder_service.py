@@ -190,6 +190,77 @@ def test_active_processing_lease_is_not_reclaimed(
     assert stored.claim_token == "active-token"
 
 
+def test_claim_due_reminders_respects_batch_size(
+    reminder_service,
+):
+    now = datetime(
+        2030,
+        1,
+        1,
+        12,
+        0,
+    )
+
+    reminder_ids = [
+        seed_reminder(
+            reminder_service,
+            reminder_time=(
+                now - timedelta(minutes=3)
+            ),
+        ),
+        seed_reminder(
+            reminder_service,
+            reminder_time=(
+                now - timedelta(minutes=2)
+            ),
+        ),
+        seed_reminder(
+            reminder_service,
+            reminder_time=(
+                now - timedelta(minutes=1)
+            ),
+        ),
+    ]
+
+    claimed = reminder_service.claim_due_reminders(
+        now=now,
+        batch_size=2,
+    )
+
+    assert [item["id"] for item in claimed] == reminder_ids[:2]
+
+    remaining = [
+        get_reminder(
+            reminder_service,
+            reminder_id,
+        )
+        for reminder_id in reminder_ids
+    ]
+
+    assert [item.status for item in remaining] == [
+        "processing",
+        "processing",
+        "pending",
+    ]
+
+
+@pytest.mark.parametrize(
+    "batch_size",
+    [0, 501],
+)
+def test_claim_due_reminders_rejects_invalid_batch_size(
+    reminder_service,
+    batch_size,
+):
+    with pytest.raises(
+        ValueError,
+        match="batch_size",
+    ):
+        reminder_service.claim_due_reminders(
+            batch_size=batch_size,
+        )
+
+
 def test_expired_processing_lease_is_reclaimed_with_new_token(
     reminder_service,
 ):
