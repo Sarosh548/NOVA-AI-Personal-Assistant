@@ -293,6 +293,8 @@ async def test_scheduler_run_survives_cycle_failure(monkeypatch):
     async def fake_wait_for(awaitable, timeout):
         backoff_waits.append(timeout)
         awaitable.close()
+        raise asyncio.TimeoutError
+        raise asyncio.TimeoutError
 
     scheduler.process_due_reminders = flaky_cycle
 
