@@ -82,5 +82,22 @@ jobs:
           TOKENIZERS_PARALLELISM: "false"
         run: python -m pytest -q
 
+      - name: Docker Compose runtime smoke test
+        run: |
+          set -e
+          cleanup() {
+            docker compose -f docker-compose.local.yml logs --no-color --tail=200 backend migrate postgres || true
+            docker compose -f docker-compose.local.yml down -v || true
+          }
+          trap cleanup EXIT
+
+          docker compose -f docker-compose.local.yml up -d --build
+          curl --fail --retry 30 --retry-delay 2 --retry-all-errors             http://127.0.0.1:8000/health/live
+          curl --fail --retry 30 --retry-delay 2 --retry-all-errors             http://127.0.0.1:8000/health/ready
+
+          backend_id="$(docker compose -f docker-compose.local.yml ps -q backend)"
+          test -n "$backend_id"
+          test "$(docker inspect --format '{{.State.Health.Status}}' "$backend_id")" = "healthy"
+
       - name: Check whitespace errors
         run: git diff --check
