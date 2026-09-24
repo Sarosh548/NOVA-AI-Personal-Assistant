@@ -473,6 +473,10 @@ def test_production_accepts_supported_google_calendar_scope():
     assert (
         validate_runtime_configuration(
             settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
             environ=_production_environment(),
         )
         == "production"
@@ -492,6 +496,10 @@ def test_production_rejects_unsupported_google_calendar_scope():
     ):
         validate_runtime_configuration(
             settings=settings,
+            security_settings=_security_settings(),
+            rate_limit_settings=_rate_limit_settings(),
+            stt_provider_settings=_stt_provider_settings(),
+            tts_provider_settings=_tts_provider_settings(),
             environ=_production_environment(),
         )
 
