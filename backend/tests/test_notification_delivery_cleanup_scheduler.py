@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from services.notification_delivery_cleanup_scheduler import (
@@ -75,9 +77,7 @@ def test_cleanup_scheduler_rejects_invalid_configuration():
 
 
 @pytest.mark.asyncio
-async def test_cleanup_scheduler_stops_after_one_cycle(
-    monkeypatch,
-):
+async def test_cleanup_scheduler_stop_wakes_backoff_wait():
     fake = FakeNotificationDeliveryService()
 
     scheduler = NotificationDeliveryCleanupScheduler(
@@ -87,15 +87,20 @@ async def test_cleanup_scheduler_stops_after_one_cycle(
         batch_size=25,
     )
 
-    async def stop_sleep(_seconds):
-        scheduler.stop()
-
-    monkeypatch.setattr(
-        "services.notification_delivery_cleanup_scheduler.asyncio.sleep",
-        stop_sleep,
+    task = asyncio.create_task(
+        scheduler.run()
     )
 
-    await scheduler.run()
+    await asyncio.sleep(0)
+
+    assert scheduler._running is True
+
+    scheduler.stop()
+
+    await asyncio.wait_for(
+        task,
+        timeout=0.5,
+    )
 
     assert fake.calls == [
         {
