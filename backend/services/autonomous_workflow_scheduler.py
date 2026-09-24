@@ -117,7 +117,7 @@ class AutonomousWorkflowScheduler:
         self.batch_size = batch_size
         self._running = False
 
-    async def process_due_workflows(self) -> None:
+    def _process_due_workflows_sync(self) -> None:
         """
         Recover stale workers first, then process the currently
         due autonomous workflow queue.
@@ -180,6 +180,14 @@ class AutonomousWorkflowScheduler:
                     "normal execution handling.",
                     workflow_id,
                 )
+
+    async def process_due_workflows(self) -> None:
+        """
+        Run the blocking workflow cycle outside the asyncio event loop.
+        """
+        await asyncio.to_thread(
+            self._process_due_workflows_sync
+        )
 
     def _record_terminal_event(
         self,

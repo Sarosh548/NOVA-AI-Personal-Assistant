@@ -67,12 +67,20 @@ class IdempotencyCleanupScheduler:
         self.batch_size = batch_size
         self._running = False
 
-    async def process_expired_records(self) -> int:
+    def _process_expired_records_sync(self) -> int:
         """
         Purge one bounded batch of expired terminal records.
         """
         return self.idempotency_service.purge_expired_records(
             limit=self.batch_size
+        )
+
+    async def process_expired_records(self) -> int:
+        """
+        Run the blocking cleanup cycle outside the asyncio event loop.
+        """
+        return await asyncio.to_thread(
+            self._process_expired_records_sync
         )
 
     async def run(self) -> None:
