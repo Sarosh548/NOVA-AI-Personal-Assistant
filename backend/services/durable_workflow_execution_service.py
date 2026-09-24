@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from services.tool_router import ToolRouter
 from services.workflow_execution_safety_service import (
@@ -45,6 +49,9 @@ class DurableWorkflowExecutionService:
     - stale-worker fencing
     - future worker/queue execution
     """
+
+    HEARTBEAT_INTERVAL_MAX_SECONDS = 30
+    HEARTBEAT_INTERVAL_FRACTION = 3
 
     EXECUTABLE_STATUSES = {
         "pending",
@@ -99,8 +106,9 @@ class DurableWorkflowExecutionService:
         execution.
 
         A successful claim creates a worker lease. The worker
-        heartbeats immediately before each step and again after
-        external tool execution, before the result is persisted.
+        heartbeats immediately before each step, periodically
+        during external tool execution, and again after tool
+        execution before the result is persisted.
 
         If the worker loses its lease:
         - no new tool execution is started
@@ -535,8 +543,10 @@ class DurableWorkflowExecutionService:
                 # Execute exactly once in this invocation.
                 # -----------------------------------------
 
-                tool_result = self._execute_step(
+                tool_result = self._execute_step_with_heartbeat(
                     user_id=user_id,
+                    workflow_id=workflow_id,
+                    claim_token=claim_token,
                     step=claimed_step,
                 )
 
@@ -742,6 +752,107 @@ class DurableWorkflowExecutionService:
         )
 
         return renewed is not None
+
+    def _heartbeat_interval_seconds(
+        self,
+    ) -> float:
+        lease_seconds = float(
+            self.workflow_service.workflow_lease_seconds
+        )
+
+        return max(
+            1.0,
+            min(
+                float(self.HEARTBEAT_INTERVAL_MAX_SECONDS),
+                lease_seconds
+                / self.HEARTBEAT_INTERVAL_FRACTION,
+            ),
+        )
+
+    def _execute_step_with_heartbeat(
+        self,
+        *,
+        user_id: str,
+        workflow_id: int,
+        claim_token: str,
+        step: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Execute one tool step while a background watchdog renews
+        the workflow lease.
+
+        The final post-tool heartbeat in execute() remains the fence
+        that decides whether this worker may persist the step result.
+        """
+
+        stop_event = threading.Event()
+        heartbeat_lost = threading.Event()
+
+        def heartbeat_loop() -> None:
+            interval_seconds = self._heartbeat_interval_seconds()
+
+            while not stop_event.wait(interval_seconds):
+                try:
+                    renewed = self._heartbeat_workflow(
+                        user_id=user_id,
+                        workflow_id=workflow_id,
+                        claim_token=claim_token,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Workflow lease heartbeat failed during external "
+                        "step execution (workflow_id=%s, step_id=%s).",
+                        workflow_id,
+                        step.get("step_id"),
+                    )
+                    continue
+
+                if not renewed:
+                    heartbeat_lost.set()
+                    logger.warning(
+                        "Workflow lease was lost during external step "
+                        "execution (workflow_id=%s, step_id=%s).",
+                        workflow_id,
+                        step.get("step_id"),
+                    )
+                    return
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat_loop,
+            name=(
+                "nova-workflow-heartbeat-"
+                f"{workflow_id}-{step.get('step_id', 'unknown')}"
+            ),
+            daemon=True,
+        )
+        heartbeat_thread.start()
+
+        try:
+            return self._execute_step(
+                user_id=user_id,
+                step=step,
+            )
+        finally:
+            stop_event.set()
+            heartbeat_thread.join(
+                timeout=self._heartbeat_interval_seconds() + 1.0
+            )
+
+            if heartbeat_thread.is_alive():
+                logger.warning(
+                    "Workflow heartbeat watchdog thread did not stop "
+                    "promptly (workflow_id=%s, step_id=%s).",
+                    workflow_id,
+                    step.get("step_id"),
+                )
+
+            if heartbeat_lost.is_set():
+                logger.warning(
+                    "Workflow lease watchdog detected lost ownership "
+                    "(workflow_id=%s, step_id=%s).",
+                    workflow_id,
+                    step.get("step_id"),
+                )
 
     def _execute_step(
         self,
