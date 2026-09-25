@@ -536,7 +536,7 @@ export function VoiceSurface({
       }
 
       sessionReadyRef.current = false
-      stopCapture()
+      releaseAudioCapture()
 
       if (!intentionalCloseRef.current) {
         setState("disconnected")
