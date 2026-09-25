@@ -118,11 +118,7 @@ function pcmToAudioBuffer(
 ): AudioBuffer | null {
   if (payload.byteLength < 2) return null
 
-  const samples = new Int16Array(
-    payload,
-    payload.byteOffset,
-    Math.floor(payload.byteLength / 2),
-  )
+  const samples = new Int16Array(payload)
 
   if (samples.length === 0) return null
 
