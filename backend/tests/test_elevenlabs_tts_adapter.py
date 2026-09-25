@@ -286,7 +286,8 @@ async def test_stream_relay_decodes_audio_and_emits_final(
     assert json.loads(
         websocket.sent[-1]
     ) == {
-        "text": "Hello NOVA ",
+        "text": "",
+        "flush": True,
     }
 
     await stream.finish()
