@@ -13,6 +13,8 @@ type VoiceState =
   | "reconnecting"
   | "disconnected"
 
+type MicrophonePermission = "unknown" | "prompt" | "granted" | "denied"
+
 const TARGET_SAMPLE_RATE = 16_000
 const TARGET_CHANNELS = 1
 const TARGET_ENCODING = "pcm_s16le"
@@ -148,6 +150,8 @@ export function VoiceSurface({
   const [response, setResponse] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
+  const [microphonePermission, setMicrophonePermission] =
+    useState<MicrophonePermission>("unknown")
   const [audioChunkCount, setAudioChunkCount] = useState(0)
   const [audioByteCount, setAudioByteCount] = useState(0)
   const [serverAudioChunkCount, setServerAudioChunkCount] = useState(0)
@@ -176,8 +180,11 @@ export function VoiceSurface({
   const sessionReadyRef = useRef(false)
   const intentionalCloseRef = useRef(false)
   const reconnectingRef = useRef(false)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const reconnectAttemptRef = useRef(0)
   const authRecoveryAttemptedRef = useRef(false)
   const assistantAudioFinalRef = useRef(false)
+  const assistantTurnIdRef = useRef<string | null>(null)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
   const startTurnRef = useRef<(() => Promise<void>) | null>(null)
@@ -281,7 +288,34 @@ export function VoiceSurface({
     }
   }, [deactivateCapture])
 
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+  }, [])
+
+  const scheduleReconnect = useCallback(() => {
+    if (
+      intentionalCloseRef.current ||
+      !online ||
+      reconnectingRef.current ||
+      reconnectTimerRef.current !== null ||
+      reconnectAttemptRef.current >= 5
+    ) {
+      return
+    }
+
+    const delay = Math.min(10_000, 1_000 * 2 ** reconnectAttemptRef.current)
+    reconnectAttemptRef.current += 1
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      void connect(true)
+    }, delay)
+  }, [online])
+
   const closeSocket = useCallback(() => {
+    clearReconnectTimer()
     if (pingTimerRef.current !== null) {
       window.clearInterval(pingTimerRef.current)
       pingTimerRef.current = null
@@ -290,6 +324,8 @@ export function VoiceSurface({
     sessionReadyRef.current = false
     reconnectingRef.current = false
     intentionalCloseRef.current = true
+    reconnectAttemptRef.current = 0
+    assistantTurnIdRef.current = null
     clearAutoListenTimer()
     releaseAudioCapture()
     stopPlayback()
@@ -355,6 +391,7 @@ export function VoiceSurface({
       }
 
       reconnectingRef.current = false
+      reconnectAttemptRef.current = 0
       const currentToken = getAccessToken()
 
       if (!currentToken) {
@@ -482,6 +519,7 @@ export function VoiceSurface({
 
       if (type === "session.ready") {
         sessionReadyRef.current = true
+        reconnectAttemptRef.current = 0
         authRecoveryAttemptedRef.current = false
         setState("ready")
         setError(null)
@@ -530,6 +568,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response") {
+        assistantTurnIdRef.current = String(payload.turn_id ?? "") || null
         setResponse(String(payload.response ?? ""))
         setAudioState((current) =>
           current === "playing" ? current : "preparing",
@@ -562,6 +601,7 @@ export function VoiceSurface({
       if (type === "assistant.response.cancelled") {
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
+        assistantTurnIdRef.current = null
         stopPlayback()
         setResponse("")
         if (turnIdRef.current === payload.turn_id) {
@@ -576,6 +616,7 @@ export function VoiceSurface({
       if (type === "assistant.audio.cancelled") {
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
+        assistantTurnIdRef.current = null
         setAudioState("idle")
         stopPlayback()
         setState((current) =>
@@ -679,6 +720,7 @@ export function VoiceSurface({
       if (!intentionalCloseRef.current) {
         setState("disconnected")
         setError((current) => current ?? "NOVA voice disconnected.")
+        scheduleReconnect()
       }
     }
   }, [
@@ -686,6 +728,7 @@ export function VoiceSurface({
     clearAutoListenTimer,
     ensureAudioOutput,
     releaseAudioCapture,
+    scheduleReconnect,
     stopPlayback,
   ])
 
@@ -766,6 +809,7 @@ export function VoiceSurface({
     worklet.connect(muteGain)
     muteGain.connect(audioContext.destination)
 
+    setMicrophonePermission("granted")
     micStreamRef.current = stream
     micSourceRef.current = source
     workletRef.current = worklet
@@ -782,13 +826,7 @@ export function VoiceSurface({
 
     clearAutoListenTimer()
     assistantAudioFinalRef.current = false
-    setAudioChunkCount(0)
-    setAudioByteCount(0)
-    setServerAudioChunkCount(0)
-    setServerAudioByteCount(0)
-    setTtsTextChunkCount(0)
-    setTtsTextCharCount(0)
-    setProviderFinalObserved(false)
+    assistantTurnIdRef.current = null
     stopPlayback()
     setResponse("")
     setTranscript("")
@@ -821,6 +859,9 @@ export function VoiceSurface({
     } catch (err) {
       deactivateCapture()
       setState("ready")
+      if (err instanceof DOMException && err.name === "NotAllowedError") {
+        setMicrophonePermission("denied")
+      }
       setError(
         err instanceof DOMException && err.name === "NotAllowedError"
           ? "Microphone access was blocked. Allow microphone access and try again."
@@ -903,6 +944,27 @@ export function VoiceSurface({
   }, [deactivateCapture])
 
   useEffect(() => {
+    let permission: PermissionStatus | null = null
+
+    void navigator.permissions
+      ?.query({ name: "microphone" as PermissionName })
+      .then((result) => {
+        permission = result
+        setMicrophonePermission(result.state as MicrophonePermission)
+        result.onchange = () => {
+          setMicrophonePermission(result.state as MicrophonePermission)
+        }
+      })
+      .catch(() => {
+        setMicrophonePermission("unknown")
+      })
+
+    return () => {
+      if (permission) permission.onchange = null
+    }
+  }, [])
+
+  useEffect(() => {
     const handleOnline = () => setOnline(true)
     const handleOffline = () => setOnline(false)
 
@@ -917,6 +979,7 @@ export function VoiceSurface({
 
   useEffect(() => {
     if (!online) {
+      clearReconnectTimer()
       setState("disconnected")
       setError("You are offline. Reconnect when your connection is restored.")
       return
@@ -938,7 +1001,32 @@ export function VoiceSurface({
         workletUrlRef.current = null
       }
     }
-  }, [online, connect, closeSocket, clearAutoListenTimer])
+  }, [online, connect, closeSocket, clearAutoListenTimer, clearReconnectTimer])
+
+  const cancelActiveVoice = useCallback(() => {
+    const socket = socketRef.current
+    const turnId = turnIdRef.current ?? assistantTurnIdRef.current
+
+    if (!socket || socket.readyState !== WebSocket.OPEN || !turnId) {
+      return false
+    }
+
+    socket.send(
+      JSON.stringify({
+        type: "turn.cancel",
+        turn_id: turnId,
+      }),
+    )
+    clearAutoListenTimer()
+    assistantAudioFinalRef.current = false
+    assistantTurnIdRef.current = null
+    deactivateCapture()
+    stopPlayback()
+    setResponse("")
+    setAudioState("idle")
+    setState("ready")
+    return true
+  }, [clearAutoListenTimer, deactivateCapture, stopPlayback])
 
   const handleVoiceButton = () => {
     if (state === "listening") {
@@ -947,7 +1035,7 @@ export function VoiceSurface({
     }
 
     if (state === "thinking" || state === "speaking") {
-      void startTurn()
+      cancelActiveVoice()
       return
     }
 
@@ -1063,20 +1151,11 @@ export function VoiceSurface({
                       ? "NOVA is speaking"
                       : "Voice response is loading"}
                   </span>
-                  {audioChunkCount === 0 && serverAudioChunkCount > 0 && (
-                    <small className="voice-audio-debug">
-                      Server sent audio, but browser received 0 chunks
-                    </small>
-                  )}
-                  {audioChunkCount === 0 && serverAudioChunkCount === 0 && (
-                    <small className="voice-audio-debug">
-                      No audio chunks reported by server yet
-                    </small>
-                  )}
+
                 </div>
               )}
               <p>{response}</p>
-              {(audioState !== "idle" || ttsTextChunkCount > 0 || serverAudioChunkCount > 0) && (
+              {false && (
                 <small className="voice-audio-debug">
                   TTS: {ttsTextChunkCount} chunks · {ttsTextCharCount} chars
                   {" · "}
@@ -1100,6 +1179,17 @@ export function VoiceSurface({
               )}
             </div>
           )}
+
+          <small className="voice-microphone-state" role="status">
+            Microphone:{" "}
+            {microphonePermission === "granted"
+              ? "ready"
+              : microphonePermission === "denied"
+                ? "blocked"
+                : microphonePermission === "prompt"
+                  ? "permission needed"
+                  : "checking"}
+          </small>
 
           <button
             className={state === "listening" ? "voice-primary-action active" : "voice-primary-action"}
