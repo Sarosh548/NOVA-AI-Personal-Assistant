@@ -3670,3 +3670,10 @@ button.search-result-row:hover {
     flex: 1 1 auto;
   }
 }
+
+
+.sync-caption {
+  display: block;
+  margin-top: 10px;
+  font-size: 8px;
+}
