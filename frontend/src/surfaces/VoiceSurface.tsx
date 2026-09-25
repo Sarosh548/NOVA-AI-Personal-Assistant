@@ -158,6 +158,7 @@ export function VoiceSurface({
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const workletRef = useRef<AudioWorkletNode | null>(null)
   const muteGainRef = useRef<GainNode | null>(null)
+  const playbackGainRef = useRef<GainNode | null>(null)
   const playbackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const playbackEndTimeRef = useRef(0)
   const playbackTimerRef = useRef<number | null>(null)
@@ -203,6 +204,27 @@ export function VoiceSurface({
     setAudioState("idle")
   }, [clearAutoListenTimer])
 
+  const ensureAudioOutput = useCallback(async () => {
+    const audioContext = audioContextRef.current ?? new AudioContext()
+    audioContextRef.current = audioContext
+    await audioContext.resume()
+
+    if (!playbackGainRef.current) {
+      const playbackGain = audioContext.createGain()
+      playbackGain.gain.value = 1
+      playbackGain.connect(audioContext.destination)
+      playbackGainRef.current = playbackGain
+    }
+
+    if (audioContext.state !== "running") {
+      throw new Error(
+        "Browser audio output is not active. Click the NOVA voice button once to enable audio."
+      )
+    }
+
+    return audioContext
+  }, [])
+
   const setCaptureActive = useCallback((active: boolean) => {
     if (workletRef.current) {
       workletRef.current.port.postMessage({
@@ -233,6 +255,11 @@ export function VoiceSurface({
     if (muteGainRef.current) {
       muteGainRef.current.disconnect()
       muteGainRef.current = null
+    }
+
+    if (playbackGainRef.current) {
+      playbackGainRef.current.disconnect()
+      playbackGainRef.current = null
     }
 
     if (micStreamRef.current) {
@@ -337,8 +364,14 @@ export function VoiceSurface({
       if (socketRef.current !== socket) return
 
       if (typeof event.data !== "string") {
-        const audioContext = audioContextRef.current
-        if (!audioContext) return
+        let audioContext: AudioContext
+        try {
+          audioContext = await ensureAudioOutput()
+        } catch (err) {
+          setAudioState("idle")
+          setError(formatError(err, "NOVA could not activate browser audio output."))
+          return
+        }
 
         const payload =
           event.data instanceof ArrayBuffer
@@ -350,7 +383,13 @@ export function VoiceSurface({
 
         const source = audioContext.createBufferSource()
         source.buffer = buffer
-        source.connect(audioContext.destination)
+        if (!playbackGainRef.current) {
+          setAudioState("idle")
+          setError("NOVA audio output is unavailable.")
+          return
+        }
+
+        source.connect(playbackGainRef.current)
         source.onended = () => {
           playbackSourcesRef.current.delete(source)
 
@@ -562,6 +601,7 @@ export function VoiceSurface({
   }, [
     online,
     clearAutoListenTimer,
+    ensureAudioOutput,
     releaseAudioCapture,
     stopPlayback,
   ])
@@ -580,6 +620,8 @@ export function VoiceSurface({
         await existingContext.resume()
       }
     }
+
+    await ensureAudioOutput()
 
     if (workletRef.current && micStreamRef.current) {
       return workletRef.current
@@ -647,7 +689,7 @@ export function VoiceSurface({
     muteGainRef.current = muteGain
 
     return worklet
-  }, [releaseAudioCapture])
+  }, [ensureAudioOutput, releaseAudioCapture])
 
   const startTurn = useCallback(async () => {
     if (!sessionReadyRef.current) {
