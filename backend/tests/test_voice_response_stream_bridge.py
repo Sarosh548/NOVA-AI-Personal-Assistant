@@ -254,3 +254,26 @@ async def test_bridge_rejects_delta_after_abort() -> None:
             bridge.on_delta,
             "late",
         )
+
+
+@pytest.mark.asyncio
+async def test_bridge_finish_falls_back_to_authoritative_response_when_no_deltas_were_accepted() -> None:
+    bridge = VoiceResponseStreamBridge(
+        loop=asyncio.get_running_loop(),
+        max_queue_items=4,
+        enqueue_timeout_seconds=1.0,
+    )
+
+    await bridge.finish(
+        "Final authoritative response.",
+    )
+
+    received = [
+        delta
+        async for delta in bridge.text_deltas()
+    ]
+
+    assert received == [
+        "Final authoritative response.",
+    ]
+    assert bridge.accepted_delta_count == 0
