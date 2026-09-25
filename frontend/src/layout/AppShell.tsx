@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 
 import { navigation, type SurfaceKey } from "../app/navigation"
 import { AccountMenu } from "../components/AccountMenu"
@@ -13,6 +13,9 @@ type AppShellProps = {
   children: ReactNode
 }
 
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 export function AppShell({
   activeSurface,
   onNavigate,
@@ -25,6 +28,8 @@ export function AppShell({
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   )
+  const mobileMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const mobileNavigationCloseRef = useRef<HTMLButtonElement | null>(null)
 
   const activeLabel =
     navigation.find((item) => item.label === activeSurface)?.label ?? "Home"
@@ -35,18 +40,50 @@ export function AppShell({
   useEffect(() => {
     if (!mobileMenuOpen) return
 
+    const frame = window.requestAnimationFrame(() => {
+      mobileNavigationCloseRef.current?.focus()
+    })
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.preventDefault()
         setMobileMenuOpen(false)
+        return
+      }
+
+      if (event.key !== "Tab") return
+
+      const drawer = mobileNavigationCloseRef.current?.closest(
+        ".mobile-navigation-drawer",
+      )
+      if (!(drawer instanceof HTMLElement)) return
+
+      const focusable = Array.from(
+        drawer.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      )
+
+      if (focusable.length === 0) return
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
       }
     }
 
     document.addEventListener("keydown", handleKeyDown)
-    document.body.style.overflow = "hidden"
 
     return () => {
+      window.cancelAnimationFrame(frame)
       document.removeEventListener("keydown", handleKeyDown)
-      document.body.style.overflow = ""
+      window.requestAnimationFrame(() => {
+        mobileMenuTriggerRef.current?.focus()
+      })
     }
   }, [mobileMenuOpen])
 
@@ -90,7 +127,9 @@ export function AppShell({
       className={item.label === activeSurface ? "nav-item active" : "nav-item"}
       key={item.label}
       type="button"
-      onClick={() => (mobile ? navigateFromMobile(item.label) : onNavigate(item.label))}
+      onClick={() =>
+        mobile ? navigateFromMobile(item.label) : onNavigate(item.label)
+      }
       aria-current={item.label === activeSurface ? "page" : undefined}
     >
       <Icon name={item.icon} size={19} />
@@ -136,6 +175,7 @@ export function AppShell({
         <header className="topbar">
           <div className="mobile-topbar-left">
             <button
+              ref={mobileMenuTriggerRef}
               className="mobile-menu-button"
               type="button"
               aria-label="Open navigation"
@@ -178,10 +218,7 @@ export function AppShell({
               <span>Jump to…</span>
               <kbd>Ctrl K</kbd>
             </button>
-            <AccountMenu
-              displayName={displayName}
-              onSignOut={onSignOut}
-            />
+            <AccountMenu displayName={displayName} onSignOut={onSignOut} />
           </div>
         </header>
 
@@ -220,6 +257,7 @@ export function AppShell({
               </div>
 
               <button
+                ref={mobileNavigationCloseRef}
                 className="icon-action"
                 type="button"
                 aria-label="Close navigation"
