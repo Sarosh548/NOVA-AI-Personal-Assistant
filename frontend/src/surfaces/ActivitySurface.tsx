@@ -18,6 +18,8 @@ export function ActivitySurface() {
   const [events, setEvents] = useState<ActivityEvent[]>([])
   const [eventType, setEventType] = useState("")
   const [source, setSource] = useState("")
+  const [eventTypeInput, setEventTypeInput] = useState("")
+  const [sourceInput, setSourceInput] = useState("")
   const [timeRange, setTimeRange] = useState<"24h" | "7d" | "30d" | "all">("7d")
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -67,9 +69,17 @@ export function ActivitySurface() {
     return () => window.clearInterval(interval)
   }, [autoRefresh, load])
 
+  const applyFilters = () => {
+    setEventType(eventTypeInput.trim())
+    setSource(sourceInput.trim())
+    setOperationStatus("")
+  }
+
   const clearFilters = () => {
     setEventType("")
     setSource("")
+    setEventTypeInput("")
+    setSourceInput("")
     setTimeRange("7d")
     setOperationStatus("Filters cleared.")
   }
@@ -117,6 +127,14 @@ export function ActivitySurface() {
                     ? `Last synced ${formatDate(lastSyncedAt)}`
                     : "Activity sync pending"}
             </span>
+            <button
+              className="primary-action compact"
+              type="button"
+              disabled={refreshing}
+              onClick={applyFilters}
+            >
+              Apply filters
+            </button>
             <label className="inline-select">
               <span>Range</span>
               <select value={timeRange} onChange={(event) => setTimeRange(event.target.value as typeof timeRange)}>
@@ -145,8 +163,8 @@ export function ActivitySurface() {
           </div>
         </div>
         <div className="field-grid">
-          <label className="field"><span>Event type</span><input value={eventType} onChange={(e) => setEventType(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void load() }} placeholder="tool_execution" aria-label="Filter activity by event type" /></label>
-          <label className="field"><span>Source</span><input value={source} onChange={(e) => setSource(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void load() }} placeholder="assistant" aria-label="Filter activity by source" /></label>
+          <label className="field"><span>Event type</span><input value={eventTypeInput} onChange={(e) => setEventTypeInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") applyFilters() }} placeholder="tool_execution" aria-label="Filter activity by event type" /></label>
+          <label className="field"><span>Source</span><input value={sourceInput} onChange={(e) => setSourceInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") applyFilters() }} placeholder="assistant" aria-label="Filter activity by source" /></label>
         </div>
         <div className="resource-hint">
           {filterSummary ? `Active filters · ${filterSummary}` : "Showing the default 7-day activity window."}
