@@ -27,6 +27,7 @@ export async function login(params: {
   const form = new URLSearchParams()
   form.set("username", params.identifier)
   form.set("password", params.password)
+  form.set("grant_type", "password")
 
   const response = await apiRequest<TokenResponse>("/auth/login", {
     method: "POST",
