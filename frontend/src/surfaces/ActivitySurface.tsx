@@ -18,6 +18,8 @@ export function ActivitySurface() {
   const [events, setEvents] = useState<ActivityEvent[]>([])
   const [eventType, setEventType] = useState("")
   const [source, setSource] = useState("")
+  const [timeRange, setTimeRange] = useState<"24h" | "7d" | "30d" | "all">("7d")
+  const [autoRefresh, setAutoRefresh] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -25,17 +27,40 @@ export function ActivitySurface() {
     setLoading(true)
     setError(null)
     try {
-      setEvents(await getActivity({ eventType: eventType || undefined, source: source || undefined }))
+      const since =
+        timeRange === "24h"
+          ? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+          : timeRange === "7d"
+            ? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+            : timeRange === "30d"
+              ? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+              : undefined
+
+      setEvents(
+        await getActivity({
+          eventType: eventType || undefined,
+          source: source || undefined,
+          since,
+        }),
+      )
     } catch (err) {
       setError(errorText(err, "NOVA could not load activity."))
     } finally {
       setLoading(false)
     }
-  }, [eventType, source])
+  }, [eventType, source, timeRange])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!autoRefresh) return
+    const interval = window.setInterval(() => {
+      void load()
+    }, 30000)
+    return () => window.clearInterval(interval)
+  }, [autoRefresh, load])
 
   return (
     <div className="content-shell resource-shell">
@@ -51,7 +76,37 @@ export function ActivitySurface() {
       <section className="resource-panel">
         <div className="resource-panel-head">
           <div><div className="section-kicker">FILTER</div><h2>Focus the timeline.</h2></div>
-          <button className="secondary-action compact" type="button" onClick={() => void load()}><Icon name="activity" size={15} />Refresh</button>
+          <div className="resource-toolbar-actions">
+            <label className="inline-select">
+              <span>Range</span>
+              <select value={timeRange} onChange={(event) => setTimeRange(event.target.value as typeof timeRange)}>
+                <option value="24h">24 hours</option>
+                <option value="7d">7 days</option>
+                <option value="30d">30 days</option>
+                <option value="all">All available</option>
+              </select>
+            </label>
+            <label className="toggle-field compact-toggle">
+              <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
+              <span>Auto-refresh</span>
+            </label>
+            <button className="secondary-action compact" type="button" onClick={() => void load()}>
+              <Icon name="activity" size={15} />Refresh
+            </button>
+            {(eventType || source || timeRange !== "7d") && (
+              <button
+                className="ghost-action compact"
+                type="button"
+                onClick={() => {
+                  setEventType("")
+                  setSource("")
+                  setTimeRange("7d")
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
         <div className="field-grid">
           <label className="field"><span>Event type</span><input value={eventType} onChange={(e) => setEventType(e.target.value)} placeholder="tool_execution" /></label>
@@ -77,6 +132,10 @@ export function ActivitySurface() {
               </div>
               <p>{event.summary}</p>
               <small>{formatDate(event.created_at)}{event.conversation_id ? ` · Conversation #${event.conversation_id}` : ""}{event.workflow_id ? ` · Workflow #${event.workflow_id}` : ""}</small>
+              <details className="timeline-details">
+                <summary>View event details</summary>
+                <pre className="code-block">{JSON.stringify(event.metadata, null, 2)}</pre>
+              </details>
             </div>
           </article>
         ))}
