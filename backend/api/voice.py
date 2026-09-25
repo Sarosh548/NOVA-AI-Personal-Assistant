@@ -457,6 +457,8 @@ async def _relay_tts_audio(
             )
             continue
 
+        timing_state["provider_final_observed"] = True
+
         await _send_websocket_json(websocket,
             {
                 "type": "assistant.audio.final",
@@ -464,6 +466,13 @@ async def _relay_tts_audio(
                 "turn_id": event.turn_id,
                 "sequence": event.sequence,
                 "created_at": event.created_at.isoformat(),
+                "tts_text_chunk_count": int(
+                    timing_state["tts_text_chunk_count"]
+                ),
+                "tts_text_char_count": int(
+                    timing_state["tts_text_char_count"]
+                ),
+                "provider_final": True,
                 "audio_chunk_count": int(
                     timing_state["audio_chunk_count"]
                 ),
@@ -487,6 +496,9 @@ async def _run_tts_output(
         "first_audio_observed": False,
         "audio_chunk_count": 0,
         "audio_byte_count": 0,
+        "tts_text_chunk_count": 0,
+        "tts_text_char_count": 0,
+        "provider_final_observed": False,
     }
 
     relay_task = asyncio.create_task(
@@ -506,7 +518,30 @@ async def _run_tts_output(
                 delta
             )
 
+            timing_state["tts_text_chunk_count"] = (
+                int(timing_state["tts_text_chunk_count"]) + 1
+            )
+            timing_state["tts_text_char_count"] = (
+                int(timing_state["tts_text_char_count"]) + len(delta)
+            )
+
         await orchestrator.finish_turn()
+
+        await _send_websocket_json(websocket,
+            {
+                "type": "assistant.audio.debug",
+                "stage": "tts_input_complete",
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "tts_text_chunk_count": int(
+                    timing_state["tts_text_chunk_count"]
+                ),
+                "tts_text_char_count": int(
+                    timing_state["tts_text_char_count"]
+                ),
+            }
+        )
+
         await relay_task
     except asyncio.CancelledError:
         try:
