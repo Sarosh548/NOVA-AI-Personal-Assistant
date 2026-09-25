@@ -1132,3 +1132,277 @@ p {
 @keyframes nova-skeleton{0%,100%{opacity:.45}50%{opacity:.9}}@keyframes nova-thinking{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
 @media(max-width:900px){.conversation-shell{grid-template-columns:240px minmax(0,1fr)}.conversation-header{padding:0 22px}.message-scroll-area{padding-left:22px;padding-right:22px}.conversation-composer,.conversation-hint,.conversation-error{width:calc(100% - 36px)}}
 @media(max-width:720px){.conversation-shell{grid-template-columns:1fr}.conversation-sidebar{min-height:auto;padding:16px 18px 14px;border-right:0;border-bottom:1px solid var(--border)}.conversation-list{max-height:150px}.conversation-new-button{display:none}.conversation-panel{min-height:calc(100vh - 230px)}.conversation-header{min-height:68px;padding:0 18px}.message-scroll-area{padding:24px 16px 18px}.message-bubble{max-width:88%}.conversation-composer,.conversation-hint,.conversation-error{width:calc(100% - 28px)}.composer-hint{margin-bottom:13px}}
+
+/* Conversation interaction polish */
+
+.conversation-list-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 4px;
+  padding: 3px;
+}
+
+.conversation-list-item.active {
+  background: rgba(255,255,255,.045);
+}
+
+.conversation-list-select {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.conversation-list-select:hover {
+  background: rgba(255,255,255,.025);
+}
+
+.conversation-list-select:disabled {
+  cursor: not-allowed;
+}
+
+.conversation-list-select span {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-list-select small {
+  color: var(--muted-soft);
+  font-size: 10px;
+}
+
+.conversation-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.conversation-list-item:hover .conversation-item-actions,
+.conversation-list-select:focus-visible + .conversation-item-actions {
+  opacity: 1;
+}
+
+.conversation-item-action {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted-soft);
+  background: transparent;
+  cursor: pointer;
+}
+
+.conversation-item-action:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: rgba(255,255,255,.05);
+}
+
+.conversation-item-action.danger:hover {
+  color: #ffd4d4;
+  border-color: rgba(255,130,130,.18);
+  background: rgba(255,104,104,.06);
+}
+
+.conversation-item-action.save {
+  color: #b8f8e5;
+}
+
+.conversation-item-action.cancel {
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+}
+
+.conversation-item-action:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.conversation-rename-form {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto auto;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+}
+
+.conversation-rename-form input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  outline: none;
+  color: var(--text);
+  background: rgba(255,255,255,.035);
+  font: inherit;
+  font-size: 11px;
+}
+
+.conversation-rename-form input:focus {
+  border-color: rgba(185,247,255,.34);
+  box-shadow: 0 0 0 3px rgba(185,247,255,.05);
+}
+
+.conversation-item-progress {
+  position: absolute;
+  right: 7px;
+  bottom: 3px;
+  left: 7px;
+  height: 1px;
+  overflow: hidden;
+  background: rgba(255,255,255,.06);
+}
+
+.conversation-item-progress::after {
+  display: block;
+  width: 34%;
+  height: 100%;
+  content: "";
+  background: var(--accent);
+  animation: nova-conversation-progress 1s ease-in-out infinite;
+}
+
+.conversation-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversation-retry {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(255,255,255,.13);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(255,255,255,.04);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.conversation-retry:hover {
+  background: rgba(255,255,255,.075);
+}
+
+.conversation-retry:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.conversation-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(3,5,9,.68);
+  backdrop-filter: blur(8px);
+}
+
+.conversation-dialog {
+  width: min(420px,100%);
+  padding: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+}
+
+.conversation-dialog h3 {
+  margin-top: 8px;
+  font-size: 22px;
+  letter-spacing: -.035em;
+}
+
+.conversation-dialog p {
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.conversation-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.conversation-dialog-actions .secondary-action,
+.conversation-dialog-actions .danger-action {
+  min-height: 38px;
+  padding-inline: 12px;
+  font-size: 11px;
+}
+
+.danger-action {
+  border: 1px solid rgba(255,130,130,.22);
+  border-radius: 11px;
+  color: #ffdada;
+  background: rgba(255,104,104,.08);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.danger-action:hover {
+  border-color: rgba(255,130,130,.34);
+  background: rgba(255,104,104,.13);
+}
+
+.danger-action:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+@keyframes nova-conversation-progress {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+@media (hover: none), (max-width: 720px) {
+  .conversation-item-actions {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 520px) {
+  .conversation-dialog {
+    padding: 21px;
+  }
+
+  .conversation-dialog-actions {
+    flex-direction: column-reverse;
+  }
+
+  .conversation-dialog-actions .secondary-action,
+  .conversation-dialog-actions .danger-action {
+    width: 100%;
+  }
+
+  .conversation-error {
+    align-items: flex-start;
+  }
+}
