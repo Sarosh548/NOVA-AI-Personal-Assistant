@@ -1,6 +1,7 @@
 const configuredApiBaseUrl = import.meta.env.VITE_NOVA_API_BASE_URL?.trim()
 
-export const isApiBaseUrlConfigured = Boolean(configuredApiBaseUrl)
+export const isApiBaseUrlConfigured =
+  Boolean(configuredApiBaseUrl) || import.meta.env.DEV
 
 export const API_BASE_URL =
   configuredApiBaseUrl ||
