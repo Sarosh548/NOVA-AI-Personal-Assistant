@@ -12,6 +12,7 @@ import {
   ApiRequestError,
   clearStoredSession,
   getRefreshToken,
+  SESSION_EXPIRED_EVENT,
 } from "../api/client"
 import { getCurrentUser, login, logout, register } from "../api/auth"
 import type { NovaUser } from "../api/types"
@@ -41,6 +42,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading")
   const [user, setUser] = useState<NovaUser | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  const handleSessionExpired = useCallback(() => {
+    clearStoredSession()
+    setUser(null)
+    setStatus("unauthenticated")
+    setError("Your NOVA session has expired. Please sign in again.")
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired)
+    return () =>
+      window.removeEventListener(
+        SESSION_EXPIRED_EVENT,
+        handleSessionExpired,
+      )
+  }, [handleSessionExpired])
 
   const restoreSession = useCallback(async () => {
     if (!getRefreshToken()) {
