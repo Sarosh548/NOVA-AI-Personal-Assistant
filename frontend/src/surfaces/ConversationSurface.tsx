@@ -723,10 +723,10 @@ function ConversationResponseDetails({
   const confirmationStatus = confirmation
     ? String(confirmation.status ?? "pending").toLowerCase()
     : null
-  const sources = [
+  const sources: Array<Record<string, unknown>> = [
     ...(response.web_sources ?? []).map((source) => ({ ...source, kind: "Web" })),
     ...(response.knowledge_sources ?? []).map((source) => ({ ...source, kind: "Knowledge" })),
-  ].filter(isRecord)
+  ]
   const resultBlocks = [
     response.tool_result ? { label: "Action", value: response.tool_result } : null,
     response.workflow_result ? { label: "Workflow", value: response.workflow_result } : null,
