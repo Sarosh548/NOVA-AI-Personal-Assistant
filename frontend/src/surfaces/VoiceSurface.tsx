@@ -222,6 +222,7 @@ export function VoiceSurface({
     }
 
     sessionReadyRef.current = false
+    reconnectingRef.current = false
     intentionalCloseRef.current = true
     stopCapture()
     stopPlayback()
@@ -277,6 +278,11 @@ export function VoiceSurface({
     socketRef.current = socket
 
     socket.onopen = () => {
+      if (socketRef.current !== socket) {
+        socket.close()
+        return
+      }
+
       reconnectingRef.current = false
       const currentToken = getAccessToken()
 
@@ -295,6 +301,8 @@ export function VoiceSurface({
     }
 
     socket.onmessage = async (event) => {
+      if (socketRef.current !== socket) return
+
       if (typeof event.data !== "string") {
         const audioContext = audioContextRef.current
         if (!audioContext) return
@@ -452,12 +460,14 @@ export function VoiceSurface({
     }
 
     socket.onerror = () => {
-      if (!intentionalCloseRef.current) {
+      if (socketRef.current === socket && !intentionalCloseRef.current) {
         setError("NOVA voice could not reach the service.")
       }
     }
 
     socket.onclose = () => {
+      if (socketRef.current !== socket) return
+
       if (pingTimerRef.current !== null) {
         window.clearInterval(pingTimerRef.current)
         pingTimerRef.current = null
