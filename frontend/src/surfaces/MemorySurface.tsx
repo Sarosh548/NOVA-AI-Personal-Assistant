@@ -7,6 +7,7 @@ import {
   searchMemories,
   updateMemory,
   type Memory,
+  type MemorySearchResult,
 } from "../api/workspace"
 import { Icon } from "../components/Icon"
 
@@ -25,7 +26,7 @@ function errorText(error: unknown, fallback: string): string {
 
 export function MemorySurface() {
   const [memories, setMemories] = useState<Memory[]>([])
-  const [results, setResults] = useState<Array<Memory & { similarity: number }>>([])
+  const [results, setResults] = useState<MemorySearchResult[]>([])
   const [query, setQuery] = useState("")
   const [category, setCategory] = useState("")
   const [importanceFilter, setImportanceFilter] = useState("")
@@ -34,6 +35,7 @@ export function MemorySurface() {
   const [busy, setBusy] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<Record<number, Memory>>({})
+  const [selectedId, setSelectedId] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -55,6 +57,14 @@ export function MemorySurface() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (selectedId === null) return
+    document.getElementById(`memory-${selectedId}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    })
+  }, [selectedId])
 
   const runSearch = async () => {
     if (!query.trim() || searching) return
@@ -127,7 +137,25 @@ export function MemorySurface() {
         {results.length > 0 && (
           <div className="search-result-list">
             <div className="resource-card-kicker">SEARCH RESULTS</div>
-            {results.map((item) => <div className="search-result-row" key={item.id}><span>{item.memory}</span><strong>{Math.round(item.similarity * 100)}%</strong></div>)}
+            {results.map((item) => (
+              <button
+                className="search-result-row interactive"
+                key={item.id}
+                type="button"
+                onClick={() => setSelectedId(item.id)}
+              >
+                <span>
+                  <strong>{item.memory}</strong>
+                  <small>{item.category} · {item.importance} importance</small>
+                </span>
+                <em>{Math.round(item.similarity * 100)}% match · {Math.round(item.ranking_score * 100)} rank</em>
+              </button>
+            ))}
+          </div>
+        )}
+        {query.trim() && !searching && results.length === 0 && (
+          <div className="resource-empty inline-empty">
+            <span>No matching memories found.</span>
           </div>
         )}
       </section>
@@ -140,7 +168,11 @@ export function MemorySurface() {
         ) : memories.map((memory) => {
           const edit = editing[memory.id] ?? memory
           return (
-            <article className="resource-card" key={memory.id}>
+            <article
+              className={selectedId === memory.id ? "resource-card memory-card-selected" : "resource-card"}
+              key={memory.id}
+              id={`memory-${memory.id}`}
+            >
               <div className="resource-card-head">
                 <div className="resource-card-title-row">
                   <div><div className="resource-card-kicker">MEMORY #{memory.id}</div><h3>{memory.category}</h3></div>

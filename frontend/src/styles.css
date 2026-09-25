@@ -3556,3 +3556,117 @@ button.search-result-row:hover {
     padding: 24px;
   }
 }
+
+
+/* Data workspace operational polish */
+
+.resource-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.inline-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  background: rgba(255,255,255,.025);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.inline-select select {
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.compact-toggle {
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255,255,255,.025);
+}
+
+.ghost-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted-soft);
+  background: transparent;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.ghost-action:hover {
+  border-color: var(--border);
+  color: var(--text);
+  background: rgba(255,255,255,.04);
+}
+
+.timeline-details {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.timeline-details summary {
+  color: var(--muted-soft);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.timeline-details summary:hover {
+  color: var(--text);
+}
+
+.timeline-details .code-block {
+  max-height: 260px;
+  margin-top: 8px;
+  overflow: auto;
+}
+
+.memory-card-selected {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 0 30px rgba(255,255,255,.04);
+}
+
+.search-result-row {
+  text-align: left;
+}
+
+.search-result-row small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+@media (max-width: 700px) {
+  .resource-toolbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .resource-toolbar-actions .inline-select,
+  .resource-toolbar-actions .compact-toggle {
+    flex: 1 1 auto;
+  }
+}
