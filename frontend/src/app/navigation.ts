@@ -32,6 +32,7 @@ export type IconName =
   | "close"
   | "edit"
   | "trash"
+  | "search"
 
 export type NavigationItem = {
   label: SurfaceKey
