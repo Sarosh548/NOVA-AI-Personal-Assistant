@@ -35,3 +35,17 @@ export type ConversationMessagesResponse = {
   conversation_id: number
   messages: ConversationMessage[]
 }
+
+export type ChatResponse = {
+  response: string
+  conversation_id: number
+  understanding?: Record<string, unknown> | null
+  plan?: Record<string, unknown> | null
+  permission?: Record<string, unknown> | null
+  confirmation?: Record<string, unknown> | null
+  tool_result?: Record<string, unknown> | null
+  workflow_result?: Record<string, unknown> | null
+  memory_action?: Record<string, unknown> | null
+  knowledge_sources?: Array<Record<string, unknown>>
+  web_sources?: Array<Record<string, unknown>>
+}
