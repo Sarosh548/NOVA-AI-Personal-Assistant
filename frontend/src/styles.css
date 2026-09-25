@@ -1507,3 +1507,337 @@ p {
     animation: none;
   }
 }
+
+/* Realtime voice surface */
+
+.voice-shell {
+  display: grid;
+  min-height: calc(100vh - 76px);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.voice-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 76px;
+  padding: 0 34px;
+  border-bottom: 1px solid var(--border);
+}
+
+.voice-header h1 {
+  margin-top: 5px;
+  font-size: 18px;
+  letter-spacing: -.03em;
+}
+
+.voice-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255,255,255,.025);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.voice-status.online {
+  border-color: rgba(142,242,211,.16);
+  color: #b8f8e5;
+  background: rgba(142,242,211,.045);
+}
+
+.voice-main {
+  min-height: 0;
+  overflow: auto;
+}
+
+.voice-stage {
+  width: min(860px, calc(100% - 36px));
+  min-height: calc(100vh - 152px);
+  margin: 0 auto;
+  padding: 54px 0 46px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.voice-orb {
+  position: relative;
+  display: grid;
+  width: 230px;
+  height: 230px;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 40% 30%, rgba(255,255,255,.1), transparent 23%),
+    radial-gradient(circle at 50% 50%, rgba(121,214,255,.09), transparent 62%),
+    #0b1017;
+  box-shadow:
+    0 0 0 1px rgba(195,246,255,.12),
+    0 0 100px rgba(111,219,255,.06),
+    inset 0 0 70px rgba(155,228,255,.05);
+  transition: box-shadow 180ms ease, transform 180ms ease;
+}
+
+.voice-orb-listening {
+  transform: scale(1.02);
+  box-shadow:
+    0 0 0 1px rgba(195,246,255,.2),
+    0 0 0 17px rgba(175,238,255,.025),
+    0 0 120px rgba(111,219,255,.11),
+    inset 0 0 72px rgba(155,228,255,.08);
+}
+
+.voice-orb-thinking {
+  animation: nova-voice-pulse 1.5s ease-in-out infinite;
+}
+
+.voice-orb-speaking {
+  box-shadow:
+    0 0 0 1px rgba(195,246,255,.2),
+    0 0 0 17px rgba(175,238,255,.025),
+    0 0 120px rgba(151,255,223,.1),
+    inset 0 0 72px rgba(155,228,255,.08);
+}
+
+.voice-orb-ring {
+  position: absolute;
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 50%;
+}
+
+.voice-orb-ring-one {
+  width: 72%;
+  height: 72%;
+}
+
+.voice-orb-ring-two {
+  width: 88%;
+  height: 88%;
+  opacity: .55;
+}
+
+.voice-orb-core {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: 90px;
+  height: 90px;
+  place-items: center;
+  border: 1px solid rgba(195,246,255,.17);
+  border-radius: 50%;
+  color: var(--accent);
+  background: rgba(208,247,255,.045);
+  box-shadow: inset 0 0 32px rgba(155,228,255,.07);
+}
+
+.voice-stage-copy {
+  max-width: 620px;
+  margin-top: 30px;
+  text-align: center;
+}
+
+.voice-stage-copy .section-kicker {
+  color: var(--muted-soft);
+}
+
+.voice-stage-copy h2 {
+  margin-top: 7px;
+  font-size: clamp(30px, 5vw, 48px);
+  letter-spacing: -.045em;
+}
+
+.voice-stage-copy p {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.voice-turn-card {
+  width: min(680px,100%);
+  margin-top: 15px;
+  padding: 15px 16px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: rgba(255,255,255,.025);
+}
+
+.voice-turn-card.user {
+  border-color: rgba(185,247,255,.12);
+  background: rgba(185,247,255,.045);
+}
+
+.voice-turn-card.assistant {
+  background: rgba(255,255,255,.035);
+}
+
+.voice-turn-label {
+  color: var(--muted-soft);
+  letter-spacing: .12em;
+  font-size: 9px;
+  font-weight: 760;
+}
+
+.voice-turn-card p {
+  margin-top: 7px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.voice-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: min(680px,100%);
+  margin-top: 15px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,130,130,.18);
+  border-radius: 10px;
+  color: #ffd4d4;
+  background: rgba(255,104,104,.06);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.voice-error button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(255,255,255,.13);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(255,255,255,.04);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.voice-primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-width: 190px;
+  min-height: 48px;
+  margin-top: 24px;
+  padding: 0 18px;
+  border: 1px solid rgba(185,247,255,.28);
+  border-radius: 13px;
+  color: #071014;
+  background: linear-gradient(135deg,#d5fbff,#9edff0);
+  box-shadow: 0 15px 36px rgba(117,220,255,.11);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 760;
+  transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+.voice-primary-action:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 42px rgba(117,220,255,.15);
+}
+
+.voice-primary-action.active {
+  border-color: rgba(255,255,255,.18);
+  color: var(--text);
+  background: rgba(255,255,255,.06);
+  box-shadow: none;
+}
+
+.voice-primary-action:disabled {
+  cursor: not-allowed;
+  opacity: .48;
+  transform: none;
+}
+
+.voice-history-action {
+  margin-top: 13px;
+  padding: 5px 8px;
+  border: 0;
+  color: var(--muted-soft);
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.voice-history-action:hover {
+  color: var(--text);
+}
+
+@keyframes nova-voice-pulse {
+  0%,100% { transform: scale(1); }
+  50% { transform: scale(1.025); }
+}
+
+@media (max-width: 800px) {
+  .voice-header {
+    min-height: 68px;
+    padding: 0 18px;
+  }
+
+  .voice-stage {
+    min-height: calc(100vh - 136px);
+    padding-top: 42px;
+  }
+}
+
+@media (max-width: 520px) {
+  .voice-stage {
+    width: min(100% - 28px, 860px);
+    padding-top: 30px;
+    padding-bottom: 32px;
+  }
+
+  .voice-orb {
+    width: 190px;
+    height: 190px;
+  }
+
+  .voice-orb-core {
+    width: 76px;
+    height: 76px;
+  }
+
+  .voice-stage-copy {
+    margin-top: 24px;
+  }
+
+  .voice-stage-copy h2 {
+    font-size: 32px;
+  }
+
+  .voice-header h1 {
+    font-size: 16px;
+  }
+
+  .voice-error {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .voice-error button {
+    width: 100%;
+  }
+
+  .voice-primary-action {
+    width: 100%;
+    max-width: 320px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-orb-thinking {
+    animation: none;
+  }
+}
