@@ -595,14 +595,18 @@ export function CalendarSurface() {
             </div>
 
             <div className="resource-hint" role="status" aria-live="polite">
-              {loading
-                ? "Loading Google Calendar…"
-                : lastSyncedAt
-                  ? `Last synced ${new Intl.DateTimeFormat(undefined, {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    }).format(new Date(lastSyncedAt))}`
-                  : "Calendar sync pending"}
+              {saveState === "saving"
+                ? "Saving calendar changes…"
+                : saveState === "saved"
+                  ? "Calendar changes saved."
+                  : loading
+                    ? "Loading Google Calendar…"
+                    : lastSyncedAt
+                      ? `Last synced ${new Intl.DateTimeFormat(undefined, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        }).format(new Date(lastSyncedAt))}`
+                      : "Calendar sync pending"}
             </div>
 
             {loading ? (
@@ -807,13 +811,6 @@ export function CalendarSurface() {
                   />
 
                   <div className="resource-actions">
-                    <span className="resource-hint" role="status" aria-live="polite">
-                      {saveState === "saving"
-                        ? "Saving event…"
-                        : saveState === "saved"
-                          ? "Event saved."
-                          : ""}
-                    </span>
                     <button
                       className="primary-action compact"
                       type="button"
