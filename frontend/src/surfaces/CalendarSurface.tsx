@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from "react"
+import { useCallback, useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react"
 
 import { ApiRequestError } from "../api/client"
 import {
@@ -186,6 +186,10 @@ export function CalendarSurface() {
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
+  const [searchInput, setSearchInput] = useState("")
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle")
+  const editTitleRef = useRef<HTMLInputElement | null>(null)
   const [nextPageToken, setNextPageToken] = useState<string | null>(null)
   const [form, setForm] = useState<EventForm>(defaultEventForm())
   const [edit, setEdit] = useState<EventForm>(defaultEventForm())
@@ -217,6 +221,7 @@ export function CalendarSurface() {
 
       setEvents((current) => (reset ? result.events : [...current, ...result.events]))
       setNextPageToken(result.next_page_token ?? null)
+      setLastSyncedAt(new Date().toISOString())
     } catch (err) {
       setError(errorText(err, "NOVA could not load Google Calendar events."))
     } finally {
@@ -237,6 +242,7 @@ export function CalendarSurface() {
       if (!status.connected) {
         setEvents([])
         setNextPageToken(null)
+        setLastSyncedAt(null)
         return
       }
 
@@ -252,6 +258,7 @@ export function CalendarSurface() {
 
       setEvents(result.events)
       setNextPageToken(result.next_page_token ?? null)
+      setLastSyncedAt(new Date().toISOString())
     } catch (err) {
       setError(errorText(err, "NOVA could not load Google Calendar."))
     } finally {
@@ -262,6 +269,29 @@ export function CalendarSurface() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!selected?.id) return
+
+    const frame = window.requestAnimationFrame(() => {
+      editTitleRef.current?.focus()
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [selected?.id])
+
+  const applySearch = () => {
+    const nextQuery = searchInput.trim()
+    if (nextQuery === query) return
+    setNextPageToken(null)
+    setQuery(nextQuery)
+  }
+
+  const clearSearch = () => {
+    setSearchInput("")
+    setNextPageToken(null)
+    setQuery("")
+  }
 
   const connect = async () => {
     setWorking(true)
@@ -307,6 +337,7 @@ export function CalendarSurface() {
     }
 
     setWorking(true)
+    setSaveState("saving")
     setError(null)
 
     try {
@@ -331,7 +362,9 @@ export function CalendarSurface() {
 
       setForm(defaultEventForm())
       await load()
+      setSaveState("saved")
     } catch (err) {
+      setSaveState("idle")
       setError(errorText(err, "NOVA could not create that calendar event."))
     } finally {
       setWorking(false)
@@ -342,6 +375,7 @@ export function CalendarSurface() {
     const allDay = Boolean(event.start?.date)
 
     setSelected(event)
+    setSaveState("idle")
     setEdit({
       summary: typeof event.summary === "string" ? event.summary : "",
       description: typeof event.description === "string" ? event.description : "",
@@ -382,6 +416,7 @@ export function CalendarSurface() {
     }
 
     setWorking(true)
+    setSaveState("saving")
     setError(null)
 
     try {
@@ -407,7 +442,9 @@ export function CalendarSurface() {
 
       setSelected(null)
       await load()
+      setSaveState("saved")
     } catch (err) {
+      setSaveState("idle")
       setError(errorText(err, "NOVA could not update that event."))
     } finally {
       setWorking(false)
@@ -509,15 +546,39 @@ export function CalendarSurface() {
               </div>
               <div className="resource-toolbar">
                 <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  value={searchInput}
+                  onChange={(event) => setSearchInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault()
+                      applySearch()
+                    }
+                  }}
                   placeholder="Search events…"
                   aria-label="Search calendar events"
                 />
                 <button
+                  className="primary-action compact"
+                  type="button"
+                  disabled={loading || working || searchInput.trim() === query}
+                  onClick={applySearch}
+                >
+                  Search
+                </button>
+                {query && (
+                  <button
+                    className="ghost-action compact"
+                    type="button"
+                    disabled={working}
+                    onClick={clearSearch}
+                  >
+                    Clear
+                  </button>
+                )}
+                <button
                   className="secondary-action compact"
                   type="button"
-                  disabled={loading}
+                  disabled={loading || working}
                   onClick={() => void load()}
                 >
                   Refresh
@@ -531,6 +592,21 @@ export function CalendarSurface() {
                   Disconnect
                 </button>
               </div>
+            </div>
+
+            <div className="resource-hint" role="status" aria-live="polite">
+              {saveState === "saving"
+                ? "Saving calendar changes…"
+                : saveState === "saved"
+                  ? "Calendar changes saved."
+                  : loading
+                    ? "Loading Google Calendar…"
+                    : lastSyncedAt
+                      ? `Last synced ${new Intl.DateTimeFormat(undefined, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        }).format(new Date(lastSyncedAt))}`
+                      : "Calendar sync pending"}
             </div>
 
             {loading ? (
@@ -680,6 +756,7 @@ export function CalendarSurface() {
                   <label className="field">
                     <span>Title</span>
                     <input
+                      ref={editTitleRef}
                       value={edit.summary}
                       onChange={(event) =>
                         setEdit({ ...edit, summary: event.target.value })
