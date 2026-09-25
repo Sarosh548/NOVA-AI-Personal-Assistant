@@ -24,7 +24,10 @@ export function AppRoot() {
   return (
     <AppShell activeSurface={activeSurface} onNavigate={setActiveSurface} displayName={displayName} onSignOut={signOut}>
       {activeSurface === "Home" ? (
-        <HomeSurface onOpenConversation={() => setActiveSurface("Conversation")} />
+        <HomeSurface
+          onOpenConversation={() => setActiveSurface("Conversation")}
+          onOpenVoice={() => setActiveSurface("Voice")}
+        />
       ) : activeSurface === "Conversation" ? (
         <ConversationSurface />
       ) : activeSurface === "Voice" ? (
