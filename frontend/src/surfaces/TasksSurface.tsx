@@ -109,11 +109,7 @@ export function TasksSurface() {
     setBusy(taskId)
     setError(null)
     try {
-      if (action === "delete") {
-        await deleteTask(taskId)
-      } else {
-        await actOnTask(taskId, action)
-      }
+      await actOnTask(taskId, action)
       await load()
     } catch (err) {
       setError(errorText(err, "NOVA could not update that task."))
