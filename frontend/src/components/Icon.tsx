@@ -109,6 +109,21 @@ export function Icon({ name, size = 20 }: IconProps) {
           <path d="M6 11.5a6 6 0 0012 0M12 17.5v3M9 20.5h6" />
         </svg>
       )
+    case "eye":
+      return (
+        <svg {...common}>
+          <path d="M2.7 12s3.4-5 9.3-5 9.3 5 9.3 5-3.4 5-9.3 5-9.3-5-9.3-5z" />
+          <circle cx="12" cy="12" r="2.2" />
+        </svg>
+      )
+    case "eye-off":
+      return (
+        <svg {...common}>
+          <path d="M3 3l18 18" />
+          <path d="M10.5 6.9A9.8 9.8 0 0112 7c5.9 0 9.3 5 9.3 5a15 15 0 01-3.1 3.4M6.2 6.6C3.9 8.1 2.7 12 2.7 12s3.4 5 9.3 5c1 0 1.9-.2 2.7-.4" />
+          <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+        </svg>
+      )
     case "logout":
       return (
         <svg {...common}>
