@@ -12,6 +12,7 @@ import {
   type KnowledgeDocumentDetail,
   type KnowledgeSearchResult,
 } from "../api/workspace"
+import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 
 function formatDate(value: string): string {
@@ -36,6 +37,7 @@ export function KnowledgeSurface() {
   const [url, setUrl] = useState("")
   const [copying, setCopying] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<KnowledgeDocument | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -131,13 +133,21 @@ export function KnowledgeSurface() {
     }
   }
 
-  const remove = async (id: number) => {
-    if (working || !window.confirm("Delete this knowledge document?")) return
+  const requestDelete = (document: KnowledgeDocument) => {
+    if (working) return
+    setDeleteTarget(document)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || working) return
+
+    const documentId = deleteTarget.id
     setWorking(true)
     setError(null)
     try {
-      await deleteKnowledgeDocument(id)
-      if (selected?.id === id) setSelected(null)
+      await deleteKnowledgeDocument(documentId)
+      if (selected?.id === documentId) setSelected(null)
+      setDeleteTarget(null)
       await load()
     } catch (err) {
       setError(errorText(err, "NOVA could not delete that document."))
@@ -147,6 +157,7 @@ export function KnowledgeSurface() {
   }
 
   return (
+    <>
     <div className="content-shell resource-shell">
       <section className="resource-hero">
         <div>
@@ -223,7 +234,7 @@ export function KnowledgeSurface() {
           ) : documents.map((doc) => (
             <article className="resource-card compact-card" key={doc.id}>
               <div><div className="resource-card-kicker">DOCUMENT #{doc.id}</div><h3>{doc.title}</h3><p className="resource-muted">{doc.source || "Private source"} · {doc.chunk_count} chunks · {formatDate(doc.updated_at)}</p></div>
-              <div className="resource-actions"><button className="secondary-action compact" type="button" disabled={working} onClick={() => void openDocument(doc.id)}>Open</button><button className="icon-action danger" type="button" disabled={working} aria-label={`Delete ${doc.title}`} onClick={() => void remove(doc.id)}><Icon name="trash" size={14} /></button></div>
+              <div className="resource-actions"><button className="secondary-action compact" type="button" disabled={working} onClick={() => void openDocument(doc.id)}>Open</button><button className="icon-action danger" type="button" disabled={working} aria-label={`Delete ${doc.title}`} onClick={() => requestDelete(doc)}><Icon name="trash" size={14} /></button></div>
             </article>
           ))}
         </div>
@@ -247,5 +258,21 @@ export function KnowledgeSurface() {
         )}
       </section>
     </div>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this knowledge document?"
+        description={
+          deleteTarget
+            ? "“" + deleteTarget.title + "” and its stored chunks will be removed from NOVA. This cannot be undone."
+            : "This knowledge document will be removed from NOVA. This cannot be undone."
+        }
+        confirmLabel="Delete document"
+        busy={working}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          if (!working) setDeleteTarget(null)
+        }}
+      />
+    </>
   )
 }
