@@ -84,8 +84,7 @@ export function RemindersSurface() {
     setBusy(reminderId)
     setError(null)
     try {
-      if (action === "delete") await deleteReminder(reminderId)
-      else await actOnReminder(reminderId, action)
+      await actOnReminder(reminderId, action)
       await load()
     } catch (err) {
       setError(errorText(err, "NOVA could not update that reminder."))
