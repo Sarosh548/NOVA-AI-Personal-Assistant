@@ -3687,3 +3687,23 @@ button.search-result-row:hover {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
+
+
+/* Shared interaction accessibility */
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
