@@ -163,6 +163,7 @@ export function TasksSurface() {
   }
 
   return (
+    <>
     <div className="content-shell resource-shell">
       <section className="resource-hero">
         <div>
@@ -379,5 +380,6 @@ export function TasksSurface() {
           if (busy === null) setDeleteTarget(null)
         }}
       />
+    </>
   )
 }
