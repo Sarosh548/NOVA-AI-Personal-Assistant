@@ -1027,7 +1027,7 @@ export function VoiceSurface({
                       ? "NOVA is speaking"
                       : "Voice response is loading"}
                   </span>
-                  {audioChunkCount === 0 && audioState !== "idle" && (
+                  {audioChunkCount === 0 && (
                     <small className="voice-audio-debug">
                       No audio chunks received yet
                     </small>
