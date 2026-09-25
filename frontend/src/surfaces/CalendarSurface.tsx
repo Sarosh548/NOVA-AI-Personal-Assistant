@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type Dispatch, type FormEvent } from "react"
+import { useCallback, useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from "react"
 
 import { ApiRequestError } from "../api/client"
 import {
@@ -759,7 +759,7 @@ function EventFormPanel({
   title: string
   kicker: string
   form: EventForm
-  setForm: Dispatch<React.SetStateAction<EventForm>>
+  setForm: Dispatch<SetStateAction<EventForm>>
   working: boolean
   onSubmit: (event: FormEvent) => Promise<void>
   submitLabel: string
@@ -845,7 +845,7 @@ function EventModeFields({
   setForm,
 }: {
   form: EventForm
-  setForm: Dispatch<React.SetStateAction<EventForm>>
+  setForm: Dispatch<SetStateAction<EventForm>>
 }) {
   return (
     <>
