@@ -435,6 +435,13 @@ async def _relay_tts_audio(
 ) -> None:
     async for event in orchestrator.events():
         if event.type == "audio":
+            timing_state["audio_chunk_count"] = (
+                int(timing_state["audio_chunk_count"]) + 1
+            )
+            timing_state["audio_byte_count"] = (
+                int(timing_state["audio_byte_count"]) + len(event.audio)
+            )
+
             if (
                 timing_state["first_audio_observed"] is False
                 and timing_state["first_text_sent_at"] is not None
@@ -457,6 +464,12 @@ async def _relay_tts_audio(
                 "turn_id": event.turn_id,
                 "sequence": event.sequence,
                 "created_at": event.created_at.isoformat(),
+                "audio_chunk_count": int(
+                    timing_state["audio_chunk_count"]
+                ),
+                "audio_byte_count": int(
+                    timing_state["audio_byte_count"]
+                ),
             }
         )
 
@@ -469,9 +482,11 @@ async def _run_tts_output(
     session_id: str,
     turn_id: str,
 ) -> None:
-    timing_state: dict[str, float | bool | None] = {
+    timing_state: dict[str, float | bool | int | None] = {
         "first_text_sent_at": None,
         "first_audio_observed": False,
+        "audio_chunk_count": 0,
+        "audio_byte_count": 0,
     }
 
     relay_task = asyncio.create_task(
