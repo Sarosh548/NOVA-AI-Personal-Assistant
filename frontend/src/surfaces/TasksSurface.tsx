@@ -9,6 +9,7 @@ import {
   updateTask,
   type Task,
 } from "../api/workspace"
+import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 
 function formatDate(value: string | null): string {
@@ -52,6 +53,7 @@ export function TasksSurface() {
   })
   const [edits, setEdits] = useState<Record<number, { priority: string; dueAt: string }>>({})
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -101,9 +103,8 @@ export function TasksSurface() {
     }
   }
 
-  const mutate = async (taskId: number, action: "start" | "complete" | "cancel" | "delete") => {
+  const mutate = async (taskId: number, action: "start" | "complete" | "cancel") => {
     if (busy !== null) return
-    if (action === "delete" && !window.confirm("Delete this task permanently?")) return
 
     setBusy(taskId)
     setError(null)
@@ -116,6 +117,28 @@ export function TasksSurface() {
       await load()
     } catch (err) {
       setError(errorText(err, "NOVA could not update that task."))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const requestDelete = (task: Task) => {
+    if (busy !== null) return
+    setDeleteTarget(task)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || busy !== null) return
+
+    const taskId = deleteTarget.id
+    setBusy(taskId)
+    setError(null)
+    try {
+      await deleteTask(taskId)
+      setDeleteTarget(null)
+      await load()
+    } catch (err) {
+      setError(errorText(err, "NOVA could not delete that task."))
     } finally {
       setBusy(null)
     }
@@ -322,7 +345,7 @@ export function TasksSurface() {
                         type="button"
                         aria-label={`Delete task ${task.id}`}
                         disabled={busy === task.id}
-                        onClick={() => void mutate(task.id, "delete")}
+                        onClick={() => requestDelete(task)}
                       >
                         <Icon name="trash" size={15} />
                       </button>
@@ -340,5 +363,21 @@ export function TasksSurface() {
         )}
       </section>
     </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this task permanently?"
+        description={
+          deleteTarget
+            ? `“${deleteTarget.title}” will be removed from NOVA. This cannot be undone.`
+            : "This task will be removed from NOVA. This cannot be undone."
+        }
+        confirmLabel="Delete task"
+        busy={deleteTarget !== null && busy === deleteTarget.id}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          if (busy === null) setDeleteTarget(null)
+        }}
+      />
   )
 }
