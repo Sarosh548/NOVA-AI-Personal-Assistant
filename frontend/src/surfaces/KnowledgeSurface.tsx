@@ -34,6 +34,8 @@ export function KnowledgeSurface() {
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState({ title: "", source: "", content: "" })
   const [url, setUrl] = useState("")
+  const [copying, setCopying] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -113,6 +115,22 @@ export function KnowledgeSurface() {
     }
   }
 
+  const copySelected = async () => {
+    if (!selected || copying) return
+    setCopying(true)
+    setError(null)
+    setCopied(false)
+    try {
+      await navigator.clipboard.writeText(selected.content)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setError("NOVA could not copy that document in this browser.")
+    } finally {
+      setCopying(false)
+    }
+  }
+
   const remove = async (id: number) => {
     if (working || !window.confirm("Delete this knowledge document?")) return
     setWorking(true)
@@ -165,10 +183,37 @@ export function KnowledgeSurface() {
       <section className="resource-panel">
         <div className="resource-panel-head">
           <div><div className="section-kicker">RETRIEVAL</div><h2>Search your knowledge.</h2></div>
-          <button className="primary-action compact" type="button" disabled={!query.trim() || working} onClick={() => void runSearch()}><Icon name="book" size={15} />Search</button>
+          <div className="resource-toolbar-actions">
+            <button className="primary-action compact" type="button" disabled={!query.trim() || working} onClick={() => void runSearch()}>
+              <Icon name="book" size={15} />Search
+            </button>
+            {query && <button className="ghost-action compact" type="button" onClick={() => setQuery("")}>Clear</button>}
+          </div>
         </div>
         <div className="field"><span>Query</span><input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void runSearch() }} placeholder="What does my project plan say about the launch?" /></div>
-        {results.length > 0 && <div className="search-result-list">{results.map((item) => <button className="search-result-row interactive" key={`${item.document_id}-${item.chunk_index}`} type="button" onClick={() => void openDocument(item.document_id)}><span><strong>{item.title}</strong><small>{item.content}</small></span><em>{Math.round(item.similarity * 100)}%</em></button>)}</div>}
+        {results.length > 0 && (
+          <div className="search-result-list">
+            {results.map((item) => (
+              <button
+                className="search-result-row interactive"
+                key={`${item.document_id}-${item.chunk_index}`}
+                type="button"
+                onClick={() => void openDocument(item.document_id)}
+              >
+                <span>
+                  <strong>{item.title}</strong>
+                  <small>{item.source || "Private source"} · Chunk {item.chunk_index + 1} · {item.content}</small>
+                </span>
+                <em>{Math.round(item.similarity * 100)}%</em>
+              </button>
+            ))}
+          </div>
+        )}
+        {query.trim() && !working && results.length === 0 && (
+          <div className="resource-empty inline-empty">
+            <span>No knowledge matches found.</span>
+          </div>
+        )}
       </section>
 
       <section className="resource-two-column">
@@ -185,7 +230,15 @@ export function KnowledgeSurface() {
 
         {selected ? (
           <article className="resource-panel document-preview">
-            <div className="resource-panel-head"><div><div className="section-kicker">DOCUMENT #{selected.id}</div><h2>{selected.title}</h2></div><button className="icon-action" type="button" aria-label="Close document" onClick={() => setSelected(null)}>×</button></div>
+            <div className="resource-panel-head">
+              <div><div className="section-kicker">DOCUMENT #{selected.id}</div><h2>{selected.title}</h2></div>
+              <div className="resource-toolbar-actions">
+                <button className="secondary-action compact" type="button" disabled={copying} onClick={() => void copySelected()}>
+                  {copied ? "Copied" : copying ? "Copying…" : "Copy content"}
+                </button>
+                <button className="icon-action" type="button" aria-label="Close document" onClick={() => setSelected(null)}>×</button>
+              </div>
+            </div>
             <p className="resource-muted">{selected.source || "Private source"} · {selected.chunk_count} chunks</p>
             <pre className="document-content">{selected.content}</pre>
           </article>
