@@ -68,10 +68,23 @@ async function parseErrorDetail(response: Response): Promise<string> {
   return response.statusText || "Request failed."
 }
 
-export async function apiRequest<T>(
+async function performRequest<T>(
   path: string,
-  options: RequestInit = {},
+  options: RequestInit,
 ): Promise<T> {
+  let url: string
+
+  try {
+    url = buildApiUrl(path)
+  } catch (error) {
+    throw new ApiRequestError(
+      0,
+      error instanceof Error
+        ? error.message
+        : "NOVA API endpoint is not configured.",
+    )
+  }
+
   const headers = new Headers(options.headers)
   const accessToken = getAccessToken()
 
@@ -87,10 +100,19 @@ export async function apiRequest<T>(
     headers.set("Authorization", `Bearer ${accessToken}`)
   }
 
-  const response = await fetch(buildApiUrl(path), {
-    ...options,
-    headers,
-  })
+  let response: Response
+
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+    })
+  } catch {
+    throw new ApiRequestError(
+      0,
+      "NOVA could not reach the service. Check your connection and try again.",
+    )
+  }
 
   if (!response.ok) {
     throw new ApiRequestError(
@@ -106,6 +128,13 @@ export async function apiRequest<T>(
   return (await response.json()) as T
 }
 
+export async function apiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  return performRequest(path, options)
+}
+
 export async function refreshAccessToken(): Promise<TokenResponse> {
   const refreshToken = getRefreshToken()
 
@@ -113,10 +142,9 @@ export async function refreshAccessToken(): Promise<TokenResponse> {
     throw new ApiRequestError(401, "No refresh session is available.")
   }
 
-  const response = await fetch(buildApiUrl("/auth/refresh"), {
+  const response = await performRequest<TokenResponse>("/auth/refresh", {
     method: "POST",
     headers: {
-      Accept: "application/json",
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -124,17 +152,8 @@ export async function refreshAccessToken(): Promise<TokenResponse> {
     }),
   })
 
-  if (!response.ok) {
-    throw new ApiRequestError(
-      response.status,
-      await parseErrorDetail(response),
-    )
-  }
-
-  const tokenResponse = (await response.json()) as TokenResponse
-  persistTokenResponse(tokenResponse)
-
-  return tokenResponse
+  persistTokenResponse(response)
+  return response
 }
 
 export async function apiRequestWithRefresh<T>(
@@ -142,7 +161,7 @@ export async function apiRequestWithRefresh<T>(
   options: RequestInit = {},
 ): Promise<T> {
   try {
-    return await apiRequest<T>(path, options)
+    return await performRequest<T>(path, options)
   } catch (error) {
     if (
       !(error instanceof ApiRequestError) ||
@@ -153,6 +172,6 @@ export async function apiRequestWithRefresh<T>(
     }
 
     await refreshAccessToken()
-    return apiRequest<T>(path, options)
+    return performRequest<T>(path, options)
   }
 }
