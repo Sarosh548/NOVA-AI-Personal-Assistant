@@ -162,6 +162,8 @@ export function VoiceSurface({
   const playbackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const playbackEndTimeRef = useRef(0)
   const playbackTimerRef = useRef<number | null>(null)
+  const playbackEventChainRef = useRef<Promise<void>>(Promise.resolve())
+  const playbackGenerationRef = useRef(0)
   const autoListenTimerRef = useRef<number | null>(null)
   const turnIdRef = useRef<string | null>(null)
   const sessionReadyRef = useRef(false)
@@ -191,6 +193,8 @@ export function VoiceSurface({
   const stopPlayback = useCallback(() => {
     clearPlaybackTimer()
     clearAutoListenTimer()
+    playbackGenerationRef.current += 1
+    playbackEventChainRef.current = playbackEventChainRef.current.then(() => undefined)
     for (const source of playbackSourcesRef.current) {
       try {
         source.stop()
@@ -364,65 +368,95 @@ export function VoiceSurface({
       if (socketRef.current !== socket) return
 
       if (typeof event.data !== "string") {
-        let audioContext: AudioContext
-        try {
-          audioContext = await ensureAudioOutput()
-        } catch (err) {
-          setAudioState("idle")
-          setError(formatError(err, "NOVA could not activate browser audio output."))
-          return
-        }
-
         const payload =
           event.data instanceof ArrayBuffer
             ? event.data
             : await event.data.arrayBuffer()
 
-        const buffer = pcmToAudioBuffer(audioContext, payload)
-        if (!buffer) return
+        const generation = playbackGenerationRef.current
 
-        const source = audioContext.createBufferSource()
-        source.buffer = buffer
-        if (!playbackGainRef.current) {
-          setAudioState("idle")
-          setError("NOVA audio output is unavailable.")
-          return
-        }
-
-        source.connect(playbackGainRef.current)
-        source.onended = () => {
-          playbackSourcesRef.current.delete(source)
-
-          if (
-            playbackSourcesRef.current.size === 0 &&
-            playbackEndTimeRef.current <= audioContext.currentTime + 0.03
-          ) {
-            setAudioState("idle")
+        playbackEventChainRef.current = playbackEventChainRef.current.then(
+          async () => {
             if (
-              assistantAudioFinalRef.current &&
-              turnIdRef.current === null &&
-              sessionReadyRef.current &&
-              !intentionalCloseRef.current
+              socketRef.current !== socket ||
+              playbackGenerationRef.current !== generation ||
+              intentionalCloseRef.current
             ) {
-              scheduleAutoListenRef.current?.()
-            } else {
-              setState((current) =>
-                current === "speaking" ? "ready" : current,
-              )
+              return
             }
-          }
-        }
 
-        const startAt = Math.max(
-          audioContext.currentTime + 0.015,
-          playbackEndTimeRef.current,
-        )
+            let audioContext: AudioContext
+            try {
+              audioContext = await ensureAudioOutput()
+            } catch (err) {
+              setAudioState("idle")
+              setError(
+                formatError(
+                  err,
+                  "NOVA could not activate browser audio output.",
+                ),
+              )
+              return
+            }
 
-        source.start(startAt)
-        playbackEndTimeRef.current = startAt + buffer.duration
-        playbackSourcesRef.current.add(source)
-        setAudioState("playing")
-        setState("speaking")
+            const buffer = pcmToAudioBuffer(audioContext, payload)
+            if (!buffer) return
+
+            if (!playbackGainRef.current) {
+              setAudioState("idle")
+              setError("NOVA audio output is unavailable.")
+              return
+            }
+
+            const source = audioContext.createBufferSource()
+            source.buffer = buffer
+            source.connect(playbackGainRef.current)
+            source.onended = () => {
+              playbackSourcesRef.current.delete(source)
+
+              if (
+                playbackSourcesRef.current.size === 0 &&
+                playbackEndTimeRef.current <= audioContext.currentTime + 0.03
+              ) {
+                setAudioState("idle")
+
+                if (
+                  assistantAudioFinalRef.current &&
+                  turnIdRef.current === null &&
+                  sessionReadyRef.current &&
+                  !intentionalCloseRef.current
+                ) {
+                  scheduleAutoListenRef.current?.()
+                } else {
+                  setState((current) =>
+                    current === "speaking" ? "ready" : current,
+                  )
+                }
+              }
+            }
+
+            const startAt = Math.max(
+              audioContext.currentTime + 0.015,
+              playbackEndTimeRef.current,
+            )
+
+            source.start(startAt)
+            playbackEndTimeRef.current = startAt + buffer.duration
+            playbackSourcesRef.current.add(source)
+            setAudioState("playing")
+            setState("speaking")
+          },
+        ).catch((err) => {
+          setAudioState("idle")
+          setError(
+            formatError(
+              err,
+              "NOVA could not play the voice response.",
+            ),
+          )
+        })
+
+        await playbackEventChainRef.current
         return
       }
 
@@ -524,6 +558,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.final") {
+        await playbackEventChainRef.current
         assistantAudioFinalRef.current = true
         if (playbackSourcesRef.current.size === 0) {
           setAudioState("idle")
