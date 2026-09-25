@@ -1685,6 +1685,88 @@ p {
   font-weight: 760;
 }
 
+.voice-turn-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.voice-audio-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid rgba(185,247,255,.12);
+  border-radius: 999px;
+  color: var(--muted-soft);
+  background: rgba(255,255,255,.025);
+  letter-spacing: .08em;
+  font-size: 8px;
+  font-weight: 780;
+}
+
+.voice-audio-label.playing {
+  border-color: rgba(142,242,211,.18);
+  color: #b8f8e5;
+  background: rgba(142,242,211,.055);
+}
+
+.voice-audio-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+  color: var(--muted-soft);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.voice-audio-status.playing {
+  color: #b8f8e5;
+}
+
+.voice-audio-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 16px;
+}
+
+.voice-audio-bars i {
+  display: block;
+  width: 3px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: .5;
+  animation: nova-voice-audio-bar 1s ease-in-out infinite;
+}
+
+.voice-audio-bars i:nth-child(2) { animation-delay: 110ms; }
+.voice-audio-bars i:nth-child(3) { animation-delay: 220ms; }
+.voice-audio-bars i:nth-child(4) { animation-delay: 330ms; }
+.voice-audio-bars i:nth-child(5) { animation-delay: 440ms; }
+
+.voice-audio-status.preparing .voice-audio-bars i {
+  animation: nova-voice-audio-load 1.1s ease-in-out infinite;
+}
+
+.voice-audio-status.preparing .voice-audio-bars i:nth-child(2) { animation-delay: 110ms; }
+.voice-audio-status.preparing .voice-audio-bars i:nth-child(3) { animation-delay: 220ms; }
+.voice-audio-status.preparing .voice-audio-bars i:nth-child(4) { animation-delay: 330ms; }
+.voice-audio-status.preparing .voice-audio-bars i:nth-child(5) { animation-delay: 440ms; }
+
+@keyframes nova-voice-audio-bar {
+  0%,100% { height: 5px; opacity: .35; }
+  50% { height: 16px; opacity: 1; }
+}
+
+@keyframes nova-voice-audio-load {
+  0%,100% { height: 7px; opacity: .3; }
+  50% { height: 12px; opacity: .75; }
+}
+
 .voice-turn-card p {
   margin-top: 7px;
   color: var(--text);
