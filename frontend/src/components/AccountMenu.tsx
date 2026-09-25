@@ -8,6 +8,9 @@ type AccountMenuProps = {
   onSignOut: () => Promise<void>
 }
 
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 function initialsFor(name: string): string {
   const initials = name
     .trim()
@@ -25,12 +28,17 @@ export function AccountMenu({
   onSignOut,
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const profileButtonRef = useRef<HTMLButtonElement | null>(null)
+  const signOutButtonRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
-    if (!open) {
-      return
-    }
+    if (!open) return
+
+    const frame = window.requestAnimationFrame(() => {
+      signOutButtonRef.current?.focus()
+    })
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target
@@ -41,7 +49,31 @@ export function AccountMenu({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.preventDefault()
         setOpen(false)
+        return
+      }
+
+      if (event.key !== "Tab") return
+
+      const menu = containerRef.current
+      if (!menu) return
+
+      const focusable = Array.from(
+        menu.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      )
+
+      if (focusable.length === 0) return
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
       }
     }
 
@@ -49,14 +81,29 @@ export function AccountMenu({
     document.addEventListener("keydown", handleKeyDown)
 
     return () => {
+      window.cancelAnimationFrame(frame)
       document.removeEventListener("pointerdown", handlePointerDown)
       document.removeEventListener("keydown", handleKeyDown)
     }
   }, [open])
 
+  useEffect(() => {
+    if (open) return
+    profileButtonRef.current?.focus()
+  }, [open])
+
   const handleSignOut = async () => {
-    setOpen(false)
-    await onSignOut()
+    if (isSigningOut) return
+
+    setIsSigningOut(true)
+    try {
+      await onSignOut()
+    } catch (error) {
+      console.error("NOVA sign out failed", error)
+    } finally {
+      setIsSigningOut(false)
+      setOpen(false)
+    }
   }
 
   const initials = initialsFor(displayName)
@@ -64,6 +111,7 @@ export function AccountMenu({
   return (
     <div className="account-menu" ref={containerRef}>
       <button
+        ref={profileButtonRef}
         className="profile-button"
         type="button"
         aria-label="Open account menu"
@@ -85,13 +133,16 @@ export function AccountMenu({
           <div className="account-menu-divider" />
 
           <button
+            ref={signOutButtonRef}
             className="account-menu-item danger"
             type="button"
             role="menuitem"
+            disabled={isSigningOut}
+            aria-busy={isSigningOut}
             onClick={() => void handleSignOut()}
           >
             <Icon name="logout" size={16} />
-            <span>Sign out</span>
+            <span>{isSigningOut ? "Signing out…" : "Sign out"}</span>
           </button>
         </div>
       ) : null}
