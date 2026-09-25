@@ -8,6 +8,7 @@ export type SurfaceKey =
   | "Activity"
   | "Memory"
   | "Knowledge"
+  | "Control Center"
   | "Settings"
 
 export type IconName =
@@ -48,5 +49,6 @@ export const navigation: NavigationItem[] = [
   { label: "Activity", icon: "activity", group: "workspace" },
   { label: "Memory", icon: "brain", group: "system" },
   { label: "Knowledge", icon: "book", group: "system" },
+  { label: "Control Center", icon: "settings", group: "system" },
   { label: "Settings", icon: "settings", group: "system" },
 ]
