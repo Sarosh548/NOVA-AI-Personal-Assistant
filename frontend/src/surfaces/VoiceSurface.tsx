@@ -202,7 +202,7 @@ export function VoiceSurface({
     playbackEndTimeRef.current = 0
     assistantAudioFinalRef.current = false
     setAudioState("idle")
-  }
+  }, [clearAutoListenTimer])
 
   const ensureAudioOutput = useCallback(async () => {
     const audioContext = audioContextRef.current ?? new AudioContext()
@@ -223,7 +223,7 @@ export function VoiceSurface({
     }
 
     return audioContext
-  }, [clearAutoListenTimer])
+  }, [])
 
   const setCaptureActive = useCallback((active: boolean) => {
     if (workletRef.current) {
@@ -601,6 +601,7 @@ export function VoiceSurface({
   }, [
     online,
     clearAutoListenTimer,
+    ensureAudioOutput,
     releaseAudioCapture,
     stopPlayback,
   ])
