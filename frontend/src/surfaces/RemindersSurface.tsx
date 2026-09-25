@@ -163,8 +163,8 @@ export function RemindersSurface() {
               {operationStatus || (lastRefreshedAt ? `Last synced ${formatDate(lastRefreshedAt)}` : "Reminder sync pending")}
             </span>
             <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
-            <Icon name="activity" size={15} />Refresh
-          </button>
+              <Icon name="activity" size={15} />Refresh
+            </button>
           </div>
         </div>
         <form className="resource-form" onSubmit={submit}>
@@ -202,8 +202,8 @@ export function RemindersSurface() {
                   </div>
                   <div className="resource-card-body">
                     <div className="field-grid">
-                      <label className="field field-span-2"><span>Title</span><input value={edit.title} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, title: e.target.value } })} /></label>
-                      <label className="field"><span>When</span><input type="datetime-local" value={edit.time} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, time: e.target.value } })} /></label>
+                      <label className="field field-span-2"><span>Title</span><input aria-label={`Reminder title for reminder ${reminder.id}`} value={edit.title} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, title: e.target.value } })} /></label>
+                      <label className="field"><span>When</span><input aria-label={`Reminder time for reminder ${reminder.id}`} type="datetime-local" value={edit.time} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, time: e.target.value } })} /></label>
                     </div>
                     <div className="resource-actions">
                       <button className="secondary-action compact" type="button" disabled={busy === reminder.id || !dirty} onClick={() => void saveEdit(reminder)}>Save changes</button>
