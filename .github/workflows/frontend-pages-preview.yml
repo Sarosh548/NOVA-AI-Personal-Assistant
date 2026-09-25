@@ -1,11 +1,12 @@
-name: NOVA Frontend Pages Preview
-
-# Temporary public preview for frontend foundation review.
+name: NOVA Frontend Pages
 
 on:
   push:
     branches:
-      - feat/frontend-foundation
+      - main
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-pages-preview.yml"
   workflow_dispatch:
 
 permissions:
@@ -14,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: github-pages-frontend-preview
+  group: github-pages-frontend
   cancel-in-progress: true
 
 jobs:
