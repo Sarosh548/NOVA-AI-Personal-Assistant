@@ -1,12 +1,12 @@
-import { useMemo } from "react"
+import type { ReactNode } from "react"
 
-import { Icon } from "../components/Icon"
 import { navigation, type SurfaceKey } from "../app/navigation"
+import { Icon } from "../components/Icon"
 
 type AppShellProps = {
   activeSurface: SurfaceKey
   onNavigate: (surface: SurfaceKey) => void
-  children: React.ReactNode
+  children: ReactNode
 }
 
 export function AppShell({
@@ -14,12 +14,8 @@ export function AppShell({
   onNavigate,
   children,
 }: AppShellProps) {
-  const activeLabel = useMemo(
-    () =>
-      navigation.find((item) => item.label === activeSurface)?.label ??
-      "Home",
-    [activeSurface],
-  )
+  const activeLabel =
+    navigation.find((item) => item.label === activeSurface)?.label ?? "Home"
 
   const workspace = navigation.filter((item) => item.group === "workspace")
   const system = navigation.filter((item) => item.group === "system")
@@ -80,7 +76,7 @@ export function AppShell({
             <span className="brand-name">NOVA</span>
           </div>
 
-          <div className="breadcrumb">
+          <div className="breadcrumb" aria-label="Current location">
             <span className="muted">NOVA</span>
             <span className="separator">/</span>
             <span>{activeLabel}</span>
