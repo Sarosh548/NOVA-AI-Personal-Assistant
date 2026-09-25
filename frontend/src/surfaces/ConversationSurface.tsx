@@ -60,7 +60,7 @@ export function ConversationSurface() {
   const [confirmationBusy, setConfirmationBusy] = useState<"approve" | "reject" | null>(null)
   const [confirmationNotice, setConfirmationNotice] = useState<string | null>(null)
   const [creatingConversation, setCreatingConversation] = useState(false)
-  const [draft, setDraft("")
+  const [draft, setDraft] = useState("")
   const [loading, setLoading] = useState(true)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [sending, setSending] = useState(false)
