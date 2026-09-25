@@ -3,7 +3,7 @@ import type { ApiError, TokenResponse } from "./types"
 
 const ACCESS_TOKEN_KEY = "nova.access_token"
 const REFRESH_TOKEN_KEY = "nova.refresh_token"
-const SESSION_EXPIRED_EVENT = "nova:session-expired"
+export const SESSION_EXPIRED_EVENT = "nova:session-expired"
 
 let refreshPromise: Promise<TokenResponse> | null = null
 
