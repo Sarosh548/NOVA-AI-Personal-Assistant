@@ -303,35 +303,68 @@ export function getCalendarConnectUrl(): Promise<{ authorization_url: string }> 
   )
 }
 
+export type CalendarSendUpdates = "all" | "externalOnly" | "none"
+
+export type CalendarEventBoundary = {
+  date?: string
+  dateTime?: string
+  timeZone?: string
+}
+
+export type CalendarAttendeeInput = {
+  email: string
+  displayName?: string
+  optional?: boolean
+  resource?: boolean
+}
+
 export function getCalendarEvents(params: {
   timeMin?: string
   timeMax?: string
   query?: string
-} = {}): Promise<{ events: CalendarEvent[]; next_page_token?: string | null }> {
+  pageToken?: string
+} = {}): Promise<{
+  events: CalendarEvent[]
+  next_page_token?: string | null
+  next_sync_token?: string | null
+}> {
   const search = new URLSearchParams()
   if (params.timeMin) search.set("time_min", params.timeMin)
   if (params.timeMax) search.set("time_max", params.timeMax)
   if (params.query?.trim()) search.set("query", params.query.trim())
+  if (params.pageToken) search.set("page_token", params.pageToken)
   search.set("max_results", "100")
   search.set("single_events", "true")
   search.set("order_by", "startTime")
-  return apiRequestWithRefresh<{ events: CalendarEvent[]; next_page_token?: string | null }>(
-    `/integrations/google/calendar/events?${search.toString()}`,
-  )
+
+  return apiRequestWithRefresh<{
+    events: CalendarEvent[]
+    next_page_token?: string | null
+    next_sync_token?: string | null
+  }>(`/integrations/google/calendar/events?${search.toString()}`)
 }
 
-export function createCalendarEvent(payload: {
-  summary: string
-  description?: string
-  location?: string
-  start: { dateTime: string }
-  end: { dateTime: string }
-}): Promise<CalendarEvent> {
+export function createCalendarEvent(
+  payload: {
+    summary: string
+    description?: string
+    location?: string
+    start: CalendarEventBoundary
+    end: CalendarEventBoundary
+    attendees?: CalendarAttendeeInput[]
+  },
+  sendUpdates: CalendarSendUpdates = "all",
+): Promise<CalendarEvent> {
+  const headers: Record<string, string> = {
+    ...jsonHeaders,
+    "Idempotency-Key": crypto.randomUUID(),
+  }
+
   return apiRequestWithRefresh<CalendarEvent>(
-    "/integrations/google/calendar/events?send_updates=all",
+    `/integrations/google/calendar/events?send_updates=${encodeURIComponent(sendUpdates)}`,
     {
       method: "POST",
-      headers: jsonHeaders,
+      headers,
       body: JSON.stringify(payload),
     },
   )
@@ -343,12 +376,14 @@ export function updateCalendarEvent(
     summary?: string
     description?: string
     location?: string
-    start?: { dateTime: string }
-    end?: { dateTime: string }
+    start?: CalendarEventBoundary
+    end?: CalendarEventBoundary
+    attendees?: CalendarAttendeeInput[]
   },
+  sendUpdates: CalendarSendUpdates = "all",
 ): Promise<CalendarEvent> {
   return apiRequestWithRefresh<CalendarEvent>(
-    `/integrations/google/calendar/events/${encodeURIComponent(eventId)}?send_updates=all`,
+    `/integrations/google/calendar/events/${encodeURIComponent(eventId)}?send_updates=${encodeURIComponent(sendUpdates)}`,
     {
       method: "PATCH",
       headers: jsonHeaders,
@@ -357,9 +392,12 @@ export function updateCalendarEvent(
   )
 }
 
-export function deleteCalendarEvent(eventId: string): Promise<{ deleted: boolean; event_id: string }> {
+export function deleteCalendarEvent(
+  eventId: string,
+  sendUpdates: CalendarSendUpdates = "all",
+): Promise<{ deleted: boolean; event_id: string }> {
   return apiRequestWithRefresh<{ deleted: boolean; event_id: string }>(
-    `/integrations/google/calendar/events/${encodeURIComponent(eventId)}?send_updates=all`,
+    `/integrations/google/calendar/events/${encodeURIComponent(eventId)}?send_updates=${encodeURIComponent(sendUpdates)}`,
     { method: "DELETE" },
   )
 }
