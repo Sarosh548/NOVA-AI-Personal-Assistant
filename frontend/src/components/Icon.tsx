@@ -131,5 +131,18 @@ export function Icon({ name, size = 20 }: IconProps) {
           <path d="M14 8l4 4-4 4M18 12H9" />
         </svg>
       )
+    case "edit":
+      return (
+        <svg {...common}>
+          <path d="M4 20h4l10.2-10.2a2.1 2.1 0 00-3-3L5 17v3z" />
+          <path d="M13.8 7.2l3 3" />
+        </svg>
+      )
+    case "trash":
+      return (
+        <svg {...common}>
+          <path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" />
+        </svg>
+      )
   }
 }

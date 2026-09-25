@@ -22,3 +22,19 @@ export function sendChatMessage(params: { message: string; conversationId: numbe
     }),
   })
 }
+
+export function updateConversationTitle(conversationId: number, title: string): Promise<{ updated: boolean }> {
+  return apiRequestWithRefresh<{ updated: boolean }>(`/conversations/${conversationId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function deleteConversation(conversationId: number): Promise<void> {
+  return apiRequestWithRefresh<void>(`/conversations/${conversationId}`, {
+    method: "DELETE",
+  })
+}
