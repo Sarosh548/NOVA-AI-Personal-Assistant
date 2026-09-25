@@ -53,6 +53,7 @@ export function TasksSurface() {
   })
   const [edits, setEdits] = useState<Record<number, { priority: string; dueAt: string }>>({})
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
+  const [operationStatus, setOperationStatus] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null)
 
   const load = useCallback(async () => {
@@ -86,6 +87,7 @@ export function TasksSurface() {
     if (!form.title.trim() || creating) return
 
     setCreating(true)
+    setOperationStatus("Creating task…")
     setError(null)
     try {
       await createTask({
@@ -96,7 +98,9 @@ export function TasksSurface() {
       })
       setForm({ title: "", description: "", priority: "medium", dueAt: "" })
       await load()
+      setOperationStatus("Task created.")
     } catch (err) {
+      setOperationStatus("")
       setError(errorText(err, "NOVA could not create that task."))
     } finally {
       setCreating(false)
@@ -107,11 +111,14 @@ export function TasksSurface() {
     if (busy !== null) return
 
     setBusy(taskId)
+    setOperationStatus(`${action === "start" ? "Starting" : action === "complete" ? "Completing" : "Cancelling"} task…`)
     setError(null)
     try {
       await actOnTask(taskId, action)
       await load()
+      setOperationStatus(`Task ${action === "start" ? "started" : action === "complete" ? "completed" : "cancelled"}.`)
     } catch (err) {
+      setOperationStatus("")
       setError(errorText(err, "NOVA could not update that task."))
     } finally {
       setBusy(null)
@@ -151,7 +158,9 @@ export function TasksSurface() {
         due_at: isoValue(edit.dueAt),
       })
       await load()
+      setOperationStatus("Task changes saved.")
     } catch (err) {
+      setOperationStatus("")
       setError(errorText(err, "NOVA could not save those task changes."))
     } finally {
       setBusy(null)
@@ -180,6 +189,9 @@ export function TasksSurface() {
             <h2>Capture work for NOVA.</h2>
           </div>
           <div className="resource-toolbar-actions">
+            <span className="resource-hint" role="status" aria-live="polite">
+              {operationStatus || (lastRefreshedAt ? `Last synced ${formatDate(lastRefreshedAt)}` : "Task sync pending")}
+            </span>
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter tasks by status">
               <option value="">All statuses</option>
               <option value="pending">Pending</option>
@@ -351,11 +363,6 @@ export function TasksSurface() {
                 </article>
               )
             })}
-            {lastRefreshedAt && (
-              <small className="resource-muted sync-caption">
-                Last synced {formatDate(lastRefreshedAt)}
-              </small>
-            )}
           </>
         )}
       </section>
