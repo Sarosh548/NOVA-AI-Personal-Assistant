@@ -152,6 +152,9 @@ export function VoiceSurface({
   const [audioByteCount, setAudioByteCount] = useState(0)
   const [serverAudioChunkCount, setServerAudioChunkCount] = useState(0)
   const [serverAudioByteCount, setServerAudioByteCount] = useState(0)
+  const [ttsTextChunkCount, setTtsTextChunkCount] = useState(0)
+  const [ttsTextCharCount, setTtsTextCharCount] = useState(0)
+  const [providerFinalObserved, setProviderFinalObserved] = useState(false)
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   )
@@ -541,6 +544,21 @@ export function VoiceSurface({
         return
       }
 
+      if (type === "assistant.audio.debug") {
+        if (payload.stage === "tts_input_complete") {
+          const textChunkCount = Number(payload.tts_text_chunk_count)
+          const textCharCount = Number(payload.tts_text_char_count)
+
+          if (Number.isFinite(textChunkCount)) {
+            setTtsTextChunkCount(textChunkCount)
+          }
+          if (Number.isFinite(textCharCount)) {
+            setTtsTextCharCount(textCharCount)
+          }
+        }
+        return
+      }
+
       if (type === "assistant.response.cancelled") {
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
@@ -577,6 +595,17 @@ export function VoiceSurface({
         if (Number.isFinite(serverByteCount)) {
           setServerAudioByteCount(serverByteCount)
         }
+
+        const finalTextChunkCount = Number(payload.tts_text_chunk_count)
+        const finalTextCharCount = Number(payload.tts_text_char_count)
+
+        if (Number.isFinite(finalTextChunkCount)) {
+          setTtsTextChunkCount(finalTextChunkCount)
+        }
+        if (Number.isFinite(finalTextCharCount)) {
+          setTtsTextCharCount(finalTextCharCount)
+        }
+        setProviderFinalObserved(payload.provider_final === true)
 
         assistantAudioFinalRef.current = true
         if (playbackSourcesRef.current.size === 0) {
@@ -757,6 +786,9 @@ export function VoiceSurface({
     setAudioByteCount(0)
     setServerAudioChunkCount(0)
     setServerAudioByteCount(0)
+    setTtsTextChunkCount(0)
+    setTtsTextCharCount(0)
+    setProviderFinalObserved(false)
     stopPlayback()
     setResponse("")
     setTranscript("")
@@ -1044,8 +1076,12 @@ export function VoiceSurface({
                 </div>
               )}
               <p>{response}</p>
-              {audioState !== "idle" && (
+              {(audioState !== "idle" || ttsTextChunkCount > 0 || serverAudioChunkCount > 0) && (
                 <small className="voice-audio-debug">
+                  TTS: {ttsTextChunkCount} chunks · {ttsTextCharCount} chars
+                  {" · "}
+                  Provider final: {providerFinalObserved ? "yes" : "no"}
+                  {" · "}
                   Browser: {audioChunkCount} chunks · {audioByteCount} bytes
                   {" · "}
                   Server: {serverAudioChunkCount} chunks · {serverAudioByteCount} bytes
