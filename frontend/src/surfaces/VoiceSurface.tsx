@@ -147,6 +147,7 @@ export function VoiceSurface({
   const [transcript, setTranscript] = useState("")
   const [response, setResponse] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   )
@@ -199,6 +200,7 @@ export function VoiceSurface({
     playbackSourcesRef.current.clear()
     playbackEndTimeRef.current = 0
     assistantAudioFinalRef.current = false
+    setAudioState("idle")
   }, [clearAutoListenTimer])
 
   const setCaptureActive = useCallback((active: boolean) => {
@@ -356,6 +358,7 @@ export function VoiceSurface({
             playbackSourcesRef.current.size === 0 &&
             playbackEndTimeRef.current <= audioContext.currentTime + 0.03
           ) {
+            setAudioState("idle")
             if (
               assistantAudioFinalRef.current &&
               turnIdRef.current === null &&
@@ -379,6 +382,7 @@ export function VoiceSurface({
         source.start(startAt)
         playbackEndTimeRef.current = startAt + buffer.duration
         playbackSourcesRef.current.add(source)
+        setAudioState("playing")
         setState("speaking")
         return
       }
@@ -444,6 +448,13 @@ export function VoiceSurface({
 
       if (type === "assistant.response") {
         setResponse(String(payload.response ?? ""))
+        setAudioState("preparing")
+        setState("speaking")
+        return
+      }
+
+      if (type === "assistant.audio.started") {
+        setAudioState("preparing")
         setState("speaking")
         return
       }
@@ -465,6 +476,7 @@ export function VoiceSurface({
       if (type === "assistant.audio.cancelled") {
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
+        setAudioState("idle")
         stopPlayback()
         setState((current) =>
           current === "listening" ? current : "ready",
@@ -474,6 +486,9 @@ export function VoiceSurface({
 
       if (type === "assistant.audio.final") {
         assistantAudioFinalRef.current = true
+        if (playbackSourcesRef.current.size === 0) {
+          setAudioState("idle")
+        }
         scheduleAutoListenRef.current?.()
         return
       }
@@ -504,6 +519,7 @@ export function VoiceSurface({
 
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
+        setAudioState("idle")
         releaseAudioCapture()
 
         if (
@@ -826,6 +842,13 @@ export function VoiceSurface({
     disconnected: "Reconnect",
   }
 
+  const audioLabel =
+    audioState === "playing"
+      ? "AUDIO LIVE"
+      : audioState === "preparing"
+        ? "PREPARING AUDIO"
+        : null
+
   const voiceButtonDisabled =
     state === "connecting" ||
     state === "reconnecting" ||
@@ -871,8 +894,12 @@ export function VoiceSurface({
             <p>
               {state === "listening"
                 ? "Speak naturally. NOVA detects when your turn ends automatically."
-                : state === "thinking" || state === "speaking"
-                  ? "Tap the mic to interrupt NOVA and start speaking again."
+                : state === "thinking"
+                  ? "NOVA is processing your request. You can interrupt at any time."
+                  : state === "speaking"
+                    ? audioState === "playing"
+                      ? "NOVA is speaking aloud. You can interrupt at any time."
+                      : "NOVA is preparing the voice response. You can interrupt at any time."
                   : "Your voice session stays private to this signed-in NOVA account."}
             </p>
           </div>
@@ -886,7 +913,22 @@ export function VoiceSurface({
 
           {response && (
             <div className="voice-turn-card assistant">
-              <div className="voice-turn-label">NOVA</div>
+              <div className="voice-turn-label">
+                <span>NOVA</span>
+                {audioLabel && <span className={`voice-audio-label ${audioState}`}>{audioLabel}</span>}
+              </div>
+              {audioState !== "idle" && (
+                <div className={`voice-audio-status ${audioState}`} role="status" aria-live="polite">
+                  <span className="voice-audio-bars" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  <span>{audioState === "playing" ? "NOVA is speaking" : "Voice response is loading"}</span>
+                </div>
+              )}
               <p>{response}</p>
             </div>
           )}
