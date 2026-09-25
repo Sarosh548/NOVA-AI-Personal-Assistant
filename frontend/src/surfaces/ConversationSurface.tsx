@@ -2,13 +2,20 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 
 import { ApiRequestError } from "../api/client"
 import {
+  createConversation,
   deleteConversation,
   getConversationMessages,
+  getConversationState,
   getConversations,
   sendChatMessage,
   updateConversationTitle,
+  type ConversationState,
 } from "../api/conversations"
-import type { Conversation, ConversationMessage } from "../api/types"
+import type { ChatResponse, Conversation, ConversationMessage } from "../api/types"
+import {
+  approveAndExecuteConfirmation,
+  rejectConfirmation,
+} from "../api/workspace"
 import { Icon } from "../components/Icon"
 
 type RetryPayload = {
@@ -48,7 +55,12 @@ export function ConversationSurface() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [messages, setMessages] = useState<ConversationMessage[]>([])
-  const [draft, setDraft] = useState("")
+  const [conversationState, setConversationState] = useState<ConversationState | null>(null)
+  const [assistantMeta, setAssistantMeta] = useState<ChatResponse | null>(null)
+  const [confirmationBusy, setConfirmationBusy] = useState<"approve" | "reject" | null>(null)
+  const [confirmationNotice, setConfirmationNotice] = useState<string | null>(null)
+  const [creatingConversation, setCreatingConversation] = useState(false)
+  const [draft, setDraft("")
   const [loading, setLoading] = useState(true)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [sending, setSending] = useState(false)
@@ -67,11 +79,21 @@ export function ConversationSurface() {
     setLoadingMessages(true)
     setError(null)
     setErrorAction(null)
+    setAssistantMeta(null)
+    setConfirmationNotice(null)
+
     try {
       const result = await getConversationMessages(id)
       setMessages(result.messages)
+
+      try {
+        setConversationState(await getConversationState(id))
+      } catch {
+        setConversationState(null)
+      }
     } catch (err) {
       setMessages([])
+      setConversationState(null)
       setError(formatApiError(err, "NOVA could not load this conversation."))
     } finally {
       setLoadingMessages(false)
@@ -126,19 +148,45 @@ export function ConversationSurface() {
     setErrorAction(null)
   }
 
-  const newConversation = () => {
-    if (sending || savingId !== null || deletingId !== null) return
-    setActiveId(null)
-    setMessages([])
-    setDraft("")
+  const newConversation = async () => {
+    if (
+      sending ||
+      savingId !== null ||
+      deletingId !== null ||
+      creatingConversation
+    ) return
+
+    setCreatingConversation(true)
     setEditingId(null)
     setRetryPayload(null)
     clearError()
-    textareaRef.current?.focus()
+    setAssistantMeta(null)
+    setConfirmationNotice(null)
+
+    try {
+      const result = await createConversation()
+      setActiveId(result.id)
+      setMessages([])
+      setDraft("")
+      await refreshConversations()
+
+      try {
+        setConversationState(await getConversationState(result.id))
+      } catch {
+        setConversationState(null)
+      }
+
+      textareaRef.current?.focus()
+    } catch (err) {
+      setError(formatApiError(err, "NOVA could not create a new conversation."))
+      setErrorAction(null)
+    } finally {
+      setCreatingConversation(false)
+    }
   }
 
   const selectConversation = async (id: number) => {
-    if (sending || savingId !== null || deletingId !== null || id === activeId) return
+    if (sending || savingId !== null || deletingId !== null || creatingConversation || id === activeId) return
     setActiveId(id)
     setEditingId(null)
     setRetryPayload(null)
@@ -149,6 +197,8 @@ export function ConversationSurface() {
   const sendMessage = async (payload: RetryPayload, optimistic: boolean) => {
     setError(null)
     setErrorAction(null)
+    setConfirmationNotice(null)
+    setAssistantMeta(null)
     setSending(true)
 
     if (optimistic) {
@@ -159,7 +209,15 @@ export function ConversationSurface() {
       const result = await sendChatMessage(payload)
       setActiveId(result.conversation_id)
       setMessages((current) => [...current, { role: "assistant", content: result.response }])
+      setAssistantMeta(result)
       await refreshConversations()
+
+      try {
+        setConversationState(await getConversationState(result.conversation_id))
+      } catch {
+        setConversationState(null)
+      }
+
       setRetryPayload(null)
     } catch (err) {
       setRetryPayload(payload)
@@ -265,6 +323,61 @@ export function ConversationSurface() {
 
   const active = conversations.find((item) => item.id === activeId)
   const deleteTarget = conversations.find((item) => item.id === deleteId)
+  const handleConfirmation = async (
+    confirmationId: number,
+    action: "approve" | "reject",
+  ) => {
+    if (confirmationBusy !== null) return
+
+    setConfirmationBusy(action)
+    setConfirmationNotice(null)
+    setError(null)
+    setErrorAction(null)
+
+    try {
+      if (action === "approve") {
+        const result = await approveAndExecuteConfirmation(confirmationId)
+        setAssistantMeta((current) =>
+          current
+            ? {
+                ...current,
+                confirmation: {
+                  ...(current.confirmation ?? {}),
+                  status: result.status,
+                },
+                tool_result: result.tool_result,
+                workflow_result: result.workflow_result,
+              }
+            : current,
+        )
+        setConfirmationNotice(
+          result.success
+            ? "The requested action completed successfully."
+            : result.error || "The requested action did not complete.",
+        )
+      } else {
+        const result = await rejectConfirmation(confirmationId)
+        setAssistantMeta((current) =>
+          current
+            ? {
+                ...current,
+                confirmation: {
+                  ...(current.confirmation ?? {}),
+                  status: result.status,
+                },
+              }
+            : current,
+        )
+        setConfirmationNotice("The requested action was rejected.")
+      }
+    } catch (err) {
+      setError(formatApiError(err, "NOVA could not update this approval."))
+      setErrorAction(null)
+    } finally {
+      setConfirmationBusy(null)
+    }
+  }
+
 
   return (
     <div className="conversation-shell">
@@ -414,7 +527,7 @@ export function ConversationSurface() {
           </div>
           <div className="conversation-state" aria-live="polite">
             <span className="connection-dot" />
-            {sending ? "Thinking" : "Ready"}
+            {conversationState ? formatConversationState(conversationState) : sending ? "Thinking" : "Ready"}
           </div>
         </header>
 
@@ -454,6 +567,14 @@ export function ConversationSurface() {
                     </span>
                   </div>
                 </div>
+              )}
+              {assistantMeta && (
+                <ConversationResponseDetails
+                  response={assistantMeta}
+                  confirmationNotice={confirmationNotice}
+                  confirmationBusy={confirmationBusy}
+                  onConfirmation={handleConfirmation}
+                />
               )}
               <div ref={endRef} />
             </div>
@@ -538,6 +659,135 @@ export function ConversationSurface() {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+function formatConversationState(snapshot: ConversationState): string {
+  const state = snapshot.state.trim().toLowerCase()
+  if (snapshot.should_listen || state === "listening") return "Listening"
+  if (state.includes("process") || state.includes("think") || state === "running") return "Thinking"
+  if (state.includes("speak")) return "Speaking"
+  if (state.includes("error") || state.includes("fail")) return "Needs attention"
+  return "Ready"
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function textValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null
+}
+
+function sourceUrl(value: unknown): string | null {
+  const url = textValue(value)
+  return url && /^https?:\/\//i.test(url) ? url : null
+}
+
+function payloadSummary(value: unknown): string {
+  if (!isRecord(value)) return "Completed"
+  for (const key of ["message", "summary", "title", "status", "action", "result"]) {
+    const candidate = textValue(value[key])
+    if (candidate) return candidate
+  }
+  const entries = Object.entries(value)
+    .filter(([, item]) => ["string", "number", "boolean"].includes(typeof item))
+    .slice(0, 3)
+  if (entries.length === 0) return "Completed"
+  return entries.map(([key, item]) => key + ": " + String(item)).join(" · ")
+}
+
+function sourceTitle(source: Record<string, unknown>, index: number): string {
+  return textValue(source.title) || textValue(source.name) || textValue(source.source) || "Source " + (index + 1)
+}
+
+function sourceDescription(source: Record<string, unknown>): string | null {
+  return textValue(source.snippet) || textValue(source.content) || textValue(source.description)
+}
+
+function ConversationResponseDetails({
+  response,
+  confirmationNotice,
+  confirmationBusy,
+  onConfirmation,
+}: {
+  response: ChatResponse
+  confirmationNotice: string | null
+  confirmationBusy: "approve" | "reject" | null
+  onConfirmation: (confirmationId: number, action: "approve" | "reject") => void
+}) {
+  const confirmation = isRecord(response.confirmation) ? response.confirmation : null
+  const confirmationId = confirmation ? Number(confirmation.id) : NaN
+  const confirmationStatus = confirmation
+    ? String(confirmation.status ?? "pending").toLowerCase()
+    : null
+  const sources = [
+    ...(response.web_sources ?? []).map((source) => ({ ...source, kind: "Web" })),
+    ...(response.knowledge_sources ?? []).map((source) => ({ ...source, kind: "Knowledge" })),
+  ].filter(isRecord)
+  const resultBlocks = [
+    response.tool_result ? { label: "Action", value: response.tool_result } : null,
+    response.workflow_result ? { label: "Workflow", value: response.workflow_result } : null,
+    response.memory_action ? { label: "Memory", value: response.memory_action } : null,
+  ].filter(Boolean) as Array<{ label: string; value: Record<string, unknown> }>
+  if (!confirmation && resultBlocks.length === 0 && sources.length === 0 && !confirmationNotice) return null
+  const canActOnConfirmation = Number.isInteger(confirmationId) && confirmationStatus === "pending"
+  return (
+    <div className="conversation-response-details">
+      {confirmation && (
+        <section className="conversation-detail-card approval">
+          <div className="conversation-detail-heading">
+            <div>
+              <div className="section-kicker">APPROVAL REQUIRED</div>
+              <h4>{textValue(confirmation.action) || "Confirm this action"}</h4>
+            </div>
+            <span className="conversation-detail-status">{confirmationStatus || "pending"}</span>
+          </div>
+          {textValue(confirmation.reason) && <p>{textValue(confirmation.reason)}</p>}
+          {canActOnConfirmation && (
+            <div className="conversation-detail-actions">
+              <button className="secondary-action" type="button" onClick={() => onConfirmation(confirmationId, "reject")} disabled={confirmationBusy !== null}>
+                {confirmationBusy === "reject" ? "Rejecting…" : "Reject"}
+              </button>
+              <button className="primary-action" type="button" onClick={() => onConfirmation(confirmationId, "approve")} disabled={confirmationBusy !== null}>
+                {confirmationBusy === "approve" ? "Approving…" : "Approve & execute"}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+      {resultBlocks.map((block) => (
+        <section className="conversation-detail-card" key={block.label}>
+          <div className="conversation-detail-heading">
+            <div><div className="section-kicker">{block.label}</div><h4>{payloadSummary(block.value)}</h4></div>
+          </div>
+        </section>
+      ))}
+      {confirmationNotice && <div className="conversation-detail-notice" role="status">{confirmationNotice}</div>}
+      {sources.length > 0 && (
+        <section className="conversation-detail-card sources">
+          <div className="conversation-detail-heading">
+            <div><div className="section-kicker">SOURCES</div><h4>What informed this response</h4></div>
+            <span className="conversation-detail-status">{sources.length}</span>
+          </div>
+          <div className="conversation-source-list">
+            {sources.slice(0, 8).map((source, index) => {
+              const href = sourceUrl(source.url) || sourceUrl(source.link) || sourceUrl(source.source)
+              return (
+                <article className="conversation-source-item" key={sourceTitle(source, index) + "-" + index}>
+                  <div>
+                    <div className="conversation-source-kind">{String(source.kind)}</div>
+                    <strong>{sourceTitle(source, index)}</strong>
+                    {sourceDescription(source) && <p>{sourceDescription(source)}</p>}
+                  </div>
+                  {href && <a href={href} target="_blank" rel="noreferrer">Open</a>}
+                </article>
+              )
+            })}
+          </div>
+        </section>
       )}
     </div>
   )
