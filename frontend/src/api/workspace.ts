@@ -412,11 +412,13 @@ export function getActivity(params: {
   limit?: number
   eventType?: string
   source?: string
+  since?: string
 } = {}): Promise<ActivityEvent[]> {
   const search = new URLSearchParams()
   search.set("limit", String(params.limit ?? 80))
   if (params.eventType?.trim()) search.set("event_type", params.eventType.trim())
   if (params.source?.trim()) search.set("source", params.source.trim())
+  if (params.since) search.set("since", params.since)
   return apiRequestWithRefresh<ActivityEvent[]>(`/activity?${search.toString()}`)
 }
 
