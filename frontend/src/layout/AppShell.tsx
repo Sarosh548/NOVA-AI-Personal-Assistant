@@ -77,10 +77,12 @@ export function AppShell({
     }
 
     document.addEventListener("keydown", handleKeyDown)
+    document.body.style.overflow = "hidden"
 
     return () => {
       window.cancelAnimationFrame(frame)
       document.removeEventListener("keydown", handleKeyDown)
+      document.body.style.overflow = ""
       window.requestAnimationFrame(() => {
         mobileMenuTriggerRef.current?.focus()
       })
