@@ -150,6 +150,8 @@ export function VoiceSurface({
   const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
   const [audioChunkCount, setAudioChunkCount] = useState(0)
   const [audioByteCount, setAudioByteCount] = useState(0)
+  const [serverAudioChunkCount, setServerAudioChunkCount] = useState(0)
+  const [serverAudioByteCount, setServerAudioByteCount] = useState(0)
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   )
@@ -570,10 +572,10 @@ export function VoiceSurface({
         const serverByteCount = Number(payload.audio_byte_count)
 
         if (Number.isFinite(serverChunkCount)) {
-          setAudioChunkCount(serverChunkCount)
+          setServerAudioChunkCount(serverChunkCount)
         }
         if (Number.isFinite(serverByteCount)) {
-          setAudioByteCount(serverByteCount)
+          setServerAudioByteCount(serverByteCount)
         }
 
         assistantAudioFinalRef.current = true
@@ -753,6 +755,8 @@ export function VoiceSurface({
     assistantAudioFinalRef.current = false
     setAudioChunkCount(0)
     setAudioByteCount(0)
+    setServerAudioChunkCount(0)
+    setServerAudioByteCount(0)
     stopPlayback()
     setResponse("")
     setTranscript("")
@@ -1027,9 +1031,14 @@ export function VoiceSurface({
                       ? "NOVA is speaking"
                       : "Voice response is loading"}
                   </span>
-                  {audioChunkCount === 0 && (
+                  {audioChunkCount === 0 && serverAudioChunkCount > 0 && (
                     <small className="voice-audio-debug">
-                      No audio chunks received yet
+                      Server sent audio, but browser received 0 chunks
+                    </small>
+                  )}
+                  {audioChunkCount === 0 && serverAudioChunkCount === 0 && (
+                    <small className="voice-audio-debug">
+                      No audio chunks reported by server yet
                     </small>
                   )}
                 </div>
@@ -1037,7 +1046,9 @@ export function VoiceSurface({
               <p>{response}</p>
               {audioState !== "idle" && (
                 <small className="voice-audio-debug">
-                  Audio stream: {audioChunkCount} chunks · {audioByteCount} bytes
+                  Browser: {audioChunkCount} chunks · {audioByteCount} bytes
+                  {" · "}
+                  Server: {serverAudioChunkCount} chunks · {serverAudioByteCount} bytes
                 </small>
               )}
             </div>
