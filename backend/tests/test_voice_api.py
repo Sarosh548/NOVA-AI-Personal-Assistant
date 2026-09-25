@@ -2377,8 +2377,10 @@ def test_voice_websocket_streams_assistant_audio(
         }
 
         messages = []
+        seen_response = False
+        seen_audio_final = False
 
-        while len(messages) < 4:
+        while not (seen_response and seen_audio_final):
             message = websocket.receive()
 
             if message.get("bytes") is not None:
@@ -2391,14 +2393,22 @@ def test_voice_websocket_streams_assistant_audio(
                 continue
 
             if message.get("text") is not None:
+                value = json.loads(
+                    message["text"]
+                )
                 messages.append(
                     {
                         "kind": "json",
-                        "value": json.loads(
-                            message["text"]
-                        ),
+                        "value": value,
                     }
                 )
+
+                if value.get("type") == "assistant.response":
+                    seen_response = True
+
+                if value.get("type") == "assistant.audio.final":
+                    seen_audio_final = True
+
                 continue
 
             raise AssertionError(
