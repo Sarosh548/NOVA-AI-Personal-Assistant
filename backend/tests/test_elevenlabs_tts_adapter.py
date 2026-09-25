@@ -286,11 +286,17 @@ async def test_stream_relay_decodes_audio_and_emits_final(
     assert json.loads(
         websocket.sent[-1]
     ) == {
-        "text": "",
-        "flush": True,
+        "text": "Hello NOVA ",
     }
 
     await stream.finish()
+
+    assert json.loads(
+        websocket.sent[-1]
+    ) == {
+        "text": "",
+        "flush": True,
+    }
 
     events = [
         event
