@@ -1,0 +1,159 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
+
+import {
+  ApiRequestError,
+  clearStoredSession,
+  getRefreshToken,
+} from "../api/client"
+import { getCurrentUser, login, logout, register } from "../api/auth"
+import type { NovaUser } from "../api/types"
+
+type AuthStatus =
+  | "loading"
+  | "authenticated"
+  | "unauthenticated"
+
+type AuthContextValue = {
+  status: AuthStatus
+  user: NovaUser | null
+  error: string | null
+  signIn: (identifier: string, password: string) => Promise<void>
+  signUp: (
+    identifier: string,
+    password: string,
+    displayName: string,
+  ) => Promise<void>
+  signOut: () => Promise<void>
+  clearError: () => void
+}
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined)
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [status, setStatus] = useState<AuthStatus>("loading")
+  const [user, setUser] = useState<NovaUser | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const restoreSession = useCallback(async () => {
+    if (!getRefreshToken()) {
+      setStatus("unauthenticated")
+      return
+    }
+
+    try {
+      const currentUser = await getCurrentUser()
+      setUser(currentUser)
+      setStatus("authenticated")
+    } catch (error) {
+      clearStoredSession()
+      setUser(null)
+      setStatus("unauthenticated")
+
+      if (error instanceof ApiRequestError && error.status >= 500) {
+        setError("NOVA could not reach the service. Please try again.")
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    void restoreSession()
+  }, [restoreSession])
+
+  const signIn = useCallback(
+    async (identifier: string, password: string) => {
+      setError(null)
+
+      try {
+        const response = await login({ identifier, password })
+        setUser(response.user)
+        setStatus("authenticated")
+      } catch (error) {
+        setStatus("unauthenticated")
+        setError(
+          error instanceof ApiRequestError
+            ? error.detail
+            : "Sign in failed. Please try again.",
+        )
+        throw error
+      }
+    },
+    [],
+  )
+
+  const signUp = useCallback(
+    async (
+      identifier: string,
+      password: string,
+      displayName: string,
+    ) => {
+      setError(null)
+
+      try {
+        const response = await register({
+          identifier,
+          password,
+          display_name: displayName.trim() || undefined,
+        })
+        setUser(response.user)
+        setStatus("authenticated")
+      } catch (error) {
+        setStatus("unauthenticated")
+        setError(
+          error instanceof ApiRequestError
+            ? error.detail
+            : "Account creation failed. Please try again.",
+        )
+        throw error
+      }
+    },
+    [],
+  )
+
+  const signOut = useCallback(async () => {
+    setError(null)
+
+    try {
+      await logout()
+    } finally {
+      setUser(null)
+      setStatus("unauthenticated")
+    }
+  }, [])
+
+  const clearError = useCallback(() => setError(null), [])
+
+  const value = useMemo(
+    () => ({
+      status,
+      user,
+      error,
+      signIn,
+      signUp,
+      signOut,
+      clearError,
+    }),
+    [status, user, error, signIn, signUp, signOut, clearError],
+  )
+
+  return (
+    <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  )
+}
+
+export function useAuth(): AuthContextValue {
+  const context = useContext(AuthContext)
+
+  if (!context) {
+    throw new Error("useAuth must be used inside AuthProvider.")
+  }
+
+  return context
+}
