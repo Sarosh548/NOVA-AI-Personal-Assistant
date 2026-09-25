@@ -193,9 +193,14 @@ export async function apiRequestWithRefresh<T>(
   } catch (error) {
     if (
       !(error instanceof ApiRequestError) ||
-      error.status !== 401 ||
-      !getRefreshToken()
+      error.status !== 401
     ) {
+      throw error
+    }
+
+    if (!getRefreshToken()) {
+      clearStoredSession()
+      notifySessionExpired()
       throw error
     }
 
