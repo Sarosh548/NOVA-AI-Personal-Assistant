@@ -35,35 +35,91 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
   const [nextReminder, setNextReminder] = useState<string | null>(null)
   const [latestActivity, setLatestActivity] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    setLoading(true)
+    setRefreshing(true)
     setError(null)
     try {
-      const [tasks, reminders, activity, confirmations, workflows] = await Promise.all([
+      const [tasks, reminders, activity, confirmations, workflows] = await Promise.allSettled([
         getTasks(),
         getReminders(),
         getActivity({ limit: 20 }),
         getPendingConfirmations(),
         getWorkflows(),
       ])
-      setTaskCount(tasks.filter((task) => !["completed", "cancelled"].includes(task.status)).length)
-      setActiveTaskCount(tasks.filter((task) => task.status === "in_progress").length)
-      setReminderCount(reminders.length)
-      setActivityCount(activity.length)
-      setNextReminder(reminders[0]?.reminder_time ?? null)
-      setLatestActivity(activity[0]?.title ?? null)
-      setAttentionCount(confirmations.length + workflows.filter((workflow) => !["completed", "cancelled", "failed"].includes(workflow.status)).length)
+      const failures: string[] = []
+      let successfulSources = 0
+
+      if (tasks.status === "fulfilled") {
+        successfulSources += 1
+        setTaskCount(tasks.value.filter((task) => !["completed", "cancelled"].includes(task.status)).length)
+        setActiveTaskCount(tasks.value.filter((task) => task.status === "in_progress").length)
+      } else {
+        failures.push("tasks")
+      }
+
+      if (reminders.status === "fulfilled") {
+        successfulSources += 1
+        setReminderCount(reminders.value.length)
+        setNextReminder(reminders.value[0]?.reminder_time ?? null)
+      } else {
+        failures.push("reminders")
+      }
+
+      if (activity.status === "fulfilled") {
+        successfulSources += 1
+        setActivityCount(activity.value.length)
+        setLatestActivity(activity.value[0]?.title ?? null)
+      } else {
+        failures.push("activity")
+      }
+
+      if (confirmations.status === "fulfilled") {
+        successfulSources += 1
+      } else {
+        failures.push("approvals")
+      }
+
+      if (workflows.status === "fulfilled") {
+        successfulSources += 1
+      } else {
+        failures.push("workflows")
+      }
+
+      if (confirmations.status === "fulfilled" && workflows.status === "fulfilled") {
+        setAttentionCount(
+          confirmations.value.length +
+            workflows.value.filter((workflow) => !["completed", "cancelled", "failed"].includes(workflow.status)).length,
+        )
+      }
+
+      if (successfulSources > 0) {
+        setLastRefreshedAt(new Date().toISOString())
+      }
+
+      if (failures.length > 0) {
+        setError(`Some dashboard data could not be refreshed: ${failures.join(", ")}.`)
+      }
     } catch (err) {
       setError(errorText(err))
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }, [])
 
   useEffect(() => {
     void refresh()
+  }, [refresh])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refresh()
+    }, 30000)
+    return () => window.clearInterval(interval)
   }, [refresh])
 
   return (
@@ -81,11 +137,26 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
         <div className="orb-card dashboard-orb" aria-label="NOVA live status">
           <div className="orb-glow orb-glow-one" /><div className="orb-glow orb-glow-two" />
           <div className="nova-orb"><div className="orb-core"><Icon name="spark" size={34} /></div></div>
-          <div className="orb-status"><span className="status-pill">{loading ? "Syncing" : "Ready"}</span><span className="orb-caption">Your personal workspace is connected</span></div>
+          <div className="orb-status"><span className="status-pill">{loading || refreshing ? "Syncing" : "Ready"}</span><span className="orb-caption">Your personal workspace is connected</span></div>
         </div>
       </section>
 
-      {error && <div className="resource-error" role="alert">{error}<button type="button" onClick={() => void refresh()}>Retry</button></div>}
+      <section className="resource-toolbar" aria-label="Dashboard synchronization">
+        <div className="resource-toolbar-actions">
+          <span className="resource-hint" role="status" aria-live="polite">
+            {refreshing
+              ? "Refreshing dashboard data…"
+              : lastRefreshedAt
+                ? `Last synced ${formatDate(lastRefreshedAt)}`
+                : "Waiting for dashboard sync"}
+          </span>
+          <button className="secondary-action compact" type="button" onClick={() => void refresh()} disabled={refreshing}>
+            <Icon name="activity" size={15} />{refreshing ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+      </section>
+
+      {error && <div className="resource-error" role="alert">{error}<button type="button" onClick={() => void refresh()} disabled={refreshing}>Retry</button></div>}
 
       <section className="dashboard-stats">
         <button type="button" className="dashboard-stat-card" onClick={() => onNavigate("Tasks")}><span>Open tasks</span><strong>{loading ? "—" : taskCount}</strong><small>{activeTaskCount} in progress</small></button>

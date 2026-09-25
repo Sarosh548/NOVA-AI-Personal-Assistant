@@ -25,6 +25,7 @@ export function AppShell({
 }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [shortcutLabel, setShortcutLabel] = useState("Ctrl K")
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   )
@@ -36,6 +37,10 @@ export function AppShell({
 
   const workspace = navigation.filter((item) => item.group === "workspace")
   const system = navigation.filter((item) => item.group === "system")
+
+  useEffect(() => {
+    setShortcutLabel(/Mac|iPhone|iPad|iPod/.test(navigator.platform) ? "⌘ K" : "Ctrl K")
+  }, [])
 
   useEffect(() => {
     if (!mobileMenuOpen) return
@@ -214,11 +219,12 @@ export function AppShell({
               type="button"
               onClick={() => setCommandPaletteOpen(true)}
               aria-label="Open command palette"
-              title="Open command palette"
+              aria-keyshortcuts="Control+K Meta+K"
+              title={`Open command palette (${shortcutLabel})`}
             >
               <Icon name="search" size={16} />
               <span>Jump to…</span>
-              <kbd>Ctrl K</kbd>
+              <kbd>{shortcutLabel}</kbd>
             </button>
             <AccountMenu displayName={displayName} onSignOut={onSignOut} />
           </div>
