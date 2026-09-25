@@ -38,6 +38,7 @@ export function RemindersSurface() {
   const [form, setForm] = useState({ title: "", time: "" })
   const [edits, setEdits] = useState<Record<number, { title: string; time: string }>>({})
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
+  const [operationStatus, setOperationStatus] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<Reminder | null>(null)
 
   const load = useCallback(async () => {
@@ -67,12 +68,15 @@ export function RemindersSurface() {
     event.preventDefault()
     if (!form.title.trim() || !form.time || creating) return
     setCreating(true)
+    setOperationStatus("Scheduling reminder…")
     setError(null)
     try {
       await createReminder({ title: form.title.trim(), reminder_time: new Date(form.time).toISOString() })
       setForm({ title: "", time: "" })
       await load()
+      setOperationStatus("Reminder scheduled.")
     } catch (err) {
+      setOperationStatus("")
       setError(errorText(err, "NOVA could not create that reminder."))
     } finally {
       setCreating(false)
@@ -82,11 +86,14 @@ export function RemindersSurface() {
   const mutate = async (reminderId: number, action: "complete" | "cancel") => {
     if (busy !== null) return
     setBusy(reminderId)
+    setOperationStatus(`${action === "complete" ? "Completing" : "Cancelling"} reminder…`)
     setError(null)
     try {
       await actOnReminder(reminderId, action)
       await load()
+      setOperationStatus(`Reminder ${action === "complete" ? "completed" : "cancelled"}.`)
     } catch (err) {
+      setOperationStatus("")
       setError(errorText(err, "NOVA could not update that reminder."))
     } finally {
       setBusy(null)
@@ -119,6 +126,7 @@ export function RemindersSurface() {
     const edit = edits[reminder.id]
     if (!edit || busy !== null || !edit.title.trim() || !edit.time) return
     setBusy(reminder.id)
+    setOperationStatus("Saving reminder changes…")
     setError(null)
     try {
       await updateReminder(reminder.id, {
@@ -126,7 +134,9 @@ export function RemindersSurface() {
         reminder_time: new Date(edit.time).toISOString(),
       })
       await load()
+      setOperationStatus("Reminder changes saved.")
     } catch (err) {
+      setOperationStatus("")
       setError(errorText(err, "NOVA could not save that reminder."))
     } finally {
       setBusy(null)
@@ -148,9 +158,14 @@ export function RemindersSurface() {
       <section className="resource-panel">
         <div className="resource-panel-head">
           <div><div className="section-kicker">NEW REMINDER</div><h2>Schedule a follow-up.</h2></div>
-          <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
-            <Icon name="activity" size={15} />Refresh
-          </button>
+          <div className="resource-toolbar-actions">
+            <span className="resource-hint" role="status" aria-live="polite">
+              {operationStatus || (lastRefreshedAt ? `Last synced ${formatDate(lastRefreshedAt)}` : "Reminder sync pending")}
+            </span>
+            <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
+              <Icon name="activity" size={15} />Refresh
+            </button>
+          </div>
         </div>
         <form className="resource-form" onSubmit={submit}>
           <div className="field-grid">
@@ -187,8 +202,8 @@ export function RemindersSurface() {
                   </div>
                   <div className="resource-card-body">
                     <div className="field-grid">
-                      <label className="field field-span-2"><span>Title</span><input value={edit.title} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, title: e.target.value } })} /></label>
-                      <label className="field"><span>When</span><input type="datetime-local" value={edit.time} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, time: e.target.value } })} /></label>
+                      <label className="field field-span-2"><span>Title</span><input aria-label={`Reminder title for reminder ${reminder.id}`} value={edit.title} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, title: e.target.value } })} /></label>
+                      <label className="field"><span>When</span><input aria-label={`Reminder time for reminder ${reminder.id}`} type="datetime-local" value={edit.time} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, time: e.target.value } })} /></label>
                     </div>
                     <div className="resource-actions">
                       <button className="secondary-action compact" type="button" disabled={busy === reminder.id || !dirty} onClick={() => void saveEdit(reminder)}>Save changes</button>
@@ -200,9 +215,6 @@ export function RemindersSurface() {
                 </article>
               )
             })}
-            {lastRefreshedAt && (
-              <small className="resource-muted sync-caption">Last synced {formatDate(lastRefreshedAt)}</small>
-            )}
           </>
         )}
       </section>
