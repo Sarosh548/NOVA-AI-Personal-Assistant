@@ -3038,7 +3038,7 @@ button.search-result-row:hover {
 }
 
 .conversation-shell {
-  height: auto;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
