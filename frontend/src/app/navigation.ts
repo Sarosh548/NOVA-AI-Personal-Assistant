@@ -52,3 +52,25 @@ export const navigation: NavigationItem[] = [
   { label: "Control Center", icon: "settings", group: "system" },
   { label: "Settings", icon: "settings", group: "system" },
 ]
+
+
+export function surfaceHash(surface: SurfaceKey): string {
+  return (
+    "#/" +
+    surface
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+  )
+}
+
+export function surfaceFromHash(hash: string): SurfaceKey | null {
+  const normalized = hash.replace(/^#\/?/, "").trim().toLowerCase()
+  if (!normalized) return "Home"
+
+  return (
+    navigation.find(
+      (item) =>
+        item.label.toLowerCase().replace(/\s+/g, "-") === normalized,
+    )?.label ?? null
+  )
+}
