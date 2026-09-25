@@ -32,9 +32,18 @@ export function AccountMenu({
   const containerRef = useRef<HTMLDivElement>(null)
   const profileButtonRef = useRef<HTMLButtonElement | null>(null)
   const signOutButtonRef = useRef<HTMLButtonElement | null>(null)
+  const wasOpenRef = useRef(false)
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      if (wasOpenRef.current) {
+        profileButtonRef.current?.focus()
+      }
+      wasOpenRef.current = false
+      return
+    }
+
+    wasOpenRef.current = true
 
     const frame = window.requestAnimationFrame(() => {
       signOutButtonRef.current?.focus()
@@ -85,11 +94,6 @@ export function AccountMenu({
       document.removeEventListener("pointerdown", handlePointerDown)
       document.removeEventListener("keydown", handleKeyDown)
     }
-  }, [open])
-
-  useEffect(() => {
-    if (open) return
-    profileButtonRef.current?.focus()
   }, [open])
 
   const handleSignOut = async () => {
