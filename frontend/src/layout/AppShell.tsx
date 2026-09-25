@@ -25,10 +25,10 @@ export function AppShell({
 }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [shortcutLabel, setShortcutLabel] = useState("Ctrl K")
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   )
-  const [shortcutLabel, setShortcutLabel] = useState("Ctrl K")
   const mobileMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const mobileNavigationCloseRef = useRef<HTMLButtonElement | null>(null)
 
@@ -39,9 +39,7 @@ export function AppShell({
   const system = navigation.filter((item) => item.group === "system")
 
   useEffect(() => {
-    setShortcutLabel(
-      /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? "⌘ K" : "Ctrl K",
-    )
+    setShortcutLabel(/Mac|iPhone|iPad|iPod/.test(navigator.platform) ? "⌘ K" : "Ctrl K")
   }, [])
 
   useEffect(() => {
@@ -237,8 +235,7 @@ export function AppShell({
 
       {!online && (
         <div className="network-banner" role="status" aria-live="polite">
-          You’re offline. NOVA will reconnect to online services when your
-          connection returns.
+          You’re offline. NOVA will reconnect to online services when your connection returns.
         </div>
       )}
 
@@ -278,10 +275,7 @@ export function AppShell({
               </button>
             </div>
 
-            <nav
-              className="mobile-navigation-content"
-              aria-label="Mobile primary navigation"
-            >
+            <nav className="mobile-navigation-content" aria-label="Mobile primary navigation">
               <div className="nav-group">
                 <div className="nav-label">Workspace</div>
                 {workspace.map((item) => renderNavigationItem(item, true))}
