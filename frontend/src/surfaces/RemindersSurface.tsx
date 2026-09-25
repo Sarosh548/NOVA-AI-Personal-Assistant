@@ -9,6 +9,7 @@ import {
   updateReminder,
   type Reminder,
 } from "../api/workspace"
+import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 
 function formatDate(value: string): string {
@@ -37,6 +38,7 @@ export function RemindersSurface() {
   const [form, setForm] = useState({ title: "", time: "" })
   const [edits, setEdits] = useState<Record<number, { title: string; time: string }>>({})
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Reminder | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -77,17 +79,37 @@ export function RemindersSurface() {
     }
   }
 
-  const mutate = async (reminderId: number, action: "complete" | "cancel" | "delete") => {
+  const mutate = async (reminderId: number, action: "complete" | "cancel") => {
     if (busy !== null) return
-    if (action === "delete" && !window.confirm("Delete this reminder permanently?")) return
     setBusy(reminderId)
     setError(null)
     try {
-      if (action === "delete") await deleteReminder(reminderId)
-      else await actOnReminder(reminderId, action)
+      await actOnReminder(reminderId, action)
       await load()
     } catch (err) {
       setError(errorText(err, "NOVA could not update that reminder."))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const requestDelete = (reminder: Reminder) => {
+    if (busy !== null) return
+    setDeleteTarget(reminder)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || busy !== null) return
+
+    const reminderId = deleteTarget.id
+    setBusy(reminderId)
+    setError(null)
+    try {
+      await deleteReminder(reminderId)
+      setDeleteTarget(null)
+      await load()
+    } catch (err) {
+      setError(errorText(err, "NOVA could not delete that reminder."))
     } finally {
       setBusy(null)
     }
@@ -112,6 +134,7 @@ export function RemindersSurface() {
   }
 
   return (
+    <>
     <div className="content-shell resource-shell">
       <section className="resource-hero">
         <div>
@@ -171,7 +194,7 @@ export function RemindersSurface() {
                       <button className="secondary-action compact" type="button" disabled={busy === reminder.id || !dirty} onClick={() => void saveEdit(reminder)}>Save changes</button>
                       <button className="primary-action compact" type="button" disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "complete")}>Complete</button>
                       <button className="secondary-action compact" type="button" disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "cancel")}>Cancel</button>
-                      <button className="icon-action danger" type="button" aria-label={`Delete reminder ${reminder.id}`} disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "delete")}><Icon name="trash" size={15} /></button>
+                      <button className="icon-action danger" type="button" aria-label={`Delete reminder ${reminder.id}`} disabled={busy === reminder.id} onClick={() => requestDelete(reminder)}><Icon name="trash" size={15} /></button>
                     </div>
                   </div>
                 </article>
@@ -184,5 +207,21 @@ export function RemindersSurface() {
         )}
       </section>
     </div>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this reminder permanently?"
+        description={
+          deleteTarget
+            ? "“" + deleteTarget.title + "” will be removed from NOVA. This cannot be undone."
+            : "This reminder will be removed from NOVA. This cannot be undone."
+        }
+        confirmLabel="Delete reminder"
+        busy={deleteTarget !== null && busy === deleteTarget.id}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          if (busy === null) setDeleteTarget(null)
+        }}
+      />
+    </>
   )
 }

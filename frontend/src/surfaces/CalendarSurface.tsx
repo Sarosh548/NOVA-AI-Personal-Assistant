@@ -13,6 +13,7 @@ import {
   type CalendarEvent,
   type CalendarSendUpdates,
 } from "../api/workspace"
+import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 
 type EventMode = "timed" | "all-day"
@@ -188,6 +189,11 @@ export function CalendarSurface() {
   const [nextPageToken, setNextPageToken] = useState<string | null>(null)
   const [form, setForm] = useState<EventForm>(defaultEventForm())
   const [edit, setEdit] = useState<EventForm>(defaultEventForm())
+  const [confirmAction, setConfirmAction] = useState<
+    | { kind: "delete-event"; event: CalendarEvent }
+    | { kind: "disconnect" }
+    | null
+  >(null)
 
   const loadEvents = useCallback(async (reset = true) => {
     if (!connected) return
@@ -408,38 +414,45 @@ export function CalendarSurface() {
     }
   }
 
-  const removeEvent = async () => {
-    if (!selected?.id || working || !window.confirm("Delete this Google Calendar event?")) return
-
-    setWorking(true)
-    setError(null)
-
-    try {
-      await deleteCalendarEvent(selected.id, edit.sendUpdates)
-      setSelected(null)
-      await load()
-    } catch (err) {
-      setError(errorText(err, "NOVA could not delete that event."))
-    } finally {
-      setWorking(false)
-    }
+  const requestDeleteEvent = () => {
+    if (!selected?.id || working) return
+    setConfirmAction({ kind: "delete-event", event: selected })
   }
 
-  const disconnect = async () => {
-    if (working || !window.confirm("Disconnect Google Calendar from NOVA?")) return
+  const requestDisconnect = () => {
+    if (working) return
+    setConfirmAction({ kind: "disconnect" })
+  }
+
+  const confirmDangerousAction = async () => {
+    if (!confirmAction || working) return
 
     setWorking(true)
     setError(null)
 
     try {
-      await disconnectCalendar()
-      setConnected(false)
-      setCalendarId(null)
-      setEvents([])
-      setNextPageToken(null)
-      setSelected(null)
+      if (confirmAction.kind === "delete-event") {
+        const eventId = confirmAction.event.id
+        if (!eventId) return
+        await deleteCalendarEvent(eventId, edit.sendUpdates)
+        setSelected(null)
+        setConfirmAction(null)
+        await load()
+      } else {
+        await disconnectCalendar()
+        setConnected(false)
+        setCalendarId(null)
+        setEvents([])
+        setNextPageToken(null)
+        setSelected(null)
+        setConfirmAction(null)
+      }
     } catch (err) {
-      setError(errorText(err, "NOVA could not disconnect Google Calendar."))
+      setError(
+        confirmAction.kind === "delete-event"
+          ? errorText(err, "NOVA could not delete that event.")
+          : errorText(err, "NOVA could not disconnect Google Calendar."),
+      )
     } finally {
       setWorking(false)
     }
@@ -513,7 +526,7 @@ export function CalendarSurface() {
                   className="danger-action compact"
                   type="button"
                   disabled={working}
-                  onClick={() => void disconnect()}
+                  onClick={requestDisconnect}
                 >
                   Disconnect
                 </button>
@@ -733,7 +746,7 @@ export function CalendarSurface() {
                       className="danger-action compact"
                       type="button"
                       disabled={working}
-                      onClick={() => void removeEvent()}
+                      onClick={requestDeleteEvent}
                     >
                       Delete
                     </button>
@@ -762,6 +775,28 @@ export function CalendarSurface() {
           </button>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmAction !== null}
+        title={
+          confirmAction?.kind === "disconnect"
+            ? "Disconnect Google Calendar?"
+            : "Delete this Google Calendar event?"
+        }
+        description={
+          confirmAction?.kind === "disconnect"
+            ? "NOVA will stop using this Google Calendar connection. Your calendar events will remain in Google Calendar."
+            : confirmAction
+              ? "“" + (confirmAction.event.summary || "Untitled event") + "” will be deleted from Google Calendar. This cannot be undone."
+              : "This calendar event will be deleted from Google Calendar. This cannot be undone."
+        }
+        confirmLabel={confirmAction?.kind === "disconnect" ? "Disconnect" : "Delete event"}
+        busy={working}
+        onConfirm={() => void confirmDangerousAction()}
+        onCancel={() => {
+          if (!working) setConfirmAction(null)
+        }}
+      />
     </div>
   )
 }
