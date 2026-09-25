@@ -148,6 +148,10 @@ export function VoiceSurface({
   const [response, setResponse] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
+  const [audioChunkCount, setAudioChunkCount] = useState(0)
+  const [audioByteCount, setAudioByteCount] = useState(0)
+  const [serverAudioChunkCount, setServerAudioChunkCount] = useState(0)
+  const [serverAudioByteCount, setServerAudioByteCount] = useState(0)
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   )
@@ -373,6 +377,9 @@ export function VoiceSurface({
             ? event.data
             : await event.data.arrayBuffer()
 
+        setAudioChunkCount((count) => count + 1)
+        setAudioByteCount((count) => count + payload.byteLength)
+
         const generation = playbackGenerationRef.current
 
         playbackEventChainRef.current = playbackEventChainRef.current.then(
@@ -521,7 +528,9 @@ export function VoiceSurface({
 
       if (type === "assistant.response") {
         setResponse(String(payload.response ?? ""))
-        setAudioState("preparing")
+        setAudioState((current) =>
+          current === "playing" ? current : "preparing",
+        )
         setState("speaking")
         return
       }
@@ -559,6 +568,16 @@ export function VoiceSurface({
 
       if (type === "assistant.audio.final") {
         await playbackEventChainRef.current
+        const serverChunkCount = Number(payload.audio_chunk_count)
+        const serverByteCount = Number(payload.audio_byte_count)
+
+        if (Number.isFinite(serverChunkCount)) {
+          setServerAudioChunkCount(serverChunkCount)
+        }
+        if (Number.isFinite(serverByteCount)) {
+          setServerAudioByteCount(serverByteCount)
+        }
+
         assistantAudioFinalRef.current = true
         if (playbackSourcesRef.current.size === 0) {
           setAudioState("idle")
@@ -734,6 +753,10 @@ export function VoiceSurface({
 
     clearAutoListenTimer()
     assistantAudioFinalRef.current = false
+    setAudioChunkCount(0)
+    setAudioByteCount(0)
+    setServerAudioChunkCount(0)
+    setServerAudioByteCount(0)
     stopPlayback()
     setResponse("")
     setTranscript("")
@@ -1003,10 +1026,31 @@ export function VoiceSurface({
                     <i />
                     <i />
                   </span>
-                  <span>{audioState === "playing" ? "NOVA is speaking" : "Voice response is loading"}</span>
+                  <span>
+                    {audioState === "playing"
+                      ? "NOVA is speaking"
+                      : "Voice response is loading"}
+                  </span>
+                  {audioChunkCount === 0 && serverAudioChunkCount > 0 && (
+                    <small className="voice-audio-debug">
+                      Server sent audio, but browser received 0 chunks
+                    </small>
+                  )}
+                  {audioChunkCount === 0 && serverAudioChunkCount === 0 && (
+                    <small className="voice-audio-debug">
+                      No audio chunks reported by server yet
+                    </small>
+                  )}
                 </div>
               )}
               <p>{response}</p>
+              {audioState !== "idle" && (
+                <small className="voice-audio-debug">
+                  Browser: {audioChunkCount} chunks · {audioByteCount} bytes
+                  {" · "}
+                  Server: {serverAudioChunkCount} chunks · {serverAudioByteCount} bytes
+                </small>
+              )}
             </div>
           )}
 
