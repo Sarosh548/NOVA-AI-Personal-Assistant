@@ -10,6 +10,13 @@ type CommandPaletteProps = {
   onNavigate: (surface: SurfaceKey) => void
 }
 
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+function commandId(label: SurfaceKey): string {
+  return `nova-command-${label.toLowerCase().replace(/\s+/g, "-")}`
+}
+
 export function CommandPalette({
   open,
   activeSurface,
@@ -17,6 +24,7 @@ export function CommandPalette({
   onNavigate,
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const paletteRef = useRef<HTMLDivElement | null>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const [query, setQuery] = useState("")
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -28,6 +36,9 @@ export function CommandPalette({
       item.label.toLowerCase().includes(normalized),
     )
   }, [query])
+
+  const selectedItem = filteredNavigation[selectedIndex]
+  const selectedItemId = selectedItem ? commandId(selectedItem.label) : undefined
 
   useEffect(() => {
     if (!open) return
@@ -55,6 +66,29 @@ export function CommandPalette({
       if (event.key === "Escape") {
         event.preventDefault()
         onClose()
+        return
+      }
+
+      if (event.key === "Tab") {
+        const palette = paletteRef.current
+        if (!palette) return
+
+        const focusable = Array.from(
+          palette.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+        )
+
+        if (focusable.length === 0) return
+
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault()
+          last.focus()
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          first.focus()
+        }
         return
       }
 
@@ -116,6 +150,7 @@ export function CommandPalette({
       />
 
       <div
+        ref={paletteRef}
         className="command-palette"
         role="dialog"
         aria-modal="true"
@@ -132,11 +167,21 @@ export function CommandPalette({
             }}
             placeholder="Jump to a NOVA workspace…"
             aria-label="Search NOVA workspaces"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
+            aria-controls="nova-command-list"
+            aria-activedescendant={selectedItemId}
           />
           <kbd>Esc</kbd>
         </div>
 
-        <div className="command-palette-list" role="listbox">
+        <div
+          id="nova-command-list"
+          className="command-palette-list"
+          role="listbox"
+          aria-label="NOVA workspaces"
+        >
           {filteredNavigation.length === 0 ? (
             <div className="command-palette-empty">No matching workspace.</div>
           ) : (
@@ -145,6 +190,7 @@ export function CommandPalette({
 
               return (
                 <button
+                  id={commandId(item.label)}
                   className={
                     selected
                       ? "command-palette-item selected"
