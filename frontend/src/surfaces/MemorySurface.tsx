@@ -9,6 +9,7 @@ import {
   type Memory,
   type MemorySearchResult,
 } from "../api/workspace"
+import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 
 const categories = ["identity", "goal", "preference", "project", "interest", "context", "personal"] as const
@@ -36,6 +37,7 @@ export function MemorySurface() {
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<Record<number, Memory>>({})
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Memory | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -99,13 +101,22 @@ export function MemorySurface() {
     }
   }
 
-  const remove = async (id: number) => {
-    if (busy !== null || !window.confirm("Delete this memory?")) return
-    setBusy(id)
+  const requestDelete = (memory: Memory) => {
+    if (busy !== null) return
+    setDeleteTarget(memory)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || busy !== null) return
+
+    const memoryId = deleteTarget.id
+    setBusy(memoryId)
     setError(null)
     try {
-      await deleteMemory(id)
+      await deleteMemory(memoryId)
+      setDeleteTarget(null)
       await load()
+      if (query.trim()) await runSearch()
     } catch (err) {
       setError(errorText(err, "NOVA could not delete that memory."))
     } finally {
@@ -114,6 +125,7 @@ export function MemorySurface() {
   }
 
   return (
+    <>
     <div className="content-shell resource-shell">
       <section className="resource-hero">
         <div>
@@ -188,7 +200,7 @@ export function MemorySurface() {
                 </div>
                 <div className="resource-actions">
                   <button className="secondary-action compact" type="button" disabled={busy === memory.id} onClick={() => void save(memory)}><Icon name="edit" size={14} />Save</button>
-                  <button className="danger-action compact" type="button" disabled={busy === memory.id} onClick={() => void remove(memory.id)}><Icon name="trash" size={14} />Delete</button>
+                  <button className="danger-action compact" type="button" disabled={busy === memory.id} onClick={() => requestDelete(memory)}><Icon name="trash" size={14} />Delete</button>
                 </div>
               </div>
             </article>
@@ -196,5 +208,21 @@ export function MemorySurface() {
         })}
       </section>
     </div>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this memory?"
+        description={
+          deleteTarget
+            ? "This stored memory will be removed from NOVA’s personal context. This cannot be undone."
+            : "This stored memory will be removed from NOVA’s personal context. This cannot be undone."
+        }
+        confirmLabel="Delete memory"
+        busy={deleteTarget !== null && busy === deleteTarget.id}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          if (busy === null) setDeleteTarget(null)
+        }}
+      />
+    </>
   )
 }
