@@ -294,6 +294,7 @@ export function TasksSurface() {
                       <div>
                         <span>Due</span>
                         <input
+                          aria-label={`Due date for task ${task.id}`}
                           type="datetime-local"
                           value={edit.dueAt}
                           onChange={(e) =>
