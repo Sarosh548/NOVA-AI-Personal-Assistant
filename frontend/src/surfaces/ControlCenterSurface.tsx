@@ -820,7 +820,7 @@ function NotificationDestinations({
                   className="icon-action danger"
                   type="button"
                   disabled={working}
-                  onClick={() => void onDelete(destination.id)}
+                  onClick={() => onDelete(destination)}
                   aria-label="Remove notification destination"
                 >
                   <Icon name="trash" size={14} />
