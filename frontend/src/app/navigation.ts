@@ -26,6 +26,8 @@ export type IconName =
   | "logout"
   | "eye"
   | "eye-off"
+  | "edit"
+  | "trash"
 
 export type NavigationItem = {
   label: SurfaceKey
