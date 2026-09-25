@@ -51,6 +51,7 @@ export function TasksSurface() {
     dueAt: "",
   })
   const [edits, setEdits] = useState<Record<number, { priority: string; dueAt: string }>>({})
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -58,6 +59,7 @@ export function TasksSurface() {
     try {
       const result = await getTasks(statusFilter || undefined)
       setTasks(result)
+      setLastRefreshedAt(new Date().toISOString())
       setEdits(
         Object.fromEntries(
           result.map((task) => [
@@ -157,13 +159,18 @@ export function TasksSurface() {
             <div className="section-kicker">NEW TASK</div>
             <h2>Capture work for NOVA.</h2>
           </div>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter tasks by status">
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="in_progress">In progress</option>
-            <option value="completed">Completed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+          <div className="resource-toolbar-actions">
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter tasks by status">
+              <option value="">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="in_progress">In progress</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
+              <Icon name="activity" size={15} />Refresh
+            </button>
+          </div>
         </div>
 
         <form className="resource-form" onSubmit={submit}>
@@ -240,7 +247,12 @@ export function TasksSurface() {
                 </div>
               </article>
             )
-          })
+          })}
+          {lastRefreshedAt && (
+            <small className="resource-muted sync-caption">
+              Last synced {formatDate(lastRefreshedAt)}
+            </small>
+          )}
         )}
       </section>
     </div>
