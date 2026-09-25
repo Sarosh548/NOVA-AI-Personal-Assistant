@@ -868,7 +868,9 @@ async def _run_voice_assistant_execution(
     )
 
     if response_bridge is not None:
-        await response_bridge.finish()
+        await response_bridge.finish(
+            response_payload["response"]
+        )
 
 
 def _get_voice_conversation_execution_service(

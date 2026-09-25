@@ -64,6 +64,7 @@ class VoiceResponseStreamBridge:
         self._closed = False
         self._failure_message: str | None = None
         self._terminal_enqueued = False
+        self._accepted_delta_count = 0
 
     def on_delta(
         self,
@@ -123,6 +124,8 @@ class VoiceResponseStreamBridge:
             future.result(
                 timeout=self._enqueue_timeout_seconds
             )
+            with self._state_lock:
+                self._accepted_delta_count += 1
         except FutureTimeoutError as exc:
             future.cancel()
             message = (
@@ -186,10 +189,24 @@ class VoiceResponseStreamBridge:
 
             yield item
 
-    async def finish(self) -> None:
+    async def finish(
+        self,
+        fallback_text: str | None = None,
+    ) -> None:
         """
         Preserve queued deltas and append a normal terminal marker.
+
+        When no worker-thread delta reached the bridge, optionally enqueue
+        the authoritative final response as one bounded fallback chunk so
+        realtime TTS cannot receive an empty turn solely because the
+        observational streaming callback was unavailable.
         """
+
+        normalized_fallback = (
+            str(fallback_text).strip()
+            if fallback_text is not None
+            else ""
+        )
 
         with self._state_lock:
             if self._closed:
@@ -203,11 +220,56 @@ class VoiceResponseStreamBridge:
             if failed or self._terminal_enqueued:
                 return
 
+            fallback_needed = (
+                self._accepted_delta_count == 0
+                and bool(normalized_fallback)
+            )
             self._terminal_enqueued = True
+
+        if fallback_needed:
+            try:
+                await asyncio.wait_for(
+                    self._queue.put(
+                        normalized_fallback
+                    ),
+                    timeout=self._enqueue_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                message = (
+                    "Response stream fallback delivery deadline was exceeded."
+                )
+
+                with self._state_lock:
+                    if self._failure_message is None:
+                        self._failure_message = message
+
+                    failure_message = (
+                        self._failure_message
+                    )
+
+                self._drain_queue()
+
+                try:
+                    self._queue.put_nowait(
+                        _BridgeTerminal(
+                            error_message=failure_message
+                        )
+                    )
+                except asyncio.QueueFull:
+                    pass
+
+                return
 
         await self._enqueue_terminal(
             _BridgeTerminal()
         )
+
+    @property
+    def accepted_delta_count(self) -> int:
+        """Return the number of worker-thread deltas accepted by the bridge."""
+
+        with self._state_lock:
+            return self._accepted_delta_count
 
     async def abort(
         self,
