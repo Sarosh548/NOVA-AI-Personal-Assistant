@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react"
+import { useEffect, useRef, useState, type FormEvent } from "react"
 
 import { isApiBaseUrlConfigured } from "../app/config"
 import { Icon } from "../components/Icon"
@@ -14,6 +14,15 @@ export function AuthScreen() {
   const [showPassword, setShowPassword] = useState(false)
   const [displayName, setDisplayName] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const identifierRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      identifierRef.current?.focus()
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [mode])
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -86,7 +95,11 @@ export function AuthScreen() {
           </div>
         )}
 
-        <form className="auth-form" onSubmit={handleSubmit}>
+        <form
+          className="auth-form"
+          onSubmit={handleSubmit}
+          aria-busy={isSubmitting}
+        >
           {mode === "sign-up" && (
             <label>
               <span>Name</span>
@@ -103,7 +116,10 @@ export function AuthScreen() {
           <label>
             <span>Email or username</span>
             <input
+              ref={identifierRef}
               autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               value={identifier}
               onChange={(event) => setIdentifier(event.target.value)}
               placeholder="you@example.com"
