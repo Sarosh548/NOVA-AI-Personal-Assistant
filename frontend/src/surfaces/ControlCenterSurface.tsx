@@ -22,6 +22,7 @@ import {
   type Permission,
   type Workflow,
 } from "../api/workspace"
+import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 import { useAuth } from "../auth/AuthProvider"
 
@@ -66,6 +67,13 @@ export function ControlCenterSurface() {
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [confirmations, setConfirmations] = useState<Confirmation[]>([])
   const [workflows, setWorkflows] = useState<Workflow[]>([])
+  const [preferenceSaveState, setPreferenceSaveState] = useState<"idle" | "saving" | "saved">("idle")
+  const [dangerousAction, setDangerousAction] = useState<
+    | { kind: "destination"; id: number; label: string }
+    | { kind: "permission"; permission: Permission }
+    | { kind: "workflow"; id: number; title: string }
+    | null
+  >(null)
 
   const load = useCallback(async () => {
     if (!user) return
@@ -126,11 +134,14 @@ export function ControlCenterSurface() {
     if (!user || !preferences || working) return
 
     setWorking(true)
+    setPreferenceSaveState("saving")
     setError(null)
 
     try {
       setPreferences(await updateNotificationPreferences(user.id, payload))
+      setPreferenceSaveState("saved")
     } catch (err) {
+      setPreferenceSaveState("idle")
       setError(errorText(err, "NOVA could not update that preference."))
     } finally {
       setWorking(false)
@@ -163,20 +174,13 @@ export function ControlCenterSurface() {
     }
   }
 
-  const removeDestination = async (id: number) => {
-    if (working || !window.confirm("Remove this notification destination?")) return
-
-    setWorking(true)
-    setError(null)
-
-    try {
-      await deleteNotificationDestination(id)
-      setDestinations(await getNotificationDestinations())
-    } catch (err) {
-      setError(errorText(err, "NOVA could not remove that notification destination."))
-    } finally {
-      setWorking(false)
-    }
+  const requestRemoveDestination = (destination: NotificationDestination) => {
+    if (working) return
+    setDangerousAction({
+      kind: "destination",
+      id: destination.id,
+      label: destination.label || destination.destination,
+    })
   }
 
   const makeDefaultDestination = async (id: number) => {
@@ -214,27 +218,9 @@ export function ControlCenterSurface() {
     }
   }
 
-  const removePermission = async (permission: Permission) => {
-    if (
-      working ||
-      !window.confirm(
-        `Remove ${permission.tool}/${permission.action} permission?`,
-      )
-    ) {
-      return
-    }
-
-    setWorking(true)
-    setError(null)
-
-    try {
-      await deletePermission(permission.tool, permission.action)
-      setPermissions(await getPermissions())
-    } catch (err) {
-      setError(errorText(err, "NOVA could not remove that permission."))
-    } finally {
-      setWorking(false)
-    }
+  const requestRemovePermission = (permission: Permission) => {
+    if (working) return
+    setDangerousAction({ kind: "permission", permission })
   }
 
   const resolveConfirmation = async (
@@ -261,17 +247,44 @@ export function ControlCenterSurface() {
     }
   }
 
-  const stopWorkflow = async (id: number) => {
-    if (working || !window.confirm("Cancel this workflow?")) return
+  const requestStopWorkflow = (workflow: Workflow) => {
+    if (working) return
+    const title = workflow.plan?.title
+      ? String(workflow.plan.title)
+      : `Workflow #${workflow.id}`
+    setDangerousAction({ kind: "workflow", id: workflow.id, title })
+  }
+
+  const confirmDangerousAction = async () => {
+    if (!dangerousAction || working) return
 
     setWorking(true)
     setError(null)
 
     try {
-      await cancelWorkflow(id)
-      setWorkflows(await getWorkflows())
+      if (dangerousAction.kind === "destination") {
+        await deleteNotificationDestination(dangerousAction.id)
+        setDestinations(await getNotificationDestinations())
+      } else if (dangerousAction.kind === "permission") {
+        await deletePermission(
+          dangerousAction.permission.tool,
+          dangerousAction.permission.action,
+        )
+        setPermissions(await getPermissions())
+      } else {
+        await cancelWorkflow(dangerousAction.id)
+        setWorkflows(await getWorkflows())
+      }
+
+      setDangerousAction(null)
     } catch (err) {
-      setError(errorText(err, "NOVA could not cancel that workflow."))
+      setError(
+        dangerousAction.kind === "destination"
+          ? errorText(err, "NOVA could not remove that notification destination.")
+          : dangerousAction.kind === "permission"
+            ? errorText(err, "NOVA could not remove that permission.")
+            : errorText(err, "NOVA could not cancel that workflow."),
+      )
     } finally {
       setWorking(false)
     }
@@ -309,13 +322,44 @@ export function ControlCenterSurface() {
           ] as const
         ).map(([value, label]) => (
           <button
+            id={`control-tab-${value}`}
             key={value}
             className={
               tab === value ? "settings-tab active" : "settings-tab"
             }
             type="button"
             role="tab"
+            tabIndex={tab === value ? 0 : -1}
             aria-selected={tab === value}
+            aria-controls={`control-panel-${value}`}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" &&
+                  event.key !== "Home" && event.key !== "End") {
+                return
+              }
+              event.preventDefault()
+              const values: ControlTab[] = [
+                "notifications",
+                "approvals",
+                "permissions",
+                "workflows",
+              ]
+              const currentIndex = values.indexOf(tab)
+              const nextIndex =
+                event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? values.length - 1
+                    : (currentIndex +
+                        (event.key === "ArrowRight" ? 1 : -1) +
+                        values.length) %
+                      values.length
+              const nextTab = values[nextIndex]
+              setTab(nextTab)
+              window.requestAnimationFrame(() => {
+                document.getElementById(`control-tab-${nextTab}`)?.focus()
+              })
+            }}
             onClick={() => setTab(value)}
           >
             {label}
@@ -337,7 +381,12 @@ export function ControlCenterSurface() {
       ) : (
         <>
           {tab === "notifications" && preferences && (
-            <section className="resource-two-column">
+            <section
+              id="control-panel-notifications"
+              className="resource-two-column"
+              role="tabpanel"
+              aria-labelledby="control-tab-notifications"
+            >
               <article className="resource-panel">
                 <div className="resource-panel-head">
                   <div>
@@ -426,9 +475,12 @@ export function ControlCenterSurface() {
                   </label>
                 </div>
 
-                <p className="resource-hint">
-                  Changes save directly through NOVA’s authenticated
-                  notification-preferences API.
+                <p className="resource-hint" role="status" aria-live="polite">
+                  {preferenceSaveState === "saving"
+                    ? "Saving notification preferences…"
+                    : preferenceSaveState === "saved"
+                      ? "Notification preferences saved."
+                      : "Changes save directly through NOVA’s authenticated notification-preferences API."}
                 </p>
               </article>
 
@@ -437,13 +489,18 @@ export function ControlCenterSurface() {
                 working={working}
                 onAdd={addDestination}
                 onDefault={makeDefaultDestination}
-                onDelete={removeDestination}
+                onDelete={requestRemoveDestination}
               />
             </section>
           )}
 
           {tab === "approvals" && (
-            <section className="settings-stack">
+            <section
+              id="control-panel-approvals"
+              className="settings-stack"
+              role="tabpanel"
+              aria-labelledby="control-tab-approvals"
+            >
               <article className="resource-panel">
                 <div className="resource-panel-head">
                   <div>
@@ -513,7 +570,12 @@ export function ControlCenterSurface() {
           )}
 
           {tab === "permissions" && (
-            <section className="resource-panel">
+            <section
+              id="control-panel-permissions"
+              className="resource-panel"
+              role="tabpanel"
+              aria-labelledby="control-tab-permissions"
+            >
               <div className="resource-panel-head">
                 <div>
                   <div className="section-kicker">PERMISSIONS</div>
@@ -528,13 +590,18 @@ export function ControlCenterSurface() {
                 permissions={permissions}
                 working={working}
                 onChange={changePermission}
-                onDelete={removePermission}
+                onDelete={requestRemovePermission}
               />
             </section>
           )}
 
           {tab === "workflows" && (
-            <section className="resource-panel">
+            <section
+              id="control-panel-workflows"
+              className="resource-panel"
+              role="tabpanel"
+              aria-labelledby="control-tab-workflows"
+            >
               <div className="resource-panel-head">
                 <div>
                   <div className="section-kicker">DURABLE EXECUTION</div>
@@ -616,7 +683,7 @@ export function ControlCenterSurface() {
                             className="danger-action compact"
                             type="button"
                             disabled={working}
-                            onClick={() => void stopWorkflow(workflow.id)}
+                            onClick={() => requestStopWorkflow(workflow)}
                           >
                             Cancel workflow
                           </button>
@@ -630,6 +697,38 @@ export function ControlCenterSurface() {
           )}
         </>
       )}
+
+      <ConfirmDialog
+        open={dangerousAction !== null}
+        title={
+          dangerousAction?.kind === "destination"
+            ? "Remove this notification destination?"
+            : dangerousAction?.kind === "permission"
+              ? "Remove this saved permission?"
+              : "Cancel this workflow?"
+        }
+        description={
+          dangerousAction?.kind === "destination"
+            ? "“" + dangerousAction.label + "” will no longer be available for NOVA notifications."
+            : dangerousAction?.kind === "permission"
+              ? "“" + dangerousAction.permission.tool + "/" + dangerousAction.permission.action + "” will be removed from your saved permission rules. NOVA will fall back to its safety defaults."
+              : dangerousAction
+                ? "“" + dangerousAction.title + "” will be cancelled. Any steps that have not completed will stop according to the backend workflow rules."
+                : "This NOVA action will be cancelled."
+        }
+        confirmLabel={
+          dangerousAction?.kind === "destination"
+            ? "Remove destination"
+            : dangerousAction?.kind === "permission"
+              ? "Remove permission"
+              : "Cancel workflow"
+        }
+        busy={working}
+        onConfirm={() => void confirmDangerousAction()}
+        onCancel={() => {
+          if (!working) setDangerousAction(null)
+        }}
+      />
     </div>
   )
 }
@@ -650,7 +749,7 @@ function NotificationDestinations({
     isDefault: boolean,
   ) => Promise<void>
   onDefault: (id: number) => Promise<void>
-  onDelete: (id: number) => Promise<void>
+  onDelete: (destination: NotificationDestination) => void
 }) {
   const [form, setForm] = useState({
     channel: "email",
@@ -721,7 +820,7 @@ function NotificationDestinations({
                   className="icon-action danger"
                   type="button"
                   disabled={working}
-                  onClick={() => void onDelete(destination.id)}
+                  onClick={() => onDelete(destination)}
                   aria-label="Remove notification destination"
                 >
                   <Icon name="trash" size={14} />
@@ -813,7 +912,7 @@ function PermissionEditor({
     permission: Permission,
     mode: Permission["mode"],
   ) => Promise<void>
-  onDelete: (permission: Permission) => Promise<void>
+  onDelete: (permission: Permission) => void
 }) {
   const [form, setForm] = useState<{
     tool: string
