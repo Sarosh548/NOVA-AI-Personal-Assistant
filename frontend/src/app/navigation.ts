@@ -1,6 +1,7 @@
 export type SurfaceKey =
   | "Home"
   | "Conversation"
+  | "Voice"
   | "Tasks"
   | "Reminders"
   | "Calendar"
@@ -40,6 +41,7 @@ export type NavigationItem = {
 export const navigation: NavigationItem[] = [
   { label: "Home", icon: "home", group: "workspace" },
   { label: "Conversation", icon: "message", group: "workspace" },
+  { label: "Voice", icon: "mic", group: "workspace" },
   { label: "Tasks", icon: "check", group: "workspace" },
   { label: "Reminders", icon: "bell", group: "workspace" },
   { label: "Calendar", icon: "calendar", group: "workspace" },

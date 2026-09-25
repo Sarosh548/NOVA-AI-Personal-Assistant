@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthProvider"
 import { ConversationSurface } from "../surfaces/ConversationSurface"
 import { HomeSurface } from "../surfaces/HomeSurface"
 import { PlaceholderSurface } from "../surfaces/PlaceholderSurface"
+import { VoiceSurface } from "../surfaces/VoiceSurface"
 import { AppShell } from "../layout/AppShell"
 import type { SurfaceKey } from "./navigation"
 
@@ -26,6 +27,8 @@ export function AppRoot() {
         <HomeSurface onOpenConversation={() => setActiveSurface("Conversation")} />
       ) : activeSurface === "Conversation" ? (
         <ConversationSurface />
+      ) : activeSurface === "Voice" ? (
+        <VoiceSurface onOpenConversation={() => setActiveSurface("Conversation")} />
       ) : (
         <PlaceholderSurface label={activeSurface} onBackHome={() => setActiveSurface("Home")} />
       )}
