@@ -23,6 +23,7 @@ export type IconName =
   | "plus"
   | "arrow"
   | "mic"
+  | "logout"
 
 export type NavigationItem = {
   label: SurfaceKey
