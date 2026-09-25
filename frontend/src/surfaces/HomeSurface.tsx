@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react"
 
 import { ApiRequestError } from "../api/client"
-import { getActivity, getReminders, getTasks } from "../api/workspace"
+import {
+  getActivity,
+  getPendingConfirmations,
+  getReminders,
+  getTasks,
+  getWorkflows,
+} from "../api/workspace"
 import { Icon } from "../components/Icon"
 import type { SurfaceKey } from "../app/navigation"
 
@@ -25,6 +31,7 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
   const [activeTaskCount, setActiveTaskCount] = useState(0)
   const [reminderCount, setReminderCount] = useState(0)
   const [activityCount, setActivityCount] = useState(0)
+  const [attentionCount, setAttentionCount] = useState(0)
   const [nextReminder, setNextReminder] = useState<string | null>(null)
   const [latestActivity, setLatestActivity] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -34,10 +41,12 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
     setLoading(true)
     setError(null)
     try {
-      const [tasks, reminders, activity] = await Promise.all([
+      const [tasks, reminders, activity, confirmations, workflows] = await Promise.all([
         getTasks(),
         getReminders(),
         getActivity({ limit: 20 }),
+        getPendingConfirmations(),
+        getWorkflows(),
       ])
       setTaskCount(tasks.filter((task) => !["completed", "cancelled"].includes(task.status)).length)
       setActiveTaskCount(tasks.filter((task) => task.status === "in_progress").length)
@@ -45,6 +54,7 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
       setActivityCount(activity.length)
       setNextReminder(reminders[0]?.reminder_time ?? null)
       setLatestActivity(activity[0]?.title ?? null)
+      setAttentionCount(confirmations.length + workflows.filter((workflow) => !["completed", "cancelled", "failed"].includes(workflow.status)).length)
     } catch (err) {
       setError(errorText(err))
     } finally {
@@ -81,6 +91,7 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
         <button type="button" className="dashboard-stat-card" onClick={() => onNavigate("Tasks")}><span>Open tasks</span><strong>{loading ? "—" : taskCount}</strong><small>{activeTaskCount} in progress</small></button>
         <button type="button" className="dashboard-stat-card" onClick={() => onNavigate("Reminders")}><span>Pending reminders</span><strong>{loading ? "—" : reminderCount}</strong><small>{nextReminder ? formatDate(nextReminder) : "Nothing scheduled"}</small></button>
         <button type="button" className="dashboard-stat-card" onClick={() => onNavigate("Activity")}><span>Latest activity</span><strong>{loading ? "—" : activityCount}</strong><small>{latestActivity || "No new events"}</small></button>
+        <button type="button" className="dashboard-stat-card" onClick={() => onNavigate("Control Center")}><span>Needs attention</span><strong>{loading ? "—" : attentionCount}</strong><small>Pending approvals + active workflows</small></button>
       </section>
 
       <section className="section-block">
@@ -102,7 +113,8 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
         <div className="section-heading"><div><div className="section-kicker">WORKSPACE</div><h2>Everything important, one click away.</h2></div></div>
         <div className="workspace-link-grid">
           <button type="button" onClick={() => onNavigate("Activity")}><Icon name="activity" size={18} /><span><strong>Activity</strong><small>See NOVA's operational trail.</small></span><Icon name="arrow" size={16} /></button>
-          <button type="button" onClick={() => onNavigate("Settings")}><Icon name="settings" size={18} /><span><strong>Settings</strong><small>Control notifications, permissions, and approvals.</small></span><Icon name="arrow" size={16} /></button>
+          <button type="button" onClick={() => onNavigate("Control Center")}><Icon name="settings" size={18} /><span><strong>Control Center</strong><small>Notifications, approvals, permissions, and workflows.</small></span><Icon name="arrow" size={16} /></button>
+          <button type="button" onClick={() => onNavigate("Settings")}><Icon name="settings" size={18} /><span><strong>Settings</strong><small>Account and NOVA foundation details.</small></span><Icon name="arrow" size={16} /></button>
         </div>
       </section>
     </div>

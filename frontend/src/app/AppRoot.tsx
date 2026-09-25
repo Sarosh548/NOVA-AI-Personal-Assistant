@@ -4,6 +4,7 @@ import { AuthScreen } from "../auth/AuthScreen"
 import { useAuth } from "../auth/AuthProvider"
 import { ActivitySurface } from "../surfaces/ActivitySurface"
 import { CalendarSurface } from "../surfaces/CalendarSurface"
+import { ControlCenterSurface } from "../surfaces/ControlCenterSurface"
 import { ConversationSurface } from "../surfaces/ConversationSurface"
 import { HomeSurface } from "../surfaces/HomeSurface"
 import { KnowledgeSurface } from "../surfaces/KnowledgeSurface"
@@ -61,6 +62,9 @@ export function AppRoot() {
       break
     case "Knowledge":
       surface = <KnowledgeSurface />
+      break
+    case "Control Center":
+      surface = <ControlCenterSurface />
       break
     case "Settings":
       surface = <SettingsSurface />
