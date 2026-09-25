@@ -291,6 +291,13 @@ async def test_stream_relay_decodes_audio_and_emits_final(
 
     await stream.finish()
 
+    assert json.loads(
+        websocket.sent[-1]
+    ) == {
+        "text": "",
+        "flush": True,
+    }
+
     events = [
         event
         async for event in stream.events()

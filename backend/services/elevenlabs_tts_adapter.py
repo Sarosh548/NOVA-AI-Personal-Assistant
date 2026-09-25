@@ -167,6 +167,7 @@ class ElevenLabsTTSStream(TTSStream):
                     json.dumps(
                         {
                             "text": "",
+                            "flush": True,
                         }
                     )
                 )
