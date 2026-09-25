@@ -3045,3 +3045,15 @@ button.search-result-row:hover {
     min-height: 0;
   }
 }
+
+/* Conversation page scroll lock */
+
+body:has(.conversation-shell) {
+  overflow: hidden;
+}
+
+.nova-main:has(.conversation-shell) {
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+}
