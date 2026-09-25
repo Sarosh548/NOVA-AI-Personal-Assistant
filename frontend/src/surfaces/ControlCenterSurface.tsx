@@ -749,7 +749,7 @@ function NotificationDestinations({
     isDefault: boolean,
   ) => Promise<void>
   onDefault: (id: number) => Promise<void>
-  onDelete: (id: number) => Promise<void>
+  onDelete: (destination: NotificationDestination) => void
 }) {
   const [form, setForm] = useState({
     channel: "email",
@@ -912,7 +912,7 @@ function PermissionEditor({
     permission: Permission,
     mode: Permission["mode"],
   ) => Promise<void>
-  onDelete: (permission: Permission) => Promise<void>
+  onDelete: (permission: Permission) => void
 }) {
   const [form, setForm] = useState<{
     tool: string
