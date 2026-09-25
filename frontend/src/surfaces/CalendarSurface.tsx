@@ -257,6 +257,25 @@ export function CalendarSurface() {
     void load()
   }, [load])
 
+  const connect = async () => {
+    setWorking(true)
+    setError(null)
+
+    try {
+      const result = await getCalendarConnectUrl()
+      window.open(result.authorization_url, "_blank", "noopener,noreferrer")
+      setError(
+        "Google Calendar authorization opened in a new tab. Complete it there, then refresh this page.",
+      )
+    } catch (err) {
+      setError(
+        errorText(err, "NOVA could not start Google Calendar authorization."),
+      )
+    } finally {
+      setWorking(false)
+    }
+  }
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!form.summary.trim() || working) return
