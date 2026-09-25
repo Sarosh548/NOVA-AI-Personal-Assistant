@@ -3015,3 +3015,33 @@ button.search-result-row:hover {
     width: 100%;
   }
 }
+
+/* Conversation viewport layout */
+
+.conversation-shell {
+  height: calc(100dvh - 76px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.conversation-panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.message-scroll-area {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@media (max-width: 720px) {
+  .conversation-shell {
+    height: calc(100dvh - 230px);
+    min-height: 0;
+  }
+
+  .conversation-panel {
+    height: 100%;
+    min-height: 0;
+  }
+}
