@@ -1,17 +1,22 @@
 import type { ReactNode } from "react"
 
 import { navigation, type SurfaceKey } from "../app/navigation"
+import { AccountMenu } from "../components/AccountMenu"
 import { Icon } from "../components/Icon"
 
 type AppShellProps = {
   activeSurface: SurfaceKey
   onNavigate: (surface: SurfaceKey) => void
+  displayName: string
+  onSignOut: () => Promise<void>
   children: ReactNode
 }
 
 export function AppShell({
   activeSurface,
   onNavigate,
+  displayName,
+  onSignOut,
   children,
 }: AppShellProps) {
   const activeLabel =
@@ -83,10 +88,10 @@ export function AppShell({
           </div>
 
           <div className="topbar-actions">
-            <button className="profile-button" type="button" aria-label="Account">
-              <span className="avatar">SQ</span>
-              <span className="profile-name">Account</span>
-            </button>
+            <AccountMenu
+              displayName={displayName}
+              onSignOut={onSignOut}
+            />
           </div>
         </header>
 

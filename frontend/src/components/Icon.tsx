@@ -109,5 +109,12 @@ export function Icon({ name, size = 20 }: IconProps) {
           <path d="M6 11.5a6 6 0 0012 0M12 17.5v3M9 20.5h6" />
         </svg>
       )
+    case "logout":
+      return (
+        <svg {...common}>
+          <path d="M10 5H6.5a2 2 0 00-2 2v10a2 2 0 002 2H10" />
+          <path d="M14 8l4 4-4 4M18 12H9" />
+        </svg>
+      )
   }
 }

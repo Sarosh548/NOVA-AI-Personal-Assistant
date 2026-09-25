@@ -1,0 +1,91 @@
+.account-menu {
+  position: relative;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+}
+
+.account-menu-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 30;
+  width: 230px;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: rgba(16, 19, 26, 0.98);
+  box-shadow: 0 24px 65px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(18px);
+}
+
+.account-menu-summary {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px 11px;
+}
+
+.account-menu-kicker {
+  color: var(--muted-soft);
+  letter-spacing: 0.1em;
+  font-size: 9px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.account-menu-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu-divider {
+  height: 1px;
+  margin: 2px 4px 6px;
+  background: var(--border);
+}
+
+.account-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.account-menu-item:hover,
+.account-menu-item:focus-visible {
+  border-color: var(--border);
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.account-menu-item.danger:hover,
+.account-menu-item.danger:focus-visible {
+  color: #ffd4d4;
+  border-color: rgba(255, 130, 130, 0.14);
+  background: rgba(255, 104, 104, 0.06);
+}
+
+@media (max-width: 520px) {
+  .account-menu-popover {
+    right: -4px;
+    width: min(230px, calc(100vw - 28px));
+  }
+}
