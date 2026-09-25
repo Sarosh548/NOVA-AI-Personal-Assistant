@@ -35,7 +35,9 @@ export function MemorySurface() {
   const [searching, setSearching] = useState(false)
   const [busy, setBusy] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
   const [editing, setEditing] = useState<Record<number, Memory>>({})
+  const [saveState, setSaveState] = useState<Record<number, "saving" | "saved">>({})
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Memory | null>(null)
 
@@ -49,6 +51,7 @@ export function MemorySurface() {
       })
       setMemories(result)
       setEditing(Object.fromEntries(result.map((memory) => [memory.id, { ...memory }])))
+      setLastSyncedAt(new Date().toISOString())
     } catch (err) {
       setError(errorText(err, "NOVA could not load memory."))
     } finally {
@@ -59,6 +62,18 @@ export function MemorySurface() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    setResults([])
+    setSelectedId(null)
+  }, [category, importanceFilter])
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([])
+      setSelectedId(null)
+    }
+  }, [query])
 
   useEffect(() => {
     if (selectedId === null) return
@@ -81,10 +96,17 @@ export function MemorySurface() {
     }
   }
 
+  const clearSearch = () => {
+    setQuery("")
+    setResults([])
+    setSelectedId(null)
+  }
+
   const save = async (memory: Memory) => {
     const edit = editing[memory.id]
     if (!edit || busy !== null || !edit.memory.trim()) return
     setBusy(memory.id)
+    setSaveState((current) => ({ ...current, [memory.id]: "saving" }))
     setError(null)
     try {
       await updateMemory(memory.id, {
@@ -94,7 +116,13 @@ export function MemorySurface() {
       })
       await load()
       if (query.trim()) await runSearch()
+      setSaveState((current) => ({ ...current, [memory.id]: "saved" }))
     } catch (err) {
+      setSaveState((current) => {
+        const nextState = { ...current }
+        delete nextState[memory.id]
+        return nextState
+      })
       setError(errorText(err, "NOVA could not update that memory."))
     } finally {
       setBusy(null)
@@ -139,12 +167,19 @@ export function MemorySurface() {
       <section className="resource-panel">
         <div className="resource-panel-head">
           <div><div className="section-kicker">SEMANTIC SEARCH</div><h2>Find relevant memories.</h2></div>
-          <button className="primary-action compact" type="button" disabled={!query.trim() || searching} onClick={() => void runSearch()}><Icon name="brain" size={15} />{searching ? "Searching…" : "Search"}</button>
+          <div className="resource-toolbar-actions">
+            <button className="primary-action compact" type="button" disabled={!query.trim() || searching} onClick={() => void runSearch()}><Icon name="brain" size={15} />{searching ? "Searching…" : "Search"}</button>
+            {(query || results.length > 0) && <button className="ghost-action compact" type="button" onClick={clearSearch}>Clear</button>}
+            <button className="secondary-action compact" type="button" disabled={loading} onClick={() => void load()}><Icon name="activity" size={15} />Refresh</button>
+          </div>
         </div>
         <div className="field-grid">
-          <label className="field field-span-2"><span>Query</span><input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void runSearch() }} placeholder="What are my current AI engineering goals?" /></label>
+          <label className="field field-span-2"><span>Query</span><input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void runSearch() }} placeholder="What are my current AI engineering goals?" aria-label="Search stored memories" /></label>
           <label className="field"><span>Category</span><select value={category} onChange={(e) => setCategory(e.target.value)}><option value="">All</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
           <label className="field"><span>Importance</span><select value={importanceFilter} onChange={(e) => setImportanceFilter(e.target.value)}><option value="">All</option>{importance.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        </div>
+        <div className="resource-hint" role="status" aria-live="polite">
+          {searching ? "Searching stored memories…" : lastSyncedAt ? `Memory last synced ${formatDate(lastSyncedAt)}` : "Memory sync pending"}
         </div>
         {results.length > 0 && (
           <div className="search-result-list">
@@ -199,7 +234,14 @@ export function MemorySurface() {
                   <label className="field"><span>Importance</span><select value={edit.importance} onChange={(e) => setEditing({ ...editing, [memory.id]: { ...edit, importance: e.target.value as Memory["importance"] } })}>{importance.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
                 </div>
                 <div className="resource-actions">
-                  <button className="secondary-action compact" type="button" disabled={busy === memory.id} onClick={() => void save(memory)}><Icon name="edit" size={14} />Save</button>
+                  <span className="resource-hint" role="status" aria-live="polite">
+                    {saveState[memory.id] === "saving"
+                      ? "Saving…"
+                      : saveState[memory.id] === "saved"
+                        ? "Saved"
+                        : ""}
+                  </span>
+                  <button className="secondary-action compact" type="button" disabled={busy === memory.id} onClick={() => void save(memory)}><Icon name="edit" size={14} />{saveState[memory.id] === "saving" ? "Saving…" : "Save"}</button>
                   <button className="danger-action compact" type="button" disabled={busy === memory.id} onClick={() => requestDelete(memory)}><Icon name="trash" size={14} />Delete</button>
                 </div>
               </div>

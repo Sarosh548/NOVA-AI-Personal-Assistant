@@ -33,6 +33,8 @@ export function KnowledgeSurface() {
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
+  const [searching, setSearching] = useState(false)
   const [form, setForm] = useState({ title: "", source: "", content: "" })
   const [url, setUrl] = useState("")
   const [copying, setCopying] = useState(false)
@@ -44,6 +46,7 @@ export function KnowledgeSurface() {
     setError(null)
     try {
       setDocuments(await getKnowledgeDocuments())
+      setLastSyncedAt(new Date().toISOString())
     } catch (err) {
       setError(errorText(err, "NOVA could not load your knowledge base."))
     } finally {
@@ -54,6 +57,10 @@ export function KnowledgeSurface() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!query.trim()) setResults([])
+  }, [query])
 
   const createText = async (event: FormEvent) => {
     event.preventDefault()
@@ -92,16 +99,21 @@ export function KnowledgeSurface() {
   }
 
   const runSearch = async () => {
-    if (!query.trim() || working) return
-    setWorking(true)
+    if (!query.trim() || searching || working) return
+    setSearching(true)
     setError(null)
     try {
       setResults(await searchKnowledge(query.trim()))
     } catch (err) {
       setError(errorText(err, "NOVA could not search the knowledge base."))
     } finally {
-      setWorking(false)
+      setSearching(false)
     }
+  }
+
+  const clearSearch = () => {
+    setQuery("")
+    setResults([])
   }
 
   const openDocument = async (id: number) => {
@@ -195,13 +207,17 @@ export function KnowledgeSurface() {
         <div className="resource-panel-head">
           <div><div className="section-kicker">RETRIEVAL</div><h2>Search your knowledge.</h2></div>
           <div className="resource-toolbar-actions">
-            <button className="primary-action compact" type="button" disabled={!query.trim() || working} onClick={() => void runSearch()}>
-              <Icon name="book" size={15} />Search
+            <button className="primary-action compact" type="button" disabled={!query.trim() || searching || working} onClick={() => void runSearch()}>
+              <Icon name="book" size={15} />{searching ? "Searching…" : "Search"}
             </button>
-            {query && <button className="ghost-action compact" type="button" onClick={() => setQuery("")}>Clear</button>}
+            {query && <button className="ghost-action compact" type="button" onClick={clearSearch}>Clear</button>}
+            <button className="secondary-action compact" type="button" disabled={loading} onClick={() => void load()}><Icon name="activity" size={15} />Refresh</button>
           </div>
         </div>
-        <div className="field"><span>Query</span><input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void runSearch() }} placeholder="What does my project plan say about the launch?" /></div>
+        <div className="field"><span>Query</span><input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void runSearch() }} placeholder="What does my project plan say about the launch?" aria-label="Search private knowledge" /></div>
+        <div className="resource-hint" role="status" aria-live="polite">
+          {searching ? "Searching private knowledge…" : lastSyncedAt ? `Knowledge last synced ${formatDate(lastSyncedAt)}` : "Knowledge sync pending"}
+        </div>
         {results.length > 0 && (
           <div className="search-result-list">
             {results.map((item) => (
