@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react"
 
+import { isApiBaseUrlConfigured } from "../app/config"
 import { Icon } from "../components/Icon"
 import { useAuth } from "./AuthProvider"
 
@@ -16,6 +17,11 @@ export function AuthScreen() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     clearError()
+
+    if (!isApiBaseUrlConfigured) {
+      return
+    }
+
     setIsSubmitting(true)
 
     try {
@@ -68,6 +74,16 @@ export function AuthScreen() {
           </p>
         </div>
 
+        {!isApiBaseUrlConfigured && (
+          <div className="auth-notice" role="status">
+            <div className="auth-notice-title">NOVA service is not connected.</div>
+            <div className="auth-notice-copy">
+              This deployment needs a configured NOVA API endpoint before
+              sign-in is available.
+            </div>
+          </div>
+        )}
+
         <form className="auth-form" onSubmit={handleSubmit}>
           {mode === "sign-up" && (
             <label>
@@ -85,7 +101,7 @@ export function AuthScreen() {
           <label>
             <span>Email or username</span>
             <input
-              autoComplete={isSignIn ? "username" : "username"}
+              autoComplete="username"
               value={identifier}
               onChange={(event) => setIdentifier(event.target.value)}
               placeholder="you@example.com"
@@ -114,7 +130,11 @@ export function AuthScreen() {
             </div>
           )}
 
-          <button className="primary-action auth-submit" type="submit" disabled={isSubmitting}>
+          <button
+            className="primary-action auth-submit"
+            type="submit"
+            disabled={isSubmitting || !isApiBaseUrlConfigured}
+          >
             {isSubmitting ? (
               <>
                 <span className="auth-spinner" aria-hidden="true" />
