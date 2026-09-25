@@ -11,6 +11,7 @@ export function AuthScreen() {
   const [mode, setMode] = useState<AuthMode>("sign-in")
   const [identifier, setIdentifier] = useState("")
   const [password, setPassword] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
   const [displayName, setDisplayName] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -38,6 +39,7 @@ export function AuthScreen() {
   const switchMode = () => {
     clearError()
     setPassword("")
+    setShowPassword(false)
     setMode((current) =>
       current === "sign-in" ? "sign-up" : "sign-in",
     )
@@ -112,16 +114,27 @@ export function AuthScreen() {
 
           <label>
             <span>Password</span>
-            <input
-              type="password"
-              autoComplete={isSignIn ? "current-password" : "new-password"}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="At least 8 characters"
-              required
-              minLength={8}
-              maxLength={256}
-            />
+            <div className="password-field">
+              <input
+                type={showPassword ? "text" : "password"}
+                autoComplete={isSignIn ? "current-password" : "new-password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="At least 8 characters"
+                required
+                minLength={8}
+                maxLength={256}
+              />
+              <button
+                className="password-toggle"
+                type="button"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword((current) => !current)}
+              >
+                <Icon name={showPassword ? "eye-off" : "eye"} size={17} />
+              </button>
+            </div>
           </label>
 
           {error && (
