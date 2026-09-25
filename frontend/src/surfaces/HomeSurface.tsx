@@ -62,9 +62,9 @@ export function HomeSurface({
 
         <div className="action-grid">
           <ActionCard
-            icon="message"
+            icon="mic"
             title="Talk to NOVA"
-            description="Open the conversation workspace."
+            description="Open the real-time voice workspace."
             onClick={onOpenVoice}
           />
           <ActionCard
