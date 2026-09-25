@@ -51,6 +51,7 @@ export function TasksSurface() {
     dueAt: "",
   })
   const [edits, setEdits] = useState<Record<number, { priority: string; dueAt: string }>>({})
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -58,6 +59,7 @@ export function TasksSurface() {
     try {
       const result = await getTasks(statusFilter || undefined)
       setTasks(result)
+      setLastRefreshedAt(new Date().toISOString())
       setEdits(
         Object.fromEntries(
           result.map((task) => [
@@ -157,13 +159,18 @@ export function TasksSurface() {
             <div className="section-kicker">NEW TASK</div>
             <h2>Capture work for NOVA.</h2>
           </div>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter tasks by status">
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="in_progress">In progress</option>
-            <option value="completed">Completed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+          <div className="resource-toolbar-actions">
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter tasks by status">
+              <option value="">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="in_progress">In progress</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
+              <Icon name="activity" size={15} />Refresh
+            </button>
+          </div>
         </div>
 
         <form className="resource-form" onSubmit={submit}>
@@ -210,37 +217,126 @@ export function TasksSurface() {
             <p>Create a task above and NOVA will keep its state and timing connected to the backend.</p>
           </div>
         ) : (
-          tasks.map((task) => {
-            const edit = edits[task.id] ?? { priority: task.priority, dueAt: localInput(task.due_at) }
-            return (
-              <article className="resource-card" key={task.id}>
-                <div className="resource-card-head">
-                  <div className="resource-card-title-row">
-                    <div>
-                      <div className="resource-card-kicker">TASK #{task.id}</div>
-                      <h3>{task.title}</h3>
+          <>
+            {tasks.map((task) => {
+              const edit = edits[task.id] ?? {
+                priority: task.priority,
+                dueAt: localInput(task.due_at),
+              }
+              const dirty =
+                edit.priority !== task.priority ||
+                isoValue(edit.dueAt) !== task.due_at
+
+              return (
+                <article className="resource-card" key={task.id}>
+                  <div className="resource-card-head">
+                    <div className="resource-card-title-row">
+                      <div>
+                        <div className="resource-card-kicker">TASK #{task.id}</div>
+                        <h3>{task.title}</h3>
+                      </div>
+                      <span className={`status-pill status-${task.status.replace(/[^a-z_]/g, "")}`}>
+                        {task.status.replace("_", " ")}
+                      </span>
                     </div>
-                    <span className={`status-pill status-${task.status.replace(/[^a-z_]/g, "")}`}>{task.status.replace("_", " ")}</span>
+                    {task.description && <p className="resource-muted">{task.description}</p>}
                   </div>
-                  {task.description && <p className="resource-muted">{task.description}</p>}
-                </div>
-                <div className="resource-card-body">
-                  <div className="task-meta">
-                    <div><span>Priority</span><select value={edit.priority} onChange={(e) => setEdits({ ...edits, [task.id]: { ...edit, priority: e.target.value } })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
-                    <div><span>Due</span><input type="datetime-local" value={edit.dueAt} onChange={(e) => setEdits({ ...edits, [task.id]: { ...edit, dueAt: e.target.value } })} /></div>
-                    <div><span>Created</span><strong>{formatDate(task.created_at)}</strong></div>
+                  <div className="resource-card-body">
+                    <div className="task-meta">
+                      <div>
+                        <span>Priority</span>
+                        <select
+                          value={edit.priority}
+                          onChange={(e) =>
+                            setEdits({
+                              ...edits,
+                              [task.id]: { ...edit, priority: e.target.value },
+                            })
+                          }
+                        >
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                        </select>
+                      </div>
+                      <div>
+                        <span>Due</span>
+                        <input
+                          type="datetime-local"
+                          value={edit.dueAt}
+                          onChange={(e) =>
+                            setEdits({
+                              ...edits,
+                              [task.id]: { ...edit, dueAt: e.target.value },
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <span>Created</span>
+                        <strong>{formatDate(task.created_at)}</strong>
+                      </div>
+                    </div>
+                    <div className="resource-actions">
+                      {dirty && <span className="unsaved-indicator">Unsaved changes</span>}
+                      <button
+                        className="secondary-action compact"
+                        type="button"
+                        disabled={busy === task.id || !dirty}
+                        onClick={() => void saveEdit(task)}
+                      >
+                        Save changes
+                      </button>
+                      {task.status === "pending" && (
+                        <button
+                          className="secondary-action compact"
+                          type="button"
+                          disabled={busy === task.id}
+                          onClick={() => void mutate(task.id, "start")}
+                        >
+                          Start
+                        </button>
+                      )}
+                      {task.status === "in_progress" && (
+                        <button
+                          className="primary-action compact"
+                          type="button"
+                          disabled={busy === task.id}
+                          onClick={() => void mutate(task.id, "complete")}
+                        >
+                          Complete
+                        </button>
+                      )}
+                      {(task.status === "pending" || task.status === "in_progress") && (
+                        <button
+                          className="danger-action compact"
+                          type="button"
+                          disabled={busy === task.id}
+                          onClick={() => void mutate(task.id, "cancel")}
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        className="icon-action danger"
+                        type="button"
+                        aria-label={`Delete task ${task.id}`}
+                        disabled={busy === task.id}
+                        onClick={() => void mutate(task.id, "delete")}
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </div>
                   </div>
-                  <div className="resource-actions">
-                    <button className="secondary-action compact" type="button" disabled={busy === task.id} onClick={() => void saveEdit(task)}>Save changes</button>
-                    {task.status === "pending" && <button className="secondary-action compact" type="button" disabled={busy === task.id} onClick={() => void mutate(task.id, "start")}>Start</button>}
-                    {task.status === "in_progress" && <button className="primary-action compact" type="button" disabled={busy === task.id} onClick={() => void mutate(task.id, "complete")}>Complete</button>}
-                    {(task.status === "pending" || task.status === "in_progress") && <button className="danger-action compact" type="button" disabled={busy === task.id} onClick={() => void mutate(task.id, "cancel")}>Cancel</button>}
-                    <button className="icon-action danger" type="button" aria-label={`Delete task ${task.id}`} disabled={busy === task.id} onClick={() => void mutate(task.id, "delete")}><Icon name="trash" size={15} /></button>
-                  </div>
-                </div>
-              </article>
-            )
-          })
+                </article>
+              )
+            })}
+            {lastRefreshedAt && (
+              <small className="resource-muted sync-caption">
+                Last synced {formatDate(lastRefreshedAt)}
+              </small>
+            )}
+          </>
         )}
       </section>
     </div>

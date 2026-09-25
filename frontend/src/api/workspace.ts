@@ -219,7 +219,10 @@ export function createTask(payload: {
 }): Promise<{ id: number }> {
   return apiRequestWithRefresh<{ id: number }>("/tasks", {
     method: "POST",
-    headers: jsonHeaders,
+    headers: {
+      ...jsonHeaders,
+      "Idempotency-Key": crypto.randomUUID(),
+    },
     body: JSON.stringify(payload),
   })
 }
@@ -261,7 +264,10 @@ export function createReminder(payload: {
 }): Promise<{ id: number }> {
   return apiRequestWithRefresh<{ id: number }>("/reminders", {
     method: "POST",
-    headers: jsonHeaders,
+    headers: {
+      ...jsonHeaders,
+      "Idempotency-Key": crypto.randomUUID(),
+    },
     body: JSON.stringify(payload),
   })
 }

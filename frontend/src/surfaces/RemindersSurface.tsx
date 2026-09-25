@@ -36,6 +36,7 @@ export function RemindersSurface() {
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState({ title: "", time: "" })
   const [edits, setEdits] = useState<Record<number, { title: string; time: string }>>({})
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -43,6 +44,7 @@ export function RemindersSurface() {
     try {
       const result = await getReminders()
       setReminders(result)
+      setLastRefreshedAt(new Date().toISOString())
       setEdits(
         Object.fromEntries(
           result.map((item) => [item.id, { title: item.title, time: localInput(item.reminder_time) }]),
@@ -123,6 +125,9 @@ export function RemindersSurface() {
       <section className="resource-panel">
         <div className="resource-panel-head">
           <div><div className="section-kicker">NEW REMINDER</div><h2>Schedule a follow-up.</h2></div>
+          <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
+            <Icon name="activity" size={15} />Refresh
+          </button>
         </div>
         <form className="resource-form" onSubmit={submit}>
           <div className="field-grid">
@@ -136,34 +141,47 @@ export function RemindersSurface() {
       {error && <div className="resource-error" role="alert">{error}<button type="button" onClick={() => void load()}>Retry</button></div>}
 
       <section className="resource-list">
-        {loading ? <div className="resource-loading">Loading reminders…</div> : reminders.length === 0 ? (
+        {loading ? (
+          <div className="resource-loading">Loading reminders…</div>
+        ) : reminders.length === 0 ? (
           <div className="resource-empty"><Icon name="bell" size={22} /><h3>No pending reminders.</h3><p>Future follow-ups will appear here as NOVA creates or schedules them.</p></div>
-        ) : reminders.map((reminder) => {
-          const edit = edits[reminder.id] ?? { title: reminder.title, time: localInput(reminder.reminder_time) }
-          return (
-            <article className="resource-card" key={reminder.id}>
-              <div className="resource-card-head">
-                <div className="resource-card-title-row">
-                  <div><div className="resource-card-kicker">REMINDER #{reminder.id}</div><h3>{reminder.title}</h3></div>
-                  <span className="status-pill status-pending">{reminder.status}</span>
-                </div>
-                <p className="resource-muted">Scheduled for {formatDate(reminder.reminder_time)}</p>
-              </div>
-              <div className="resource-card-body">
-                <div className="field-grid">
-                  <label className="field field-span-2"><span>Title</span><input value={edit.title} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, title: e.target.value } })} /></label>
-                  <label className="field"><span>When</span><input type="datetime-local" value={edit.time} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, time: e.target.value } })} /></label>
-                </div>
-                <div className="resource-actions">
-                  <button className="secondary-action compact" type="button" disabled={busy === reminder.id} onClick={() => void saveEdit(reminder)}>Save changes</button>
-                  <button className="primary-action compact" type="button" disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "complete")}>Complete</button>
-                  <button className="secondary-action compact" type="button" disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "cancel")}>Cancel</button>
-                  <button className="icon-action danger" type="button" aria-label={`Delete reminder ${reminder.id}`} disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "delete")}><Icon name="trash" size={15} /></button>
-                </div>
-              </div>
-            </article>
-          )
-        })}
+        ) : (
+          <>
+            {reminders.map((reminder) => {
+              const edit = edits[reminder.id] ?? { title: reminder.title, time: localInput(reminder.reminder_time) }
+              const dirty =
+                edit.title !== reminder.title ||
+                (edit.time ? new Date(edit.time).toISOString() : "") !== reminder.reminder_time
+
+              return (
+                <article className="resource-card" key={reminder.id}>
+                  <div className="resource-card-head">
+                    <div className="resource-card-title-row">
+                      <div><div className="resource-card-kicker">REMINDER #{reminder.id}</div><h3>{reminder.title}</h3></div>
+                      <span className="status-pill status-pending">{reminder.status}</span>
+                    </div>
+                    <p className="resource-muted">Scheduled for {formatDate(reminder.reminder_time)}</p>
+                  </div>
+                  <div className="resource-card-body">
+                    <div className="field-grid">
+                      <label className="field field-span-2"><span>Title</span><input value={edit.title} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, title: e.target.value } })} /></label>
+                      <label className="field"><span>When</span><input type="datetime-local" value={edit.time} onChange={(e) => setEdits({ ...edits, [reminder.id]: { ...edit, time: e.target.value } })} /></label>
+                    </div>
+                    <div className="resource-actions">
+                      <button className="secondary-action compact" type="button" disabled={busy === reminder.id || !dirty} onClick={() => void saveEdit(reminder)}>Save changes</button>
+                      <button className="primary-action compact" type="button" disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "complete")}>Complete</button>
+                      <button className="secondary-action compact" type="button" disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "cancel")}>Cancel</button>
+                      <button className="icon-action danger" type="button" aria-label={`Delete reminder ${reminder.id}`} disabled={busy === reminder.id} onClick={() => void mutate(reminder.id, "delete")}><Icon name="trash" size={15} /></button>
+                    </div>
+                  </div>
+                </article>
+              )
+            })}
+            {lastRefreshedAt && (
+              <small className="resource-muted sync-caption">Last synced {formatDate(lastRefreshedAt)}</small>
+            )}
+          </>
+        )}
       </section>
     </div>
   )
