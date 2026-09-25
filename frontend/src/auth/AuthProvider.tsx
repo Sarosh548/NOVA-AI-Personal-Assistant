@@ -12,6 +12,7 @@ import {
   ApiRequestError,
   clearStoredSession,
   getRefreshToken,
+  SESSION_EXPIRED_EVENT,
 } from "../api/client"
 import { getCurrentUser, login, logout, register } from "../api/auth"
 import type { NovaUser } from "../api/types"
@@ -32,6 +33,7 @@ type AuthContextValue = {
     displayName: string,
   ) => Promise<void>
   signOut: () => Promise<void>
+  retrySessionRestore: () => Promise<void>
   clearError: () => void
 }
 
@@ -41,6 +43,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading")
   const [user, setUser] = useState<NovaUser | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  const handleSessionExpired = useCallback(() => {
+    clearStoredSession()
+    setUser(null)
+    setStatus("unauthenticated")
+    setError("Your NOVA session has expired. Please sign in again.")
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired)
+    return () =>
+      window.removeEventListener(
+        SESSION_EXPIRED_EVENT,
+        handleSessionExpired,
+      )
+  }, [handleSessionExpired])
 
   const restoreSession = useCallback(async () => {
     if (!getRefreshToken()) {
@@ -52,19 +70,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const currentUser = await getCurrentUser()
       setUser(currentUser)
       setStatus("authenticated")
+      setError(null)
     } catch (error) {
+      if (error instanceof ApiRequestError && error.status >= 500) {
+        setStatus("unauthenticated")
+        setError("NOVA could not reach the service. Please try again.")
+        return
+      }
+
+      if (error instanceof ApiRequestError && error.status === 0) {
+        setStatus("unauthenticated")
+        setError("NOVA could not reach the service. Check your connection and try again.")
+        return
+      }
+
       clearStoredSession()
       setUser(null)
       setStatus("unauthenticated")
 
-      if (error instanceof ApiRequestError && error.status >= 500) {
-        setError("NOVA could not reach the service. Please try again.")
+      if (error instanceof ApiRequestError && error.status >= 400) {
+        setError(error.detail)
       }
     }
   }, [])
 
   useEffect(() => {
     void restoreSession()
+  }, [restoreSession])
+
+  const retrySessionRestore = useCallback(async () => {
+    setError(null)
+    setStatus("loading")
+    await restoreSession()
   }, [restoreSession])
 
   const signIn = useCallback(
@@ -138,9 +175,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn,
       signUp,
       signOut,
+      retrySessionRestore,
       clearError,
     }),
-    [status, user, error, signIn, signUp, signOut, clearError],
+    [
+      status,
+      user,
+      error,
+      signIn,
+      signUp,
+      signOut,
+      retrySessionRestore,
+      clearError,
+    ],
   )
 
   return (

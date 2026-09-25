@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 
 import { isApiBaseUrlConfigured } from "../app/config"
+import { getRefreshToken } from "../api/client"
 import { Icon } from "../components/Icon"
 import { useAuth } from "./AuthProvider"
 
 type AuthMode = "sign-in" | "sign-up"
 
 export function AuthScreen() {
-  const { signIn, signUp, error, clearError } = useAuth()
+  const { signIn, signUp, error, clearError, retrySessionRestore } = useAuth()
   const [mode, setMode] = useState<AuthMode>("sign-in")
   const [identifier, setIdentifier] = useState("")
   const [password, setPassword] = useState("")
@@ -157,6 +158,16 @@ export function AuthScreen() {
             <div className="auth-error" role="alert">
               {error}
             </div>
+          )}
+
+          {error && getRefreshToken() && (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => void retrySessionRestore()}
+            >
+              Retry connection
+            </button>
           )}
 
           <button
