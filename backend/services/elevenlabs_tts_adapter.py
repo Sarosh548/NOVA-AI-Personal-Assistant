@@ -68,6 +68,7 @@ class ElevenLabsTTSStream(TTSStream):
             )
         )
         self._sequence = 0
+        self._pending_text: str | None = None
         self._finished = False
         self._provider_final = False
         self._cancelled = False
@@ -114,9 +115,16 @@ class ElevenLabsTTSStream(TTSStream):
 
         async with self._send_lock:
             try:
-                await self._websocket.send(
-                    json.dumps(payload)
-                )
+                if self._pending_text is not None:
+                    await self._websocket.send(
+                        json.dumps(
+                            {
+                                "text": self._pending_text,
+                            }
+                        )
+                    )
+
+                self._pending_text = payload["text"]
             except ConnectionClosed as exc:
                 raise TTSAdapterError(
                     "ElevenLabs TTS connection closed while sending text."
@@ -163,11 +171,21 @@ class ElevenLabsTTSStream(TTSStream):
 
         async with self._send_lock:
             try:
+                if self._pending_text is not None:
+                    await self._websocket.send(
+                        json.dumps(
+                            {
+                                "text": self._pending_text,
+                                "flush": True,
+                            }
+                        )
+                    )
+                    self._pending_text = None
+
                 await self._websocket.send(
                     json.dumps(
                         {
                             "text": "",
-                            "flush": True,
                         }
                     )
                 )
