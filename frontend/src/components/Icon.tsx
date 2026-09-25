@@ -143,6 +143,13 @@ export function Icon({ name, size = 20 }: IconProps) {
           <path d="M14 8l4 4-4 4M18 12H9" />
         </svg>
       )
+    case "search":
+      return (
+        <svg {...common}>
+          <circle cx="10.8" cy="10.8" r="6.3" />
+          <path d="M16 16l4.2 4.2" />
+        </svg>
+      )
     case "edit":
       return (
         <svg {...common}>
