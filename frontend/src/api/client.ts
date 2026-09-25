@@ -3,6 +3,9 @@ import type { ApiError, TokenResponse } from "./types"
 
 const ACCESS_TOKEN_KEY = "nova.access_token"
 const REFRESH_TOKEN_KEY = "nova.refresh_token"
+const SESSION_EXPIRED_EVENT = "nova:session-expired"
+
+let refreshPromise: Promise<TokenResponse> | null = null
 
 export class ApiRequestError extends Error {
   status: number
@@ -30,6 +33,11 @@ function writeStoredValue(key: string, value: string): void {
 
 function removeStoredValue(key: string): void {
   window.sessionStorage.removeItem(key)
+}
+
+function notifySessionExpired(): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
 }
 
 export function getAccessToken(): string | null {
@@ -135,7 +143,7 @@ export async function apiRequest<T>(
   return performRequest(path, options)
 }
 
-export async function refreshAccessToken(): Promise<TokenResponse> {
+async function rotateAccessSession(): Promise<TokenResponse> {
   const refreshToken = getRefreshToken()
 
   if (!refreshToken) {
@@ -156,10 +164,32 @@ export async function refreshAccessToken(): Promise<TokenResponse> {
   return response
 }
 
+export async function refreshAccessToken(): Promise<TokenResponse> {
+  if (refreshPromise) {
+    return refreshPromise
+  }
+
+  refreshPromise = rotateAccessSession()
+
+  try {
+    return await refreshPromise
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status === 401) {
+      clearStoredSession()
+      notifySessionExpired()
+    }
+    throw error
+  } finally {
+    refreshPromise = null
+  }
+}
+
 export async function apiRequestWithRefresh<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  const accessTokenAtRequestStart = getAccessToken()
+
   try {
     return await performRequest<T>(path, options)
   } catch (error) {
@@ -169,6 +199,16 @@ export async function apiRequestWithRefresh<T>(
       !getRefreshToken()
     ) {
       throw error
+    }
+
+    const latestAccessToken = getAccessToken()
+
+    if (
+      accessTokenAtRequestStart &&
+      latestAccessToken &&
+      latestAccessToken !== accessTokenAtRequestStart
+    ) {
+      return performRequest<T>(path, options)
     }
 
     await refreshAccessToken()
