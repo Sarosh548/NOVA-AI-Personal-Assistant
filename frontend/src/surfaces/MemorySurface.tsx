@@ -7,6 +7,7 @@ import {
   searchMemories,
   updateMemory,
   type Memory,
+  type MemorySearchResult,
 } from "../api/workspace"
 import { Icon } from "../components/Icon"
 
@@ -25,7 +26,7 @@ function errorText(error: unknown, fallback: string): string {
 
 export function MemorySurface() {
   const [memories, setMemories] = useState<Memory[]>([])
-  const [results, setResults] = useState<Array<Memory & { similarity: number }>>([])
+  const [results, setResults] = useState<MemorySearchResult[]>([])
   const [query, setQuery] = useState("")
   const [category, setCategory] = useState("")
   const [importanceFilter, setImportanceFilter] = useState("")
