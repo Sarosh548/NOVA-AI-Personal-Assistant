@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react"
 
 import { navigation, type SurfaceKey } from "../app/navigation"
 import { AccountMenu } from "../components/AccountMenu"
+import { CommandPalette } from "../components/CommandPalette"
 import { Icon } from "../components/Icon"
 
 type AppShellProps = {
@@ -20,6 +21,10 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [online, setOnline] = useState(
+    typeof navigator === "undefined" ? true : navigator.onLine,
+  )
 
   const activeLabel =
     navigation.find((item) => item.label === activeSurface)?.label ?? "Home"
@@ -44,6 +49,33 @@ export function AppShell({
       document.body.style.overflow = ""
     }
   }, [mobileMenuOpen])
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === "k"
+      ) {
+        event.preventDefault()
+        setCommandPaletteOpen(true)
+      }
+    }
+
+    document.addEventListener("keydown", handleShortcut)
+    return () => document.removeEventListener("keydown", handleShortcut)
+  }, [])
+
+  useEffect(() => {
+    const updateOnlineState = () => setOnline(navigator.onLine)
+
+    window.addEventListener("online", updateOnlineState)
+    window.addEventListener("offline", updateOnlineState)
+
+    return () => {
+      window.removeEventListener("online", updateOnlineState)
+      window.removeEventListener("offline", updateOnlineState)
+    }
+  }, [])
 
   const navigateFromMobile = (surface: SurfaceKey) => {
     onNavigate(surface)
@@ -129,6 +161,23 @@ export function AppShell({
           </div>
 
           <div className="topbar-actions">
+            {!online && (
+              <div className="network-status offline" role="status">
+                <span className="connection-dot" />
+                Offline
+              </div>
+            )}
+            <button
+              className="command-trigger"
+              type="button"
+              onClick={() => setCommandPaletteOpen(true)}
+              aria-label="Open command palette"
+              title="Open command palette"
+            >
+              <Icon name="search" size={16} />
+              <span>Jump to…</span>
+              <kbd>Ctrl K</kbd>
+            </button>
             <AccountMenu
               displayName={displayName}
               onSignOut={onSignOut}
@@ -138,6 +187,12 @@ export function AppShell({
 
         {children}
       </main>
+
+      {!online && (
+        <div className="network-banner" role="status" aria-live="polite">
+          You’re offline. NOVA will reconnect to online services when your connection returns.
+        </div>
+      )}
 
       {mobileMenuOpen && (
         <div className="mobile-navigation-layer">
@@ -196,6 +251,13 @@ export function AppShell({
           </aside>
         </div>
       )}
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        activeSurface={activeSurface}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNavigate={onNavigate}
+      />
     </div>
   )
 }

@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
 
 import { AuthScreen } from "../auth/AuthScreen"
+import { AppErrorBoundary } from "../components/AppErrorBoundary"
 import { useAuth } from "../auth/AuthProvider"
 import { ActivitySurface } from "../surfaces/ActivitySurface"
 import { CalendarSurface } from "../surfaces/CalendarSurface"
@@ -14,11 +15,42 @@ import { SettingsSurface } from "../surfaces/SettingsSurface"
 import { TasksSurface } from "../surfaces/TasksSurface"
 import { VoiceSurface } from "../surfaces/VoiceSurface"
 import { AppShell } from "../layout/AppShell"
-import type { SurfaceKey } from "./navigation"
+import { surfaceFromHash, surfaceHash, type SurfaceKey } from "./navigation"
 
 export function AppRoot() {
   const { status, user, signOut } = useAuth()
-  const [activeSurface, setActiveSurface] = useState<SurfaceKey>("Home")
+  const [activeSurface, setActiveSurfaceState] = useState<SurfaceKey>(() =>
+    surfaceFromHash(window.location.hash) ?? "Home",
+  )
+
+  const setActiveSurface = useCallback((surface: SurfaceKey) => {
+    setActiveSurfaceState(surface)
+
+    const nextHash = surfaceHash(surface)
+    if (window.location.hash !== nextHash) {
+      window.history.pushState(null, "", nextHash)
+    }
+  }, [])
+
+  useEffect(() => {
+    const syncSurface = () => {
+      const surface = surfaceFromHash(window.location.hash)
+      setActiveSurfaceState(surface ?? "Home")
+    }
+
+    window.addEventListener("hashchange", syncSurface)
+    window.addEventListener("popstate", syncSurface)
+
+    return () => {
+      window.removeEventListener("hashchange", syncSurface)
+      window.removeEventListener("popstate", syncSurface)
+    }
+  }, [])
+
+  useEffect(() => {
+    document.title =
+      activeSurface === "Home" ? "NOVA — Personal AI" : `NOVA — ${activeSurface}`
+  }, [activeSurface])
 
   if (status === "loading") {
     return (
@@ -74,13 +106,15 @@ export function AppRoot() {
   }
 
   return (
-    <AppShell
+    <AppErrorBoundary resetKey={activeSurface}>
+      <AppShell
       activeSurface={activeSurface}
       onNavigate={setActiveSurface}
       displayName={displayName}
       onSignOut={signOut}
     >
       {surface}
-    </AppShell>
+      </AppShell>
+    </AppErrorBoundary>
   )
 }
