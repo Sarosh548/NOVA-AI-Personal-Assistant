@@ -207,6 +207,12 @@ class VoiceSettings(BaseSettings):
         le=30,
     )
 
+    voice_stt_utterance_end_settle_seconds: float = Field(
+        default=0.25,
+        gt=0,
+        le=2,
+    )
+
     voice_default_audio_encoding: str = Field(
         default="pcm_s16le",
         min_length=1,

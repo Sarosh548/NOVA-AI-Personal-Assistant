@@ -160,13 +160,17 @@ export function VoiceSurface({
   const playbackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const playbackEndTimeRef = useRef(0)
   const playbackTimerRef = useRef<number | null>(null)
+  const autoListenTimerRef = useRef<number | null>(null)
   const turnIdRef = useRef<string | null>(null)
   const sessionReadyRef = useRef(false)
   const intentionalCloseRef = useRef(false)
   const reconnectingRef = useRef(false)
   const authRecoveryAttemptedRef = useRef(false)
+  const assistantAudioFinalRef = useRef(false)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
+  const startTurnRef = useRef<(() => Promise<void>) | null>(null)
+  const scheduleAutoListenRef = useRef<(() => void) | null>(null)
 
   const clearPlaybackTimer = () => {
     if (playbackTimerRef.current !== null) {
@@ -175,8 +179,16 @@ export function VoiceSurface({
     }
   }
 
+  const clearAutoListenTimer = useCallback(() => {
+    if (autoListenTimerRef.current !== null) {
+      window.clearTimeout(autoListenTimerRef.current)
+      autoListenTimerRef.current = null
+    }
+  }, [])
+
   const stopPlayback = useCallback(() => {
     clearPlaybackTimer()
+    clearAutoListenTimer()
     for (const source of playbackSourcesRef.current) {
       try {
         source.stop()
@@ -186,13 +198,27 @@ export function VoiceSurface({
     }
     playbackSourcesRef.current.clear()
     playbackEndTimeRef.current = 0
+    assistantAudioFinalRef.current = false
+  }, [clearAutoListenTimer])
+
+  const setCaptureActive = useCallback((active: boolean) => {
+    if (workletRef.current) {
+      workletRef.current.port.postMessage({
+        type: "set-active",
+        active,
+      })
+    }
   }, [])
 
-  const stopCapture = useCallback(() => {
+  const deactivateCapture = useCallback(() => {
     turnIdRef.current = null
+    setCaptureActive(false)
+  }, [setCaptureActive])
+
+  const releaseAudioCapture = useCallback(() => {
+    deactivateCapture()
 
     if (workletRef.current) {
-      workletRef.current.port.postMessage({ type: "set-active", active: false })
       workletRef.current.disconnect()
       workletRef.current = null
     }
@@ -213,7 +239,7 @@ export function VoiceSurface({
       }
       micStreamRef.current = null
     }
-  }, [])
+  }, [deactivateCapture])
 
   const closeSocket = useCallback(() => {
     if (pingTimerRef.current !== null) {
@@ -224,7 +250,8 @@ export function VoiceSurface({
     sessionReadyRef.current = false
     reconnectingRef.current = false
     intentionalCloseRef.current = true
-    stopCapture()
+    clearAutoListenTimer()
+    releaseAudioCapture()
     stopPlayback()
 
     const socket = socketRef.current
@@ -241,7 +268,11 @@ export function VoiceSurface({
     if (socket && socket.readyState !== WebSocket.CLOSED) {
       socket.close()
     }
-  }, [stopCapture, stopPlayback])
+  }, [
+    clearAutoListenTimer,
+    releaseAudioCapture,
+    stopPlayback,
+  ])
 
   const connect = useCallback(async (recovery = false) => {
     if (!online || reconnectingRef.current) return
@@ -320,8 +351,23 @@ export function VoiceSurface({
         source.connect(audioContext.destination)
         source.onended = () => {
           playbackSourcesRef.current.delete(source)
-          if (playbackSourcesRef.current.size === 0 && playbackEndTimeRef.current <= audioContext.currentTime + 0.03) {
-            setState((current) => current === "speaking" ? "ready" : current)
+
+          if (
+            playbackSourcesRef.current.size === 0 &&
+            playbackEndTimeRef.current <= audioContext.currentTime + 0.03
+          ) {
+            if (
+              assistantAudioFinalRef.current &&
+              turnIdRef.current === null &&
+              sessionReadyRef.current &&
+              !intentionalCloseRef.current
+            ) {
+              scheduleAutoListenRef.current?.()
+            } else {
+              setState((current) =>
+                current === "speaking" ? "ready" : current,
+              )
+            }
           }
         }
 
@@ -386,12 +432,12 @@ export function VoiceSurface({
 
       if (type === "transcript.utterance_end") {
         setState("thinking")
-        stopCapture()
+        deactivateCapture()
         return
       }
 
       if (type === "turn.committed") {
-        stopCapture()
+        deactivateCapture()
         setState("thinking")
         return
       }
@@ -403,18 +449,32 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response.cancelled") {
+        clearAutoListenTimer()
+        assistantAudioFinalRef.current = false
         stopPlayback()
         setResponse("")
         if (turnIdRef.current === payload.turn_id) {
-          stopCapture()
+          deactivateCapture()
         }
-        setState("ready")
+        setState((current) =>
+          current === "listening" ? current : "ready",
+        )
         return
       }
 
       if (type === "assistant.audio.cancelled") {
+        clearAutoListenTimer()
+        assistantAudioFinalRef.current = false
         stopPlayback()
-        setState("ready")
+        setState((current) =>
+          current === "listening" ? current : "ready",
+        )
+        return
+      }
+
+      if (type === "assistant.audio.final") {
+        assistantAudioFinalRef.current = true
+        scheduleAutoListenRef.current?.()
         return
       }
 
@@ -442,7 +502,9 @@ export function VoiceSurface({
           }
         }
 
-        stopCapture()
+        clearAutoListenTimer()
+        assistantAudioFinalRef.current = false
+        releaseAudioCapture()
 
         if (
           recoverable &&
@@ -474,14 +536,19 @@ export function VoiceSurface({
       }
 
       sessionReadyRef.current = false
-      stopCapture()
+      releaseAudioCapture()
 
       if (!intentionalCloseRef.current) {
         setState("disconnected")
         setError((current) => current ?? "NOVA voice disconnected.")
       }
     }
-  }, [online, stopCapture, stopPlayback])
+  }, [
+    online,
+    clearAutoListenTimer,
+    releaseAudioCapture,
+    stopPlayback,
+  ])
 
   const ensureAudioCapture = useCallback(async () => {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
@@ -490,7 +557,16 @@ export function VoiceSurface({
 
     const existingContext = audioContextRef.current
     if (existingContext) {
-      await existingContext.resume()
+      if (existingContext.state === "closed") {
+        audioContextRef.current = null
+        releaseAudioCapture()
+      } else {
+        await existingContext.resume()
+      }
+    }
+
+    if (workletRef.current && micStreamRef.current) {
+      return workletRef.current
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -555,7 +631,7 @@ export function VoiceSurface({
     muteGainRef.current = muteGain
 
     return worklet
-  }, [])
+  }, [releaseAudioCapture])
 
   const startTurn = useCallback(async () => {
     if (!sessionReadyRef.current) {
@@ -563,6 +639,8 @@ export function VoiceSurface({
       return
     }
 
+    clearAutoListenTimer()
+    assistantAudioFinalRef.current = false
     stopPlayback()
     setResponse("")
     setTranscript("")
@@ -593,7 +671,7 @@ export function VoiceSurface({
       worklet.port.postMessage({ type: "set-active", active: true })
       setState("listening")
     } catch (err) {
-      stopCapture()
+      deactivateCapture()
       setState("ready")
       setError(
         err instanceof DOMException && err.name === "NotAllowedError"
@@ -601,7 +679,63 @@ export function VoiceSurface({
           : formatError(err, "NOVA could not access the microphone."),
       )
     }
-  }, [ensureAudioCapture, stopCapture, stopPlayback])
+  }, [
+    ensureAudioCapture,
+    clearAutoListenTimer,
+    deactivateCapture,
+    stopPlayback,
+  ])
+
+  useEffect(() => {
+    startTurnRef.current = startTurn
+    return () => {
+      startTurnRef.current = null
+    }
+  }, [startTurn])
+
+  const scheduleAutoListen = useCallback(() => {
+    clearAutoListenTimer()
+
+    if (
+      !assistantAudioFinalRef.current ||
+      !sessionReadyRef.current ||
+      intentionalCloseRef.current ||
+      turnIdRef.current !== null
+    ) {
+      return
+    }
+
+    const audioContext = audioContextRef.current
+    const remainingMilliseconds = audioContext
+      ? Math.max(
+          0,
+          (playbackEndTimeRef.current - audioContext.currentTime) * 1000,
+        )
+      : 0
+
+    autoListenTimerRef.current = window.setTimeout(() => {
+      autoListenTimerRef.current = null
+
+      if (
+        !assistantAudioFinalRef.current ||
+        !sessionReadyRef.current ||
+        intentionalCloseRef.current ||
+        turnIdRef.current !== null
+      ) {
+        return
+      }
+
+      assistantAudioFinalRef.current = false
+      void startTurnRef.current?.()
+    }, remainingMilliseconds + 80)
+  }, [clearAutoListenTimer])
+
+  useEffect(() => {
+    scheduleAutoListenRef.current = scheduleAutoListen
+    return () => {
+      scheduleAutoListenRef.current = null
+    }
+  }, [scheduleAutoListen])
 
   const commitTurn = useCallback(() => {
     const socket = socketRef.current
@@ -616,9 +750,9 @@ export function VoiceSurface({
       }),
     )
 
-    stopCapture()
+    deactivateCapture()
     setState("thinking")
-  }, [stopCapture])
+  }, [deactivateCapture])
 
   useEffect(() => {
     const handleOnline = () => setOnline(true)
@@ -643,6 +777,7 @@ export function VoiceSurface({
     void connect()
 
     return () => {
+      clearAutoListenTimer()
       closeSocket()
 
       if (audioContextRef.current) {
@@ -655,7 +790,7 @@ export function VoiceSurface({
         workletUrlRef.current = null
       }
     }
-  }, [online, connect, closeSocket])
+  }, [online, connect, closeSocket, clearAutoListenTimer])
 
   const handleVoiceButton = () => {
     if (state === "listening") {
@@ -684,7 +819,7 @@ export function VoiceSurface({
   const buttonCopy: Record<VoiceState, string> = {
     connecting: "Connecting…",
     ready: "Talk to NOVA",
-    listening: "Done speaking",
+    listening: "Send now",
     thinking: "Interrupt & talk",
     speaking: "Interrupt & talk",
     reconnecting: "Reconnecting…",
@@ -735,9 +870,9 @@ export function VoiceSurface({
             </h2>
             <p>
               {state === "listening"
-                ? "Speak at your normal pace, then tap Done speaking."
+                ? "Speak naturally. NOVA detects when your turn ends automatically."
                 : state === "thinking" || state === "speaking"
-                  ? "Tap the mic to interrupt NOVA and start a new turn."
+                  ? "Tap the mic to interrupt NOVA and start speaking again."
                   : "Your voice session stays private to this signed-in NOVA account."}
             </p>
           </div>

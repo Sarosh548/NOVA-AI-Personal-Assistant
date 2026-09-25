@@ -36,6 +36,8 @@ class _VoiceSTTTurn:
     speech_started: bool = False
     last_sequence: int = -1
     finish_sequence: int | None = None
+    utterance_end_sequence: int | None = None
+    utterance_end_settle_task: asyncio.Task[None] | None = None
     relay_task: asyncio.Task[None] | None = None
     consumer_claimed: bool = False
     cancelled: bool = False
@@ -143,6 +145,7 @@ class VoiceSTTOrchestrator:
             await self.runtime.close_session(
                 turn.request.session_id
             )
+            await self._cancel_utterance_end_settle(turn)
             await self._stop_relay(turn)
             self._drain_events(turn.events)
             self._turn = None
@@ -180,6 +183,7 @@ class VoiceSTTOrchestrator:
         await self.runtime.close_session(
             turn.request.session_id
         )
+        await self._cancel_utterance_end_settle(turn)
         await self._stop_relay(turn)
         self._drain_events(turn.events)
         self._turn = None
@@ -261,13 +265,22 @@ class VoiceSTTOrchestrator:
                             event.text
                         )
 
+                        should_finalize = event.is_end_of_speech
+
                         if (
-                            event.is_end_of_speech
-                            or (
-                                turn.finish_sequence is not None
-                                and event.sequence > turn.finish_sequence
-                            )
-                        ) and not turn.final_event.done():
+                            turn.finish_sequence is not None
+                            and event.sequence > turn.finish_sequence
+                        ):
+                            should_finalize = True
+
+                        if (
+                            turn.utterance_end_sequence is not None
+                            and event.sequence > turn.utterance_end_sequence
+                        ):
+                            should_finalize = True
+
+                        if should_finalize and not turn.final_event.done():
+                            await self._cancel_utterance_end_settle(turn)
                             turn.final_event.set_result(
                                 self._build_complete_final_event(
                                     turn,
@@ -280,8 +293,9 @@ class VoiceSTTOrchestrator:
                     and turn.final_segments
                     and not turn.final_event.done()
                 ):
-                    turn.final_event.set_result(
-                        self._build_complete_final_event(
+                    turn.utterance_end_sequence = event.sequence
+                    turn.utterance_end_settle_task = asyncio.create_task(
+                        self._settle_utterance_end(
                             turn,
                             event,
                         )
@@ -376,11 +390,52 @@ class VoiceSTTOrchestrator:
                 turn_id=turn.request.turn_id,
             )
         finally:
+            await self._cancel_utterance_end_settle(turn)
             await self._stop_relay(turn)
             self._drain_events(turn.events)
 
             if not turn.final_event.done():
                 turn.final_event.cancel()
+
+    async def _settle_utterance_end(
+        self,
+        turn: _VoiceSTTTurn,
+        event: STTUtteranceEndEvent,
+    ) -> None:
+        try:
+            await asyncio.sleep(
+                self.settings.voice_stt_utterance_end_settle_seconds
+            )
+        except asyncio.CancelledError:
+            raise
+
+        if turn.final_event.done() or turn.cancelled:
+            return
+
+        turn.final_event.set_result(
+            self._build_complete_final_event(
+                turn,
+                event,
+            )
+        )
+
+    async def _cancel_utterance_end_settle(
+        self,
+        turn: _VoiceSTTTurn,
+    ) -> None:
+        task = turn.utterance_end_settle_task
+        if task is None:
+            return
+
+        turn.utterance_end_settle_task = None
+
+        if not task.done():
+            task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def _stop_relay(
         self,
