@@ -489,6 +489,116 @@ async def test_utterance_end_completes_assembled_transcript():
 
 
 @pytest.mark.asyncio
+async def test_utterance_end_waits_for_post_end_final_segment():
+    adapter = FakeAdapter()
+    service = VoiceSTTOrchestrator(
+        adapter=adapter,
+        settings=_settings(
+            voice_stt_utterance_end_settle_seconds=0.2,
+        ),
+    )
+
+    await _start(service)
+    consumer = service.events()
+
+    assert adapter.stream is not None
+
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            type="final",
+            text="hello",
+            created_at=utc_now(),
+        )
+    )
+    assert (await anext(consumer))["text"] == "hello"
+
+    await adapter.stream.emit(
+        STTUtteranceEndEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=2,
+            created_at=utc_now(),
+            last_word_end_seconds=1.0,
+        )
+    )
+    assert (await anext(consumer))["type"] == "transcript.utterance_end"
+
+    finish_task = asyncio.create_task(service.finish_turn())
+    await asyncio.sleep(0)
+
+    assert not finish_task.done()
+
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=3,
+            type="final",
+            text="world",
+            created_at=utc_now(),
+        )
+    )
+
+    final = await asyncio.wait_for(finish_task, timeout=1)
+
+    assert final.text == "hello world"
+    assert final.is_end_of_speech is True
+    assert adapter.stream.closed is True
+
+    await consumer.aclose()
+
+
+@pytest.mark.asyncio
+async def test_utterance_end_settles_when_no_trailing_final_arrives():
+    adapter = FakeAdapter()
+    service = VoiceSTTOrchestrator(
+        adapter=adapter,
+        settings=_settings(
+            voice_stt_utterance_end_settle_seconds=0.01,
+        ),
+    )
+
+    await _start(service)
+    consumer = service.events()
+
+    assert adapter.stream is not None
+
+    await adapter.stream.emit(
+        STTTranscriptEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=1,
+            type="final",
+            text="hello",
+            created_at=utc_now(),
+        )
+    )
+    assert (await anext(consumer))["text"] == "hello"
+
+    await adapter.stream.emit(
+        STTUtteranceEndEvent(
+            stream_id="stream-1",
+            turn_id="turn-1",
+            sequence=2,
+            created_at=utc_now(),
+            last_word_end_seconds=1.0,
+        )
+    )
+    assert (await anext(consumer))["type"] == "transcript.utterance_end"
+
+    final = await asyncio.wait_for(service.finish_turn(), timeout=1)
+
+    assert final.text == "hello"
+    assert final.is_end_of_speech is True
+    assert adapter.stream.closed is True
+
+    await consumer.aclose()
+
+
+@pytest.mark.asyncio
 async def test_finish_waits_for_final_and_releases_provider():
     adapter = FakeAdapter()
     service = VoiceSTTOrchestrator(
