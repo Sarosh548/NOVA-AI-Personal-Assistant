@@ -3018,8 +3018,27 @@ button.search-result-row:hover {
 
 /* Conversation viewport layout */
 
+.nova-app:has(.conversation-shell) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nova-main:has(.conversation-shell) {
+  display: grid;
+  grid-template-rows: 76px minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nova-main:has(.conversation-shell) .topbar {
+  height: 76px;
+  min-height: 76px;
+}
+
 .conversation-shell {
-  height: calc(100dvh - 76px);
+  height: auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -3034,56 +3053,13 @@ button.search-result-row:hover {
   overflow-y: auto;
 }
 
-@media (max-width: 720px) {
-  .conversation-shell {
-    height: calc(100dvh - 230px);
-    min-height: 0;
-  }
-
-  .conversation-panel {
-    height: 100%;
-    min-height: 0;
-  }
-}
-
-/* Conversation page scroll lock */
-
-body:has(.conversation-shell) {
-  overflow: hidden;
-}
-
-.nova-main:has(.conversation-shell) {
-  min-height: 100vh;
-  height: 100vh;
-  overflow: hidden;
-}
-
-/* Conversation layout height correction */
-
-.nova-app:has(.conversation-shell) {
-  height: 100dvh;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.nova-main:has(.conversation-shell) {
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-.conversation-shell {
-  height: calc(100dvh - 76px);
-  min-height: 0;
-  overflow: hidden;
-}
-
 @media (max-width: 520px) {
   .nova-main:has(.conversation-shell) {
-    height: 100%;
+    grid-template-rows: 68px minmax(0, 1fr);
   }
 
-  .conversation-shell {
-    height: calc(100dvh - 68px);
+  .nova-main:has(.conversation-shell) .topbar {
+    height: 68px;
+    min-height: 68px;
   }
 }
