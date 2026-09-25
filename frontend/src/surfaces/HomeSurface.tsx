@@ -120,7 +120,7 @@ function ActionCard({
   description,
   onClick,
 }: {
-  icon: "message" | "check" | "bell" | "calendar"
+  icon: "message" | "mic" | "check" | "bell" | "calendar"
   title: string
   description: string
   onClick?: () => void
