@@ -26,6 +26,8 @@ export type IconName =
   | "logout"
   | "eye"
   | "eye-off"
+  | "menu"
+  | "close"
   | "edit"
   | "trash"
 
