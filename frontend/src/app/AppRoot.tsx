@@ -1,13 +1,18 @@
+import { useState } from "react"
+
+import { AuthScreen } from "../auth/AuthScreen"
+import { useAuth } from "../auth/AuthProvider"
 import { AppShell } from "../layout/AppShell"
 import { HomeSurface } from "../surfaces/HomeSurface"
 import { PlaceholderSurface } from "../surfaces/PlaceholderSurface"
-import { AuthScreen } from "../auth/AuthScreen"
-import { useAuth } from "../auth/AuthProvider"
-import { useState } from "react"
 import type { SurfaceKey } from "./navigation"
 
 export function AppRoot() {
-  const { status } = useAuth()
+  const {
+    status,
+    user,
+    signOut,
+  } = useAuth()
   const [activeSurface, setActiveSurface] = useState<SurfaceKey>("Home")
 
   if (status === "loading") {
@@ -25,10 +30,15 @@ export function AppRoot() {
     return <AuthScreen />
   }
 
+  const displayName =
+    user?.display_name?.trim() || "NOVA user"
+
   return (
     <AppShell
       activeSurface={activeSurface}
       onNavigate={setActiveSurface}
+      displayName={displayName}
+      onSignOut={signOut}
     >
       {activeSurface === "Home" ? (
         <HomeSurface
