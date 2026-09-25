@@ -2,9 +2,13 @@ import { Icon } from "../components/Icon"
 
 type HomeSurfaceProps = {
   onOpenConversation: () => void
+  onOpenVoice: () => void
 }
 
-export function HomeSurface({ onOpenConversation }: HomeSurfaceProps) {
+export function HomeSurface({
+  onOpenConversation,
+  onOpenVoice,
+}: HomeSurfaceProps) {
   return (
     <div className="content-shell">
       <section className="hero-grid">
@@ -21,7 +25,7 @@ export function HomeSurface({ onOpenConversation }: HomeSurfaceProps) {
           </p>
 
           <div className="hero-actions">
-            <button className="primary-action" type="button" onClick={onOpenConversation}>
+            <button className="primary-action" type="button" onClick={onOpenVoice}>
               <Icon name="mic" size={18} />
               Start with NOVA
             </button>
@@ -61,7 +65,7 @@ export function HomeSurface({ onOpenConversation }: HomeSurfaceProps) {
             icon="message"
             title="Talk to NOVA"
             description="Open the conversation workspace."
-            onClick={onOpenConversation}
+            onClick={onOpenVoice}
           />
           <ActionCard
             icon="check"
