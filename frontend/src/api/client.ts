@@ -165,23 +165,21 @@ async function rotateAccessSession(): Promise<TokenResponse> {
 }
 
 export async function refreshAccessToken(): Promise<TokenResponse> {
-  if (refreshPromise) {
-    return refreshPromise
+  if (!refreshPromise) {
+    refreshPromise = rotateAccessSession()
+      .catch((error) => {
+        if (error instanceof ApiRequestError && error.status === 401) {
+          clearStoredSession()
+          notifySessionExpired()
+        }
+        throw error
+      })
+      .finally(() => {
+        refreshPromise = null
+      })
   }
 
-  refreshPromise = rotateAccessSession()
-
-  try {
-    return await refreshPromise
-  } catch (error) {
-    if (error instanceof ApiRequestError && error.status === 401) {
-      clearStoredSession()
-      notifySessionExpired()
-    }
-    throw error
-  } finally {
-    refreshPromise = null
-  }
+  return refreshPromise
 }
 
 export async function apiRequestWithRefresh<T>(
