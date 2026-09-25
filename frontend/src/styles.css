@@ -3057,3 +3057,33 @@ body:has(.conversation-shell) {
   height: 100vh;
   overflow: hidden;
 }
+
+/* Conversation layout height correction */
+
+.nova-app:has(.conversation-shell) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nova-main:has(.conversation-shell) {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.conversation-shell {
+  height: calc(100dvh - 76px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 520px) {
+  .nova-main:has(.conversation-shell) {
+    height: 100%;
+  }
+
+  .conversation-shell {
+    height: calc(100dvh - 68px);
+  }
+}
