@@ -61,6 +61,7 @@ export function KnowledgeSurface() {
 
   useEffect(() => {
     searchRequestRef.current += 1
+    setSearching(false)
     if (!query.trim()) setResults([])
   }, [query])
 
@@ -125,6 +126,7 @@ export function KnowledgeSurface() {
 
   const clearSearch = () => {
     searchRequestRef.current += 1
+    setSearching(false)
     setQuery("")
     setResults([])
   }

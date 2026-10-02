@@ -74,12 +74,15 @@ export function MemorySurface() {
   }, [load])
 
   useEffect(() => {
+    searchRequestRef.current += 1
+    setSearching(false)
     setResults([])
     setSelectedId(null)
   }, [category, importanceFilter])
 
   useEffect(() => {
     searchRequestRef.current += 1
+    setSearching(false)
     if (!query.trim()) {
       setResults([])
       setSelectedId(null)
@@ -119,6 +122,7 @@ export function MemorySurface() {
 
   const clearSearch = () => {
     searchRequestRef.current += 1
+    setSearching(false)
     setQuery("")
     setResults([])
     setSelectedId(null)
