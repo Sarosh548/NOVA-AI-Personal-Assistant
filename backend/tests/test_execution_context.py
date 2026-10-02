@@ -23,6 +23,17 @@ def test_autonomous_context_requests_are_not_user_requested():
     assert context.is_interactive is False
     assert context.is_autonomous is True
 
+def test_voice_interactive_context_is_user_requested_and_voice():
+    context = ExecutionContext.interactive(voice=True)
+
+    assert context.mode == ExecutionMode.INTERACTIVE
+    assert context.user_requested is True
+    assert context.is_interactive is True
+    assert context.is_autonomous is False
+    assert context.is_voice is True
+
+
+
 
 def test_default_contexts_are_correct():
     assert DEFAULT_INTERACTIVE_CONTEXT.mode == ExecutionMode.INTERACTIVE
