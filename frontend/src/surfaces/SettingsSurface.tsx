@@ -72,7 +72,7 @@ export function SettingsSurface() {
           <div className="resource-panel-head">
             <div>
               <div className="section-kicker">SYSTEM</div>
-              <h2>Frontend foundation.</h2>
+              <h2>Workspace coverage.</h2>
             </div>
           </div>
 
@@ -80,32 +80,32 @@ export function SettingsSurface() {
             <div>
               <Icon name="check" size={16} />
               <span>Authenticated account session</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Conversation workspace</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
-              <span>Realtime voice workspace</span>
-              <strong>Ready</strong>
+              <span>Realtime voice workspace surface</span>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Task, reminder & calendar controls</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Memory & private knowledge</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Control center for proactive and sensitive actions</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
           </div>
         </article>

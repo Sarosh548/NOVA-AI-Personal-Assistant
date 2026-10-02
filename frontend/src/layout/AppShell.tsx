@@ -235,7 +235,11 @@ export function AppShell({
               <span>Jump to…</span>
               <kbd>{shortcutLabel}</kbd>
             </button>
-            <AccountMenu displayName={displayName} onSignOut={onSignOut} />
+            <AccountMenu
+              displayName={displayName}
+              onOpenSettings={() => onNavigate("Settings")}
+              onSignOut={onSignOut}
+            />
           </div>
         </header>
 
