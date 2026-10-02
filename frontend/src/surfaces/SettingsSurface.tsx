@@ -85,27 +85,27 @@ export function SettingsSurface() {
             <div>
               <Icon name="check" size={16} />
               <span>Conversation workspace</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Realtime voice workspace surface</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Task, reminder & calendar controls</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Memory & private knowledge</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
             <div>
               <Icon name="check" size={16} />
               <span>Control center for proactive and sensitive actions</span>
-              <strong>Ready</strong>
+              <strong>Available</strong>
             </div>
           </div>
         </article>
