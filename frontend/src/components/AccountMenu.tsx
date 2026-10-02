@@ -5,6 +5,7 @@ import "./AccountMenu.css"
 
 type AccountMenuProps = {
   displayName: string
+  onOpenSettings: () => void
   onSignOut: () => Promise<void>
 }
 
@@ -25,6 +26,7 @@ function initialsFor(name: string): string {
 
 export function AccountMenu({
   displayName,
+  onOpenSettings,
   onSignOut,
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false)
@@ -135,6 +137,16 @@ export function AccountMenu({
           </div>
 
           <div className="account-menu-divider" />
+
+          <button
+            className="account-menu-item"
+            type="button"
+            role="menuitem"
+            onClick={onOpenSettings}
+          >
+            <Icon name="settings" size={16} />
+            <span>Settings</span>
+          </button>
 
           <button
             ref={signOutButtonRef}
