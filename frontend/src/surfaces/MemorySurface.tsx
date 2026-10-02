@@ -170,7 +170,14 @@ export function MemorySurface() {
           <div className="resource-toolbar-actions">
             <button className="primary-action compact" type="button" disabled={!query.trim() || searching} onClick={() => void runSearch()}><Icon name="brain" size={15} />{searching ? "Searching…" : "Search"}</button>
             {(query || results.length > 0) && <button className="ghost-action compact" type="button" onClick={clearSearch}>Clear</button>}
-            <button className="secondary-action compact" type="button" disabled={loading} onClick={() => void load()}><Icon name="activity" size={15} />Refresh</button>
+            <button
+              className="secondary-action compact"
+              type="button"
+              disabled={loading || searching || busy !== null}
+              onClick={() => void load()}
+            >
+              <Icon name="activity" size={15} />Refresh
+            </button>
           </div>
         </div>
         <div className="field-grid">
