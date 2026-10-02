@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -8,6 +9,9 @@ from services.execution_context import ExecutionContext
 from services.execution_service import NOVAExecutionService
 from services.llm_service import LLMService
 from services.memory_service import MemoryService
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationExecutionService:
@@ -202,9 +206,16 @@ class ConversationExecutionService:
             content=response,
         )
 
-        new_memory = self.llm_service.extract_memory(
-            user_message
-        )
+        try:
+            new_memory = self.llm_service.extract_memory(
+                user_message
+            )
+        except Exception as exc:
+            logger.warning(
+                "Conversation memory extraction failed: %s",
+                type(exc).__name__,
+            )
+            new_memory = None
 
         memory_action = None
 
