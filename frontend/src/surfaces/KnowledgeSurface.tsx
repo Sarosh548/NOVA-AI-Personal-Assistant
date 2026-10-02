@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 
 import { ApiRequestError } from "../api/client"
 import {
@@ -40,6 +40,7 @@ export function KnowledgeSurface() {
   const [copying, setCopying] = useState(false)
   const [copied, setCopied] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeDocument | null>(null)
+  const searchRequestRef = useRef(0)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -59,6 +60,7 @@ export function KnowledgeSurface() {
   }, [load])
 
   useEffect(() => {
+    searchRequestRef.current += 1
     if (!query.trim()) setResults([])
   }, [query])
 
@@ -100,18 +102,29 @@ export function KnowledgeSurface() {
 
   const runSearch = async () => {
     if (!query.trim() || searching || working) return
+
+    const requestId = searchRequestRef.current + 1
+    searchRequestRef.current = requestId
+    const searchQuery = query.trim()
+
     setSearching(true)
     setError(null)
     try {
-      setResults(await searchKnowledge(query.trim()))
+      const nextResults = await searchKnowledge(searchQuery)
+      if (searchRequestRef.current !== requestId) return
+      setResults(nextResults)
     } catch (err) {
+      if (searchRequestRef.current !== requestId) return
       setError(errorText(err, "NOVA could not search the knowledge base."))
     } finally {
-      setSearching(false)
+      if (searchRequestRef.current === requestId) {
+        setSearching(false)
+      }
     }
   }
 
   const clearSearch = () => {
+    searchRequestRef.current += 1
     setQuery("")
     setResults([])
   }
