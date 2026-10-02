@@ -228,7 +228,7 @@ export function CalendarSurface() {
       if (reset) setLoading(false)
       else setLoadingMore(false)
     }
-  }, [connected, nextPageToken, query])
+  }, [connected, nextPageToken, query, working])
 
   const load = useCallback(async () => {
     setLoading(true)
