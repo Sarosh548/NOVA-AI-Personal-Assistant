@@ -561,6 +561,9 @@ class ElevenLabsTTSAdapter(TTSAdapter):
         params = {
             "model_id": self.settings.elevenlabs_model,
             "output_format": output_format,
+            "inactivity_timeout": str(
+                self.settings.elevenlabs_inactivity_timeout_seconds
+            ),
         }
 
         if request.language is not None:
