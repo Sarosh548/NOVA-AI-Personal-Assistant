@@ -122,6 +122,7 @@ async def test_start_stream_builds_secure_uri_and_initializes_socket(
         "voice%2Fexample/stream-input?"
         "model_id=eleven_flash_v2_5&"
         "output_format=pcm_16000&"
+        "inactivity_timeout=180&"
         "language_code=en"
     )
 
