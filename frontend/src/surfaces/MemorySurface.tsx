@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { ApiRequestError } from "../api/client"
 import {
@@ -40,6 +40,7 @@ export function MemorySurface() {
   const [saveState, setSaveState] = useState<Record<number, "saving" | "saved">>({})
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Memory | null>(null)
+  const searchRequestRef = useRef(0)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -69,6 +70,7 @@ export function MemorySurface() {
   }, [category, importanceFilter])
 
   useEffect(() => {
+    searchRequestRef.current += 1
     if (!query.trim()) {
       setResults([])
       setSelectedId(null)
@@ -85,18 +87,29 @@ export function MemorySurface() {
 
   const runSearch = async () => {
     if (!query.trim() || searching) return
+
+    const requestId = searchRequestRef.current + 1
+    searchRequestRef.current = requestId
+    const searchQuery = query.trim()
+
     setSearching(true)
     setError(null)
     try {
-      setResults(await searchMemories(query.trim()))
+      const nextResults = await searchMemories(searchQuery)
+      if (searchRequestRef.current !== requestId) return
+      setResults(nextResults)
     } catch (err) {
+      if (searchRequestRef.current !== requestId) return
       setError(errorText(err, "NOVA could not search memory."))
     } finally {
-      setSearching(false)
+      if (searchRequestRef.current === requestId) {
+        setSearching(false)
+      }
     }
   }
 
   const clearSearch = () => {
+    searchRequestRef.current += 1
     setQuery("")
     setResults([])
     setSelectedId(null)
