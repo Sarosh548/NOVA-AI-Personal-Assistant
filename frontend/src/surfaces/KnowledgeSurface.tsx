@@ -211,7 +211,14 @@ export function KnowledgeSurface() {
               <Icon name="book" size={15} />{searching ? "Searching…" : "Search"}
             </button>
             {query && <button className="ghost-action compact" type="button" onClick={clearSearch}>Clear</button>}
-            <button className="secondary-action compact" type="button" disabled={loading} onClick={() => void load()}><Icon name="activity" size={15} />Refresh</button>
+            <button
+              className="secondary-action compact"
+              type="button"
+              disabled={loading || working || searching || copying}
+              onClick={() => void load()}
+            >
+              <Icon name="activity" size={15} />Refresh
+            </button>
           </div>
         </div>
         <div className="field"><span>Query</span><input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void runSearch() }} placeholder="What does my project plan say about the launch?" aria-label="Search private knowledge" /></div>
