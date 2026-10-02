@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -333,6 +334,20 @@ class TTSRuntimeService:
             raise
         except Exception as exc:
             pump_failed = True
+
+            logging.getLogger(
+                "nova.tts"
+            ).exception(
+                "TTS provider event pump failed",
+                extra={
+                    "nova_context": {
+                        "event": "tts_provider_event_pump_failed",
+                        "session_id": turn.request.session_id,
+                        "turn_id": turn.request.turn_id,
+                        "error_type": type(exc).__name__,
+                    }
+                },
+            )
             self._drain_queue(
                 turn.event_queue
             )

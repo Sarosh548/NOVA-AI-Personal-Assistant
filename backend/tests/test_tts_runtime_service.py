@@ -10,6 +10,7 @@ from services.tts_adapter import (
     TTSAudioEvent,
     TTSAudioFormat,
     TTSAdapter,
+    TTSAdapterError,
     TTSStream,
     TTSStreamRequest,
 )
@@ -96,6 +97,25 @@ class FakeTTSStream(TTSStream):
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FailingTTSStream(FakeTTSStream):
+    def __init__(
+        self,
+        *,
+        error: Exception,
+    ) -> None:
+        super().__init__()
+        self.error = error
+
+    async def events(self):
+        if False:
+            yield make_event(
+                "stream-1",
+                "turn-1",
+                1,
+            )
+        raise self.error
 
 
 class FakeTTSAdapter(TTSAdapter):
@@ -250,6 +270,63 @@ async def test_runtime_rejects_wrong_stream_turn_id(
         )
 
     assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_provider_event_pump_exception(
+    settings: VoiceSettings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(
+        "ERROR",
+        logger="nova.tts",
+    )
+
+    provider_error = TTSAdapterError(
+        "missing_permissions"
+    )
+    stream = FailingTTSStream(
+        error=provider_error,
+    )
+    runtime = TTSRuntimeService(
+        FakeTTSAdapter(stream),
+        settings,
+    )
+
+    await runtime.start_turn(
+        make_request()
+    )
+
+    with pytest.raises(
+        TTSRuntimeError,
+        match="TTS stream event pump failed",
+    ):
+        async for _event in runtime.events(
+            session_id="session-1",
+            turn_id="turn-1",
+        ):
+            pass
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "nova.tts"
+        and record.getMessage()
+        == "TTS provider event pump failed"
+    ]
+    assert records
+
+    record = records[-1]
+    assert record.nova_context == {
+        "event": "tts_provider_event_pump_failed",
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "error_type": "TTSAdapterError",
+    }
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == (
+        "missing_permissions"
+    )
 
 
 @pytest.mark.asyncio
