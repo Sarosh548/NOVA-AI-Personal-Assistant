@@ -2029,8 +2029,31 @@ Confirmation reason:
         else "No activity report is available."
     )
 
+    execution_context = _get_execution_context(state)
+
+    if execution_context.is_voice:
+        response_style_context = """
+Voice response mode:
+- This response will be spoken aloud in a realtime two-way conversation.
+- Speak naturally and directly, like a helpful friend or personal assistant.
+- Do not read a long written answer word-for-word.
+- For detailed requests such as plans, guides, lists, or explanations, give the useful high-level answer in a few natural sentences and offer to go deeper when needed.
+- Keep spoken responses focused and conversational, normally around 2 to 5 sentences unless the user explicitly asks for more detail.
+- Do not use markdown headings, bullet lists, tables, code formatting, or source-label citations in the spoken response.
+- Preserve important confirmations, warnings, constraints, and action results.
+"""
+    else:
+        response_style_context = """
+Text response mode:
+- Answer naturally and clearly for the conversation surface.
+- Use the detail level appropriate to the user's request.
+"""
+
     prompt = f"""
 You are NOVA, a friendly personal AI companion.
+
+Response style:
+{response_style_context}
 
 User understanding:
 {understanding_context}
