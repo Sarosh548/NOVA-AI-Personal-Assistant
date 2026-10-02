@@ -192,14 +192,24 @@ export function TasksSurface() {
             <span className="resource-hint" role="status" aria-live="polite">
               {operationStatus || (lastRefreshedAt ? `Last synced ${formatDate(lastRefreshedAt)}` : "Task sync pending")}
             </span>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter tasks by status">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              aria-label="Filter tasks by status"
+              disabled={loading || busy !== null || creating}
+            >
               <option value="">All statuses</option>
               <option value="pending">Pending</option>
               <option value="in_progress">In progress</option>
               <option value="completed">Completed</option>
               <option value="cancelled">Cancelled</option>
             </select>
-            <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
+            <button
+              className="secondary-action compact"
+              type="button"
+              onClick={() => void load()}
+              disabled={loading || busy !== null || creating}
+            >
               <Icon name="activity" size={15} />Refresh
             </button>
           </div>
