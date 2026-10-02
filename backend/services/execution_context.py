@@ -20,9 +20,14 @@ class ExecutionContext:
     Autonomous:
         NOVA is acting because of a background event, scheduler,
         workflow, notification, or another trusted system trigger.
+
+    Voice:
+        An interactive request whose response is intended to be spoken
+        as a natural realtime conversation.
     """
 
     mode: ExecutionMode
+    voice: bool = False
 
     @property
     def user_requested(self) -> bool:
@@ -39,13 +44,27 @@ class ExecutionContext:
     def is_autonomous(self) -> bool:
         return self.mode == ExecutionMode.AUTONOMOUS
 
+    @property
+    def is_voice(self) -> bool:
+        return self.voice
+
     @classmethod
-    def interactive(cls) -> "ExecutionContext":
-        return cls(mode=ExecutionMode.INTERACTIVE)
+    def interactive(
+        cls,
+        *,
+        voice: bool = False,
+    ) -> "ExecutionContext":
+        return cls(
+            mode=ExecutionMode.INTERACTIVE,
+            voice=voice,
+        )
 
     @classmethod
     def autonomous(cls) -> "ExecutionContext":
-        return cls(mode=ExecutionMode.AUTONOMOUS)
+        return cls(
+            mode=ExecutionMode.AUTONOMOUS,
+            voice=False,
+        )
 
 
 DEFAULT_INTERACTIVE_CONTEXT = ExecutionContext.interactive()
