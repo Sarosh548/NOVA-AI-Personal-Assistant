@@ -74,8 +74,12 @@ export function ConversationSurface() {
   const [retryPayload, setRetryPayload] = useState<RetryPayload | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const messageLoadRequestRef = useRef(0)
 
   const loadMessages = useCallback(async (id: number) => {
+    const requestId = messageLoadRequestRef.current + 1
+    messageLoadRequestRef.current = requestId
+
     setLoadingMessages(true)
     setError(null)
     setErrorAction(null)
@@ -84,19 +88,27 @@ export function ConversationSurface() {
 
     try {
       const result = await getConversationMessages(id)
+      if (messageLoadRequestRef.current !== requestId) return
+
       setMessages(result.messages)
 
       try {
-        setConversationState(await getConversationState(id))
+        const snapshot = await getConversationState(id)
+        if (messageLoadRequestRef.current !== requestId) return
+        setConversationState(snapshot)
       } catch {
+        if (messageLoadRequestRef.current !== requestId) return
         setConversationState(null)
       }
     } catch (err) {
+      if (messageLoadRequestRef.current !== requestId) return
       setMessages([])
       setConversationState(null)
       setError(formatApiError(err, "NOVA could not load this conversation."))
     } finally {
-      setLoadingMessages(false)
+      if (messageLoadRequestRef.current === requestId) {
+        setLoadingMessages(false)
+      }
     }
   }, [])
 
