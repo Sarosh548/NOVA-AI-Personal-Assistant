@@ -963,16 +963,13 @@ async def _relay_transcripts(
                 event
             )
 
+            # A finalized transcript segment is not necessarily the end of
+            # the user's turn. Deepgram may set speech_final=true after a
+            # natural pause inside a longer thought. Use UtteranceEnd as the
+            # automatic turn boundary so capture can continue across pauses.
             if (
-                (
-                    event.get("type")
-                    == "transcript.utterance_end"
-                )
-                or (
-                    event.get("type")
-                    == "transcript.final"
-                    and event.get("is_end_of_speech") is True
-                )
+                event.get("type")
+                == "transcript.utterance_end"
             ) and auto_turn_events is not None:
                 try:
                     auto_turn_events.put_nowait(

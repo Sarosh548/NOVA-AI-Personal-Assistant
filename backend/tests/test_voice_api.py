@@ -1809,7 +1809,7 @@ def test_voice_websocket_cancel_interrupts_in_flight_assistant_response(
     ]
 
 
-def test_voice_websocket_auto_commits_on_end_of_speech(
+def test_voice_websocket_does_not_auto_commit_on_end_of_speech(
     monkeypatch,
 ):
     _patch_auth(monkeypatch)
@@ -1847,6 +1847,33 @@ def test_voice_websocket_auto_commits_on_end_of_speech(
         )
 
         seen_types = []
+        while "transcript.final" not in seen_types:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(
+                message["text"]
+            )
+            seen_types.append(payload["type"])
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert "transcript.partial" in seen_types
+        assert "transcript.final" in seen_types
+        assert "turn.committed" not in seen_types
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-auto-1",
+            }
+        )
+
         assistant = None
 
         while assistant is None:
@@ -1858,7 +1885,6 @@ def test_voice_websocket_auto_commits_on_end_of_speech(
             payload = json.loads(
                 message["text"]
             )
-            seen_types.append(payload["type"])
 
             if payload["type"] == "assistant.response":
                 assistant = payload
@@ -1869,9 +1895,6 @@ def test_voice_websocket_auto_commits_on_end_of_speech(
                     f"Unexpected voice error: {payload!r}"
                 )
 
-        assert "transcript.partial" in seen_types
-        assert "transcript.final" in seen_types
-        assert "turn.committed" in seen_types
         assert assistant["turn_id"] == "turn-auto-1"
         assert assistant["response"] == "Sure, done."
 
@@ -1880,7 +1903,6 @@ def test_voice_websocket_auto_commits_on_end_of_speech(
         )
 
         assert len(core_service.calls) == 1
-
 
 def test_voice_websocket_auto_commits_on_utterance_end(
     monkeypatch,
