@@ -504,6 +504,15 @@ class TTSProviderSettings(BaseSettings):
 
     elevenlabs_use_speaker_boost: bool = False
 
+    # ElevenLabs closes inactive realtime TTS WebSockets after 20 seconds by
+    # default. Keep this long enough for a voice turn whose LLM execution is
+    # still in progress, while respecting the provider maximum of 180 seconds.
+    elevenlabs_inactivity_timeout_seconds: int = Field(
+        default=180,
+        ge=20,
+        le=180,
+    )
+
     elevenlabs_chunk_length_schedule: str = (
         "120,160,250,290"
     )
