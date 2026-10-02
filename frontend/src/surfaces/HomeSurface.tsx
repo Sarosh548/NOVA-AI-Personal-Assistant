@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { ApiRequestError } from "../api/client"
 import {
@@ -38,8 +38,12 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const refreshInFlightRef = useRef(false)
 
   const refresh = useCallback(async () => {
+    if (refreshInFlightRef.current) return
+
+    refreshInFlightRef.current = true
     setRefreshing(true)
     setError(null)
     try {
@@ -108,6 +112,7 @@ export function HomeSurface({ onNavigate }: HomeSurfaceProps) {
     } finally {
       setLoading(false)
       setRefreshing(false)
+      refreshInFlightRef.current = false
     }
   }, [])
 
