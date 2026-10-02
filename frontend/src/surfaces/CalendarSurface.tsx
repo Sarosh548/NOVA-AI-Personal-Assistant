@@ -200,7 +200,7 @@ export function CalendarSurface() {
   >(null)
 
   const loadEvents = useCallback(async (reset = true) => {
-    if (!connected) return
+    if (!connected || working) return
 
     if (reset) setLoading(true)
     else setLoadingMore(true)
@@ -281,6 +281,8 @@ export function CalendarSurface() {
   }, [selected?.id])
 
   const applySearch = () => {
+    if (working) return
+
     const nextQuery = searchInput.trim()
     if (nextQuery === query) return
     setNextPageToken(null)
@@ -288,6 +290,8 @@ export function CalendarSurface() {
   }
 
   const clearSearch = () => {
+    if (working) return
+
     setSearchInput("")
     setNextPageToken(null)
     setQuery("")
@@ -547,11 +551,12 @@ export function CalendarSurface() {
               <div className="resource-toolbar">
                 <input
                   value={searchInput}
+                  disabled={working}
                   onChange={(event) => setSearchInput(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault()
-                      applySearch()
+                      if (!working) applySearch()
                     }
                   }}
                   placeholder="Search events…"
@@ -659,7 +664,7 @@ export function CalendarSurface() {
                     <button
                       className="secondary-action"
                       type="button"
-                      disabled={loadingMore}
+                      disabled={loadingMore || working}
                       onClick={() => void loadEvents(false)}
                     >
                       {loadingMore ? "Loading more…" : "Load more events"}
