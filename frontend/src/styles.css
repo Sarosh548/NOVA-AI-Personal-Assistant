@@ -196,6 +196,11 @@ button:focus-visible {
   box-shadow: 0 0 14px rgba(142, 242, 211, 0.42);
 }
 
+.connection-dot.offline {
+  background: #ff8585;
+  box-shadow: 0 0 14px rgba(255, 133, 133, 0.38);
+}
+
 .footer-title {
   font-size: 11px;
   font-weight: 700;
