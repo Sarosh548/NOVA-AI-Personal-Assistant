@@ -71,6 +71,7 @@ class ElevenLabsTTSStream(TTSStream):
         self._pending_text: str | None = None
         self._finished = False
         self._provider_final = False
+        self._audio_emitted = False
         self._cancelled = False
         self._closed = False
 
@@ -310,6 +311,7 @@ class ElevenLabsTTSStream(TTSStream):
                         raise exc
 
                     if audio:
+                        self._audio_emitted = True
                         self._sequence += 1
 
                         await self._events.put(
