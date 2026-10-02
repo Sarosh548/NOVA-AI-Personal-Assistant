@@ -33,6 +33,7 @@ export function AccountMenu({
   const [isSigningOut, setIsSigningOut] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const profileButtonRef = useRef<HTMLButtonElement | null>(null)
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
   const signOutButtonRef = useRef<HTMLButtonElement | null>(null)
   const wasOpenRef = useRef(false)
 
@@ -48,7 +49,7 @@ export function AccountMenu({
     wasOpenRef.current = true
 
     const frame = window.requestAnimationFrame(() => {
-      signOutButtonRef.current?.focus()
+      settingsButtonRef.current?.focus()
     })
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -139,10 +140,14 @@ export function AccountMenu({
           <div className="account-menu-divider" />
 
           <button
+            ref={settingsButtonRef}
             className="account-menu-item"
             type="button"
             role="menuitem"
-            onClick={onOpenSettings}
+            onClick={() => {
+              setOpen(false)
+              onOpenSettings()
+            }}
           >
             <Icon name="settings" size={16} />
             <span>Settings</span>
