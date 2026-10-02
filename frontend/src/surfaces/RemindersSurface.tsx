@@ -162,7 +162,12 @@ export function RemindersSurface() {
             <span className="resource-hint" role="status" aria-live="polite">
               {operationStatus || (lastRefreshedAt ? `Last synced ${formatDate(lastRefreshedAt)}` : "Reminder sync pending")}
             </span>
-            <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={loading}>
+            <button
+              className="secondary-action compact"
+              type="button"
+              onClick={() => void load()}
+              disabled={loading || busy !== null || creating}
+            >
               <Icon name="activity" size={15} />Refresh
             </button>
           </div>
