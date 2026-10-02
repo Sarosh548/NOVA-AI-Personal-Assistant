@@ -133,6 +133,7 @@ class FakeLLMService:
     def __init__(self):
         self.title_calls = []
         self.memory_calls = []
+        self.raise_memory_error = False
 
     def generate_conversation_title(
         self,
@@ -146,6 +147,8 @@ class FakeLLMService:
         message,
     ):
         self.memory_calls.append(message)
+        if self.raise_memory_error:
+            raise RuntimeError("memory provider unavailable")
         return {
             "memory_text": "User likes voice interaction.",
             "category": "preference",
@@ -256,6 +259,34 @@ def test_execute_message_reuses_shared_core_and_persists_result():
 
     assert memory.calls[0]["user_id"] == "user-1"
     assert memory.calls[0]["user_message"] == "Hello NOVA"
+
+
+def test_execute_message_preserves_response_when_memory_extraction_fails():
+    service, conversation, execution, llm, memory = _service()
+    llm.raise_memory_error = True
+
+    result = service.execute_message(
+        user_id="user-1",
+        message="Hello NOVA",
+    )
+
+    assert result["response"] == "NOVA response"
+    assert result["memory_action"] is None
+    assert conversation.saved_messages == [
+        (
+            "user-1",
+            42,
+            "user",
+            "Hello NOVA",
+        ),
+        (
+            "user-1",
+            42,
+            "assistant",
+            "NOVA response",
+        ),
+    ]
+    assert memory.calls == []
 
 
 def test_execute_message_skips_persistence_when_execution_is_superseded():
