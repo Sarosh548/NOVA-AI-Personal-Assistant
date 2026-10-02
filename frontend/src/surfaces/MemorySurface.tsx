@@ -41,8 +41,12 @@ export function MemorySurface() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Memory | null>(null)
   const searchRequestRef = useRef(0)
+  const loadRequestRef = useRef(0)
 
   const load = useCallback(async () => {
+    const requestId = loadRequestRef.current + 1
+    loadRequestRef.current = requestId
+
     setLoading(true)
     setError(null)
     try {
@@ -50,13 +54,18 @@ export function MemorySurface() {
         category: category || undefined,
         importance: importanceFilter || undefined,
       })
+      if (loadRequestRef.current !== requestId) return
+
       setMemories(result)
       setEditing(Object.fromEntries(result.map((memory) => [memory.id, { ...memory }])))
       setLastSyncedAt(new Date().toISOString())
     } catch (err) {
+      if (loadRequestRef.current !== requestId) return
       setError(errorText(err, "NOVA could not load memory."))
     } finally {
-      setLoading(false)
+      if (loadRequestRef.current === requestId) {
+        setLoading(false)
+      }
     }
   }, [category, importanceFilter])
 
