@@ -370,7 +370,11 @@ export function ControlCenterSurface() {
       {error && (
         <div className="resource-error" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => void load()}>
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading || working}
+          >
             Retry
           </button>
         </div>
