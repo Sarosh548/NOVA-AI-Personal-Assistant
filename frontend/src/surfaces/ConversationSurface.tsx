@@ -730,18 +730,39 @@ function ConversationResponseDetails({
   confirmationBusy: "approve" | "reject" | null
   onConfirmation: (confirmationId: number, action: "approve" | "reject") => void
 }) {
-  const confirmation = isRecord(response.confirmation) ? response.confirmation : null
+  const rawConfirmation = isRecord(response.confirmation) ? response.confirmation : null
+  const rawConfirmationId = rawConfirmation ? Number(rawConfirmation.id) : NaN
+  const confirmation =
+    rawConfirmation &&
+    Number.isInteger(rawConfirmationId) &&
+    rawConfirmationId > 0 &&
+    textValue(rawConfirmation.status)
+      ? rawConfirmation
+      : null
   const confirmationId = confirmation ? Number(confirmation.id) : NaN
   const confirmationStatus = confirmation
-    ? String(confirmation.status ?? "pending").toLowerCase()
+    ? String(confirmation.status).toLowerCase()
     : null
   const sources: Array<Record<string, unknown>> = [
     ...(response.web_sources ?? []).map((source) => ({ ...source, kind: "Web" })),
     ...(response.knowledge_sources ?? []).map((source) => ({ ...source, kind: "Knowledge" })),
   ]
+  const hasActionResult =
+    isRecord(response.tool_result) &&
+    (textValue(response.tool_result.tool) !== null ||
+      textValue(response.tool_result.action) !== null ||
+      (response.tool_result.result !== null && response.tool_result.result !== undefined) ||
+      textValue(response.tool_result.error) !== null)
+  const hasWorkflowResult =
+    isRecord(response.workflow_result) &&
+    (textValue(response.workflow_result.status) !== null ||
+      (response.workflow_result.workflow_id !== null && response.workflow_result.workflow_id !== undefined) ||
+      (response.workflow_result.scheduled_at !== null && response.workflow_result.scheduled_at !== undefined) ||
+      (Array.isArray(response.workflow_result.steps) && response.workflow_result.steps.length > 0) ||
+      textValue(response.workflow_result.error) !== null)
   const resultBlocks = [
-    response.tool_result ? { label: "Action", value: response.tool_result } : null,
-    response.workflow_result ? { label: "Workflow", value: response.workflow_result } : null,
+    hasActionResult ? { label: "Action", value: response.tool_result as Record<string, unknown> } : null,
+    hasWorkflowResult ? { label: "Workflow", value: response.workflow_result as Record<string, unknown> } : null,
     response.memory_action ? { label: "Memory", value: response.memory_action } : null,
   ].filter(Boolean) as Array<{ label: string; value: Record<string, unknown> }>
   if (!confirmation && resultBlocks.length === 0 && sources.length === 0 && !confirmationNotice) return null
