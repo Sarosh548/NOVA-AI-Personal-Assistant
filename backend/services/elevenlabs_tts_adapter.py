@@ -71,6 +71,7 @@ class ElevenLabsTTSStream(TTSStream):
         self._pending_text: str | None = None
         self._finished = False
         self._provider_final = False
+        self._audio_emitted = False
         self._cancelled = False
         self._closed = False
 
@@ -275,6 +276,26 @@ class ElevenLabsTTSStream(TTSStream):
                         provider_error
                     ).strip()
 
+                    if (
+                        safe_message == "input_timeout_exceeded"
+                        and self._finished
+                        and self._audio_emitted
+                    ):
+                        self._provider_final = True
+                        self._sequence += 1
+
+                        await self._events.put(
+                            TTSAudioEvent(
+                                stream_id=self.stream_id,
+                                turn_id=self.turn_id,
+                                sequence=self._sequence,
+                                type="final",
+                                audio=b"",
+                                created_at=utc_now(),
+                            )
+                        )
+                        return
+
                     await self._events.put(
                         TTSAdapterError(
                             (
@@ -310,6 +331,7 @@ class ElevenLabsTTSStream(TTSStream):
                         raise exc
 
                     if audio:
+                        self._audio_emitted = True
                         self._sequence += 1
 
                         await self._events.put(

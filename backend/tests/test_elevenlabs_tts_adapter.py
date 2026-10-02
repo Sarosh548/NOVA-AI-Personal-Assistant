@@ -318,6 +318,64 @@ async def test_stream_relay_decodes_audio_and_emits_final(
 
 
 @pytest.mark.asyncio
+async def test_stream_treats_post_finish_input_timeout_as_graceful_after_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "audio": "SGVsbG8=",
+                    "is_final": False,
+                }
+            ),
+            json.dumps(
+                {
+                    "error": "input_timeout_exceeded",
+                }
+            ),
+        ]
+    )
+
+    async def fake_connect(
+        _uri: str,
+        **_kwargs: object,
+    ) -> FakeWebSocket:
+        return websocket
+
+    monkeypatch.setattr(
+        provider_module,
+        "connect",
+        fake_connect,
+    )
+
+    stream = await ElevenLabsTTSAdapter(
+        make_settings()
+    ).start_stream(
+        make_request()
+    )
+
+    await stream.send_text(
+        "Hello NOVA"
+    )
+    await stream.finish()
+
+    events = [
+        event
+        async for event in stream.events()
+    ]
+
+    assert [event.type for event in events] == [
+        "audio",
+        "final",
+    ]
+    assert events[0].audio == b"Hello"
+    assert events[1].audio == b""
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
 async def test_stream_maps_provider_error_to_adapter_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
