@@ -712,7 +712,7 @@ async def _run_voice_assistant_execution(
         "user_id": user_id,
         "message": message,
         "conversation_id": session.conversation_id,
-        "execution_context": ExecutionContext.interactive(),
+        "execution_context": ExecutionContext.interactive(voice=True),
     }
 
     if response_bridge is not None:
