@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { ApiRequestError } from "../api/client"
 import { getActivity, type ActivityEvent } from "../api/workspace"
@@ -27,8 +27,12 @@ export function ActivitySurface() {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
   const [operationStatus, setOperationStatus] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const refreshInFlightRef = useRef(false)
 
   const load = useCallback(async () => {
+    if (refreshInFlightRef.current) return
+
+    refreshInFlightRef.current = true
     setRefreshing(true)
     setError(null)
     try {
@@ -54,6 +58,7 @@ export function ActivitySurface() {
     } finally {
       setLoading(false)
       setRefreshing(false)
+      refreshInFlightRef.current = false
     }
   }, [eventType, source, timeRange])
 
@@ -70,12 +75,16 @@ export function ActivitySurface() {
   }, [autoRefresh, load])
 
   const applyFilters = () => {
+    if (refreshing) return
+
     setEventType(eventTypeInput.trim())
     setSource(sourceInput.trim())
     setOperationStatus("")
   }
 
   const clearFilters = () => {
+    if (refreshing) return
+
     setEventType("")
     setSource("")
     setEventTypeInput("")
@@ -137,7 +146,11 @@ export function ActivitySurface() {
             </button>
             <label className="inline-select">
               <span>Range</span>
-              <select value={timeRange} onChange={(event) => setTimeRange(event.target.value as typeof timeRange)}>
+              <select
+                value={timeRange}
+                disabled={refreshing}
+                onChange={(event) => setTimeRange(event.target.value as typeof timeRange)}
+              >
                 <option value="24h">24 hours</option>
                 <option value="7d">7 days</option>
                 <option value="30d">30 days</option>
@@ -145,7 +158,7 @@ export function ActivitySurface() {
               </select>
             </label>
             <label className="toggle-field compact-toggle">
-              <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
+              <input type="checkbox" checked={autoRefresh} disabled={refreshing} onChange={(event) => setAutoRefresh(event.target.checked)} />
               <span>Auto-refresh</span>
             </label>
             <button className="secondary-action compact" type="button" onClick={() => void load()} disabled={refreshing}>
@@ -156,6 +169,7 @@ export function ActivitySurface() {
                 className="ghost-action compact"
                 type="button"
                 onClick={clearFilters}
+                disabled={refreshing}
               >
                 Clear
               </button>
