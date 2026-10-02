@@ -169,11 +169,20 @@ export function AppShell({
           </div>
         </nav>
 
-        <div className="sidebar-footer">
-          <div className="connection-dot" />
+        <div className="sidebar-footer" role="status" aria-live="polite">
+          <div
+            className={online ? "connection-dot" : "connection-dot offline"}
+            aria-hidden="true"
+          />
           <div>
-            <div className="footer-title">Foundation mode</div>
-            <div className="footer-copy">Core client shell ready</div>
+            <div className="footer-title">
+              {online ? "Online" : "Offline"}
+            </div>
+            <div className="footer-copy">
+              {online
+                ? "Core client shell ready"
+                : "Local shell available; online services paused"}
+            </div>
           </div>
         </div>
       </aside>
