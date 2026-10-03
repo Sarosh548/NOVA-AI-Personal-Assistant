@@ -1025,7 +1025,6 @@ async def _relay_transcripts(
             if event_type in {
                 "speech.started",
                 "transcript.partial",
-                "transcript.final",
             }:
                 await cancel_auto_commit()
 
