@@ -183,6 +183,7 @@ export function VoiceSurface({
 
   const socketRef = useRef<WebSocket | null>(null)
   const confirmedTranscriptRef = useRef("")
+  const interruptMonitorTurnIdRef = useRef<string | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
@@ -207,6 +208,8 @@ export function VoiceSurface({
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
   const startTurnRef = useRef<(() => Promise<void>) | null>(null)
+  const startInterruptMonitorRef = useRef<(() => Promise<void>) | null>(null)
+  const cancelInterruptMonitorRef = useRef<(() => Promise<void>) | null>(null)
   const scheduleAutoListenRef = useRef<(() => void) | null>(null)
 
   const clearPlaybackTimer = () => {
@@ -278,6 +281,7 @@ export function VoiceSurface({
 
   const releaseAudioCapture = useCallback(() => {
     deactivateCapture()
+    interruptMonitorTurnIdRef.current = null
 
     if (workletRef.current) {
       workletRef.current.disconnect()
@@ -553,11 +557,34 @@ export function VoiceSurface({
       }
 
       if (type === "turn.started") {
+        const startedTurnId = String(payload.turn_id ?? "")
+
+        if (payload.interrupted === true) {
+          turnIdRef.current = startedTurnId
+          interruptMonitorTurnIdRef.current = null
+          confirmedTranscriptRef.current = ""
+          setTranscript("")
+          stopPlayback()
+          setResponse("")
+        }
+
         setState("listening")
         return
       }
 
       if (type === "speech.started") {
+        if (
+          interruptMonitorTurnIdRef.current ===
+          String(payload.turn_id ?? "")
+        ) {
+          turnIdRef.current = String(payload.turn_id)
+          interruptMonitorTurnIdRef.current = null
+          stopPlayback()
+          setResponse("")
+          confirmedTranscriptRef.current = ""
+          setTranscript("")
+        }
+
         setState("listening")
         return
       }
@@ -621,6 +648,7 @@ export function VoiceSurface({
       if (type === "assistant.audio.started") {
         setAudioState("preparing")
         setState("speaking")
+        void startInterruptMonitorRef.current?.()
         return
       }
 
@@ -832,7 +860,9 @@ export function VoiceSurface({
 
     worklet.port.onmessage = (event) => {
       const socketNow = socketRef.current
-      const turnId = turnIdRef.current
+      const turnId =
+        turnIdRef.current
+        ?? interruptMonitorTurnIdRef.current
 
       if (
         !turnId ||
@@ -957,6 +987,7 @@ export function VoiceSurface({
       }
 
       assistantAudioFinalRef.current = false
+      void cancelInterruptMonitorRef.current?.()
       void startTurnRef.current?.()
     }, remainingMilliseconds + 80)
   }, [clearAutoListenTimer])
@@ -967,6 +998,82 @@ export function VoiceSurface({
       scheduleAutoListenRef.current = null
     }
   }, [scheduleAutoListen])
+
+  const startInterruptMonitor = useCallback(async () => {
+    if (
+      !sessionReadyRef.current ||
+      turnIdRef.current !== null ||
+      interruptMonitorTurnIdRef.current !== null ||
+      assistantTurnIdRef.current === null
+    ) {
+      return
+    }
+
+    try {
+      const worklet = await ensureAudioCapture()
+      const socket = socketRef.current
+
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return
+      }
+
+      const turnId = requestId()
+      interruptMonitorTurnIdRef.current = turnId
+
+      socket.send(
+        JSON.stringify({
+          type: "turn.monitor.start",
+          turn_id: turnId,
+          audio_format: {
+            encoding: TARGET_ENCODING,
+            sample_rate_hz: TARGET_SAMPLE_RATE,
+            channels: TARGET_CHANNELS,
+          },
+        }),
+      )
+
+      worklet.port.postMessage({
+        type: "set-active",
+        active: true,
+      })
+    } catch {
+      interruptMonitorTurnIdRef.current = null
+    }
+  }, [ensureAudioCapture])
+
+  const cancelInterruptMonitor = useCallback(async () => {
+    const socket = socketRef.current
+    const monitorTurnId = interruptMonitorTurnIdRef.current
+
+    interruptMonitorTurnIdRef.current = null
+
+    if (
+      socket &&
+      socket.readyState === WebSocket.OPEN &&
+      monitorTurnId
+    ) {
+      socket.send(
+        JSON.stringify({
+          type: "turn.monitor.cancel",
+          turn_id: monitorTurnId,
+        }),
+      )
+    }
+
+    if (turnIdRef.current === null) {
+      setCaptureActive(false)
+    }
+  }, [setCaptureActive])
+
+  useEffect(() => {
+    startInterruptMonitorRef.current = startInterruptMonitor
+    cancelInterruptMonitorRef.current = cancelInterruptMonitor
+
+    return () => {
+      startInterruptMonitorRef.current = null
+      cancelInterruptMonitorRef.current = null
+    }
+  }, [startInterruptMonitor, cancelInterruptMonitor])
 
   const commitTurn = useCallback(() => {
     const socket = socketRef.current
@@ -1062,6 +1169,7 @@ export function VoiceSurface({
     clearAutoListenTimer()
     assistantAudioFinalRef.current = false
     assistantTurnIdRef.current = null
+    interruptMonitorTurnIdRef.current = null
     deactivateCapture()
     stopPlayback()
     setResponse("")
