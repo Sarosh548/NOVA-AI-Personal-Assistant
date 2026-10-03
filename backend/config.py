@@ -381,10 +381,10 @@ class STTProviderSettings(BaseSettings):
         le=5000,
     )
 
-    # Deepgram requires at least 1000 ms for useful UtteranceEnd behavior
-    # with its typical interim-result cadence.
+    # Give natural mid-thought pauses enough room before treating them as
+    # the end of a realtime voice turn.
     deepgram_utterance_end_ms: int = Field(
-        default=1200,
+        default=2000,
         ge=1000,
         le=5000,
     )
