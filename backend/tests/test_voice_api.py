@@ -2645,7 +2645,7 @@ def test_voice_websocket_rejects_audio_format_outside_turn_start(
         )
 
 
-def test_voice_websocket_requires_active_turn_for_audio(
+def test_voice_websocket_ignores_audio_without_active_turn(
     monkeypatch,
 ):
     _patch_auth(monkeypatch)
@@ -2663,16 +2663,21 @@ def test_voice_websocket_requires_active_turn_for_audio(
     ) as websocket:
         websocket.receive_json()
 
+        # Audio can arrive just after an automatic response/turn transition.
+        # It is stale transport data, not a session-level protocol failure.
         websocket.send_bytes(
             b"audio"
         )
 
-        error = websocket.receive_json()
-
-        assert error["type"] == "error"
-        assert error["code"] == (
-            "no_active_turn"
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
         )
+
+        pong = websocket.receive_json()
+
+        assert pong["type"] == "session.pong"
 
 
 def test_voice_websocket_supports_ping_and_close(
