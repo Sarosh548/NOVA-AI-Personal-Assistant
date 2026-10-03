@@ -957,6 +957,7 @@ async def _relay_transcripts(
     final_delivery: asyncio.Future[None],
     auto_turn_events: asyncio.Queue[dict] | None = None,
     barge_in_events: asyncio.Queue[dict] | None = None,
+    barge_in_enabled: Callable[[], bool] | None = None,
     auto_turn_commit_grace_seconds: float = 1.0,
 ) -> None:
     auto_commit_task: asyncio.Task[None] | None = None
@@ -1004,6 +1005,10 @@ async def _relay_transcripts(
             if (
                 event_type == "speech.started"
                 and barge_in_events is not None
+                and (
+                    barge_in_enabled is None
+                    or barge_in_enabled()
+                )
             ):
                 try:
                     barge_in_events.put_nowait(
@@ -1333,7 +1338,17 @@ async def voice_websocket(
                 session.active_turn is not None
                 and transcript_task is not None
                 and not transcript_task.done()
-                and assistant_turn_id is not None
+                and (
+                    assistant_turn_id is not None
+                    or (
+                        tts_task is not None
+                        and not tts_task.done()
+                    )
+                    or (
+                        assistant_execution_task is not None
+                        and not assistant_execution_task.done()
+                    )
+                )
             ):
                 barge_in_task = asyncio.create_task(
                     barge_in_events.get()
@@ -1724,6 +1739,8 @@ async def voice_websocket(
                                     get_rate_limit_settings()
                                 ),
                             )
+                            if control.interrupt_response
+                            else None
                         )
 
                         if (
@@ -1917,6 +1934,17 @@ async def voice_websocket(
                                 final_delivery=final_delivery,
                                 auto_turn_events=auto_turn_events,
                                 barge_in_events=barge_in_events,
+                                barge_in_enabled=lambda: (
+                                    (
+                                        tts_task is not None
+                                        and not tts_task.done()
+                                    )
+                                    or (
+                                        assistant_execution_task is not None
+                                        and not assistant_execution_task.done()
+                                    )
+                                    or assistant_turn_id is not None
+                                ),
                                 auto_turn_commit_grace_seconds=(
                                     voice_settings
                                     .voice_auto_turn_commit_grace_seconds
