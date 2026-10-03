@@ -2125,6 +2125,39 @@ def test_voice_websocket_keeps_turn_alive_when_user_continues(
         assert len(core_service.calls) == 1
 
 
+def test_voice_websocket_ignores_stale_audio_without_active_turn(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        ready = websocket.receive_json()
+        assert ready["type"] == "session.ready"
+
+        websocket.send_bytes(
+            b"late-audio",
+        )
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        pong = websocket.receive_json()
+        assert pong["type"] == "session.pong"
+
+
 def test_voice_websocket_recovers_after_midstream_stt_provider_failure(
     monkeypatch,
 ):
