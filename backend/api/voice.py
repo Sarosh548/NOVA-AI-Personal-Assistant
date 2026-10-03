@@ -2224,6 +2224,106 @@ async def voice_websocket(
 
                         continue
 
+                    if control.type == "turn.interrupt":
+                        response_turn_id = (
+                            assistant_turn_id
+                            or session.active_response_turn_id
+                        )
+                        response_active = (
+                            (
+                                tts_task is not None
+                                and not tts_task.done()
+                            )
+                            or (
+                                assistant_execution_task is not None
+                                and not assistant_execution_task.done()
+                            )
+                            or assistant_response_bridge is not None
+                        )
+
+                        if (
+                            not response_active
+                            or response_turn_id is None
+                        ):
+                            raise VoiceProtocolError(
+                                "no_active_response",
+                                "There is no active NOVA response to interrupt.",
+                            )
+
+                        if (
+                            control.turn_id is not None
+                            and control.turn_id != response_turn_id
+                        ):
+                            raise VoiceProtocolError(
+                                "turn_id_mismatch",
+                                "The supplied turn_id does not match the active NOVA response.",
+                            )
+
+                        had_active_audio = (
+                            tts_task is not None
+                            and not tts_task.done()
+                        )
+
+                        previous_tts_task = tts_task
+                        previous_execution_task = (
+                            assistant_execution_task
+                        )
+                        previous_response_bridge = (
+                            assistant_response_bridge
+                        )
+
+                        tts_task = None
+                        assistant_execution_task = None
+                        assistant_response_bridge = None
+                        assistant_turn_id = None
+                        assistant_response_generation = None
+                        session_service.invalidate_response(
+                            session
+                        )
+
+                        await _cancel_voice_response(
+                            assistant_execution_task=(
+                                previous_execution_task
+                            ),
+                            tts_task=previous_tts_task,
+                            response_bridge=previous_response_bridge,
+                        )
+
+                        log_voice_event(
+                            event="assistant_response_interrupted",
+                            session_id=session.session_id,
+                            turn_id=response_turn_id,
+                        )
+
+                        await _send_websocket_json(websocket,
+                            {
+                                "type": "assistant.response.cancelled",
+                                "turn_id": response_turn_id,
+                                "reason": "user_interruption",
+                            }
+                        )
+
+                        if had_active_audio:
+                            await _send_websocket_json(websocket,
+                                {
+                                    "type": "assistant.audio.cancelled",
+                                    "turn_id": response_turn_id,
+                                    "reason": "user_interruption",
+                                }
+                            )
+
+                        await _send_websocket_json(websocket,
+                            {
+                                "type": "turn.interrupted",
+                                "turn_id": (
+                                    session.active_turn.turn_id
+                                    if session.active_turn is not None
+                                    else None
+                                ),
+                            }
+                        )
+                        continue
+
                     if control.type == "turn.cancel":
                         active_turn = session.active_turn
 
