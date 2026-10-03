@@ -1491,18 +1491,6 @@ async def voice_websocket(
                         tts_task is not None
                         and not tts_task.done()
                     )
-                    had_active_response = (
-                        (
-                            previous_response_turn_id is not None
-                            and assistant_turn_id is not None
-                        )
-                        or had_active_audio
-                        or (
-                            assistant_execution_task is not None
-                            and not assistant_execution_task.done()
-                        )
-                        or assistant_response_bridge is not None
-                    )
 
                     previous_tts_task = tts_task
                     previous_execution_task = (
@@ -1512,6 +1500,15 @@ async def voice_websocket(
                         assistant_response_bridge
                     )
                     previous_response_turn_id = assistant_turn_id
+                    had_active_response = (
+                        previous_response_turn_id is not None
+                        or had_active_audio
+                        or (
+                            previous_execution_task is not None
+                            and not previous_execution_task.done()
+                        )
+                        or previous_response_bridge is not None
+                    )
 
                     tts_task = None
                     assistant_execution_task = None
