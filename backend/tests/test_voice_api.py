@@ -956,6 +956,41 @@ def _patch_auto_turn_commit_grace(
     )
 
 
+def test_voice_websocket_ignores_stale_audio_without_active_turn(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_bytes(
+            b"stale-audio",
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-after-stale-audio",
+            }
+        )
+
+        started = websocket.receive_json()
+
+        assert started["type"] == "turn.started"
+        assert started["turn_id"] == "turn-after-stale-audio"
+
+
 def test_voice_websocket_handshake_and_turn_flow(
     monkeypatch,
 ):
