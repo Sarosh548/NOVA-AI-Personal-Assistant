@@ -956,32 +956,71 @@ async def _relay_transcripts(
     turn_id: str,
     final_delivery: asyncio.Future[None],
     auto_turn_events: asyncio.Queue[dict] | None = None,
+    auto_turn_commit_grace_seconds: float = 1.0,
 ) -> None:
+    auto_commit_task: asyncio.Task[None] | None = None
+
+    async def cancel_auto_commit() -> None:
+        nonlocal auto_commit_task
+
+        task = auto_commit_task
+        auto_commit_task = None
+
+        if task is None or task.done():
+            return
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def queue_auto_commit() -> None:
+        await asyncio.sleep(
+            auto_turn_commit_grace_seconds
+        )
+
+        if auto_turn_events is None:
+            return
+
+        try:
+            auto_turn_events.put_nowait(
+                {
+                    "turn_id": turn_id,
+                }
+            )
+        except asyncio.QueueFull:
+            pass
+
     try:
         async for event in orchestrator.events():
             await _send_websocket_json(websocket,
                 event
             )
 
-            # A finalized transcript segment is not necessarily the end of
-            # the user's turn. Deepgram may set speech_final=true after a
-            # natural pause inside a longer thought. Use UtteranceEnd as the
-            # automatic turn boundary so capture can continue across pauses.
-            if (
-                event.get("type")
-                == "transcript.utterance_end"
-            ) and auto_turn_events is not None:
-                try:
-                    auto_turn_events.put_nowait(
-                        {
-                            "turn_id": turn_id,
-                        }
-                    )
-                except asyncio.QueueFull:
-                    pass
+            event_type = event.get("type")
+
+            # UtteranceEnd is a candidate boundary, not an immediate turn
+            # commit. Keep capture alive during a short grace window so a
+            # natural continuation stays in the same voice turn.
+            if event_type in {
+                "speech.started",
+                "transcript.partial",
+                "transcript.final",
+            }:
+                await cancel_auto_commit()
 
             if (
-                event.get("type")
+                event_type
+                == "transcript.utterance_end"
+            ) and auto_turn_events is not None:
+                await cancel_auto_commit()
+                auto_commit_task = asyncio.create_task(
+                    queue_auto_commit()
+                )
+
+            if (
+                event_type
                 == "transcript.final"
                 and not final_delivery.done()
             ):
@@ -1032,6 +1071,8 @@ async def _relay_transcripts(
             )
         except WebSocketDisconnect:
             pass
+    finally:
+        await cancel_auto_commit()
 
 
 @router.websocket("/ws")
@@ -1733,6 +1774,10 @@ async def voice_websocket(
                                 turn_id=event["turn_id"],
                                 final_delivery=final_delivery,
                                 auto_turn_events=auto_turn_events,
+                                auto_turn_commit_grace_seconds=(
+                                    voice_settings
+                                    .voice_auto_turn_commit_grace_seconds
+                                ),
                             )
                         )
                         continue

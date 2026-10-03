@@ -114,6 +114,24 @@ function formatError(error: unknown, fallback: string): string {
   return error instanceof ApiRequestError ? error.detail : fallback
 }
 
+function mergeTranscriptText(
+  confirmed: string,
+  live: string,
+): string {
+  const confirmedText = confirmed.trim()
+  const liveText = live.trim()
+
+  if (!confirmedText) return liveText
+  if (!liveText) return confirmedText
+  if (liveText === confirmedText) return confirmedText
+
+  if (liveText.startsWith(confirmedText + " ")) {
+    return liveText
+  }
+
+  return (confirmedText + " " + liveText).trim()
+}
+
 function pcmToAudioBuffer(
   audioContext: AudioContext,
   payload: ArrayBuffer,
@@ -164,6 +182,7 @@ export function VoiceSurface({
   )
 
   const socketRef = useRef<WebSocket | null>(null)
+  const confirmedTranscriptRef = useRef("")
   const audioContextRef = useRef<AudioContext | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
@@ -544,24 +563,46 @@ export function VoiceSurface({
       }
 
       if (type === "transcript.partial") {
-        setTranscript(String(payload.text ?? ""))
+        const partialText = String(payload.text ?? "")
+        setTranscript(
+          mergeTranscriptText(
+            confirmedTranscriptRef.current,
+            partialText,
+          ),
+        )
         setState("listening")
         return
       }
 
       if (type === "transcript.final") {
-        setTranscript(String(payload.text ?? ""))
-        setState("thinking")
+        const finalText = String(payload.text ?? "")
+        const completeText = mergeTranscriptText(
+          confirmedTranscriptRef.current,
+          finalText,
+        )
+        confirmedTranscriptRef.current = completeText
+        setTranscript(completeText)
+        setState("listening")
         return
       }
 
       if (type === "transcript.utterance_end") {
-        setState("thinking")
-        deactivateCapture()
+        // UtteranceEnd is only a candidate boundary. The backend keeps the
+        // same turn alive briefly in case the user naturally continues.
+        setState("listening")
         return
       }
 
       if (type === "turn.committed") {
+        const committedTranscript = String(
+          payload.transcript ?? "",
+        ).trim()
+
+        if (committedTranscript) {
+          confirmedTranscriptRef.current = committedTranscript
+          setTranscript(committedTranscript)
+        }
+
         deactivateCapture()
         setState("thinking")
         return
@@ -829,6 +870,7 @@ export function VoiceSurface({
     assistantTurnIdRef.current = null
     stopPlayback()
     setResponse("")
+    confirmedTranscriptRef.current = ""
     setTranscript("")
     setError(null)
 
