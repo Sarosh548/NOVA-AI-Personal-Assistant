@@ -1615,8 +1615,9 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
         assert armed["turn_id"] == "turn-2"
 
         fake_stt = FakeVoiceSTTOrchestrator.instances[0]
-        fake_stt.emit_speech_started = True
 
+        # The fake always emits transcript.partial; that event alone must
+        # trigger hands-free interruption without requiring speech.started.
         websocket.send_bytes(b"interrupting")
 
         cancelled_response = None
@@ -2323,6 +2324,57 @@ def test_voice_websocket_keeps_turn_alive_when_user_continues(
 
         assert assistant["turn_id"] == "turn-auto-continue"
         assert len(core_service.calls) == 1
+
+
+def test_voice_websocket_ignores_stale_audio_after_turn_commit(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-stale-audio",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.cancel",
+                "turn_id": "turn-stale-audio",
+            }
+        )
+
+        cancelled = websocket.receive_json()
+        assert cancelled["type"] == "turn.cancelled"
+
+        # This models PCM that was already queued in the browser when the
+        # server-side turn was closed.
+        websocket.send_bytes(b"stale-audio")
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        pong = websocket.receive_json()
+
+        assert pong["type"] == "session.pong"
 
 
 def test_voice_websocket_recovers_after_midstream_stt_provider_failure(
