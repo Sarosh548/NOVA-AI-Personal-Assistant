@@ -957,6 +957,7 @@ async def _relay_transcripts(
     final_delivery: asyncio.Future[None],
     auto_turn_events: asyncio.Queue[dict] | None = None,
     auto_turn_commit_grace_seconds: float = 1.0,
+    interrupt_events: asyncio.Queue[dict] | None = None,
 ) -> None:
     auto_commit_task: asyncio.Task[None] | None = None
 
@@ -999,6 +1000,20 @@ async def _relay_transcripts(
             )
 
             event_type = event.get("type")
+
+            if (
+                event_type
+                == "speech.started"
+                and interrupt_events is not None
+            ):
+                try:
+                    interrupt_events.put_nowait(
+                        {
+                            "turn_id": turn_id,
+                        }
+                    )
+                except asyncio.QueueFull:
+                    pass
 
             # UtteranceEnd is a candidate boundary, not an immediate turn
             # commit. Keep capture alive during a short grace window so a
