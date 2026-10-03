@@ -492,17 +492,25 @@ export function VoiceSurface({
                 setAudioState("idle")
 
                 if (
+                  assistantAudioFinalRef.current &&
                   bargeInArmedRef.current &&
-                  turnIdRef.current !== null
+                  !bargeInSpeechDetectedRef.current
                 ) {
-                  setState("listening")
-                } else if (
+                  cancelArmedBargeInTurnRef.current?.()
+                }
+
+                if (
                   assistantAudioFinalRef.current &&
                   turnIdRef.current === null &&
                   sessionReadyRef.current &&
                   !intentionalCloseRef.current
                 ) {
                   scheduleAutoListenRef.current?.()
+                } else if (
+                  bargeInArmedRef.current &&
+                  turnIdRef.current !== null
+                ) {
+                  setState("listening")
                 } else {
                   setState((current) =>
                     current === "speaking" ? "ready" : current,
@@ -721,8 +729,24 @@ export function VoiceSurface({
 
         if (playbackSourcesRef.current.size === 0) {
           setAudioState("idle")
+
+          if (
+            bargeInArmedRef.current &&
+            !bargeInSpeechDetectedRef.current
+          ) {
+            cancelArmedBargeInTurnRef.current?.()
+          }
+
+          if (
+            turnIdRef.current === null &&
+            sessionReadyRef.current &&
+            !intentionalCloseRef.current
+          ) {
+            scheduleAutoListenRef.current?.()
+          }
+        } else {
+          scheduleAutoListenRef.current?.()
         }
-        scheduleAutoListenRef.current?.()
         return
       }
 

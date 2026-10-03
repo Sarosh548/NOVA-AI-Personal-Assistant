@@ -1003,7 +1003,10 @@ async def _relay_transcripts(
             event_type = event.get("type")
 
             if (
-                event_type == "speech.started"
+                event_type in {
+                    "speech.started",
+                    "transcript.partial",
+                }
                 and barge_in_events is not None
                 and (
                     barge_in_enabled is None
@@ -2458,17 +2461,10 @@ async def voice_websocket(
                     return
 
                 if session.active_turn is None:
-                    try:
-                        session_service.append_audio_frame(
-                            session=session,
-                            frame=binary_data,
-                        )
-                    except VoiceProtocolError as exc:
-                        await _send_error(
-                            websocket,
-                            code=exc.code,
-                            message=exc.message,
-                        )
+                    # A PCM frame may already be queued in the browser while
+                    # automatic commit clears the server-side turn. Ignore
+                    # that stale frame instead of treating it as a session
+                    # failure and forcing a reconnect.
                     continue
 
                 try:
