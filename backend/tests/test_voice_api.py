@@ -440,7 +440,9 @@ class FakeVoiceSTTOrchestrator:
         self.turn_id = None
         self.audio_frames = []
         self.events_queue = asyncio.Queue()
+        self.audio_send_count = 0
         self.final_text = "hello world"
+        self.emit_speech_started_on_second_audio = False
         self.emit_end_of_speech = False
         self.emit_utterance_end = False
         self.emit_error = False
@@ -466,6 +468,22 @@ class FakeVoiceSTTOrchestrator:
         frame: bytes,
     ):
         self.audio_frames.append(frame)
+        self.audio_send_count += 1
+
+        if (
+            self.emit_speech_started_on_second_audio
+            and self.audio_send_count == 2
+        ):
+            await self.events_queue.put(
+                {
+                    "type": "speech.started",
+                    "stream_id": "fake-stt-stream-1",
+                    "turn_id": self.turn_id,
+                    "sequence": 4,
+                    "timestamp_seconds": 2.0,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }
+            )
 
         await self.events_queue.put(
             {
@@ -914,6 +932,27 @@ def _patch_fake_stt(
             adapter=object(),
             settings=_settings,
         ),
+    )
+
+
+def _patch_auto_turn_commit_grace(
+    monkeypatch,
+    grace_seconds: float,
+):
+    import api.voice as voice_module
+
+    settings = voice_module.get_voice_settings().model_copy(
+        update={
+            "voice_auto_turn_commit_grace_seconds": (
+                grace_seconds
+            ),
+        }
+    )
+
+    monkeypatch.setattr(
+        voice_module,
+        "get_voice_settings",
+        lambda: settings,
     )
 
 
@@ -1910,6 +1949,10 @@ def test_voice_websocket_auto_commits_on_utterance_end(
     _patch_auth(monkeypatch)
     _patch_fake_stt(monkeypatch)
     _patch_fake_tts(monkeypatch)
+    _patch_auto_turn_commit_grace(
+        monkeypatch,
+        0.01,
+    )
 
     client = TestClient(
         _build_app()
@@ -1962,6 +2005,124 @@ def test_voice_websocket_auto_commits_on_utterance_end(
         assert "turn.committed" in seen_types
         assert assistant["turn_id"] == "turn-auto-utterance-end"
         assert assistant["response"] == "Sure, done."
+
+
+def test_voice_websocket_keeps_turn_alive_when_user_continues(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+    _patch_auto_turn_commit_grace(
+        monkeypatch,
+        0.2,
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-auto-continue",
+            }
+        )
+        websocket.receive_json()
+
+        fake_stt = FakeVoiceSTTOrchestrator.instances[0]
+        fake_stt.emit_utterance_end = True
+
+        websocket.send_bytes(
+            b"first-part",
+        )
+
+        seen_types = set()
+        while "transcript.utterance_end" not in seen_types:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            seen_types.add(payload["type"])
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        core_service = (
+            websocket.app.state.conversation_execution_service
+        )
+
+        assert len(core_service.calls) == 0
+
+        fake_stt.emit_utterance_end = False
+        fake_stt.emit_speech_started_on_second_audio = True
+
+        websocket.send_bytes(
+            b"continued-part",
+        )
+
+        speech_started = False
+        while not speech_started:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+
+            if payload["type"] == "speech.started":
+                speech_started = True
+
+            elif payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        import time
+
+        time.sleep(0.25)
+
+        assert len(core_service.calls) == 0
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-auto-continue",
+            }
+        )
+
+        assistant = None
+
+        while assistant is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+
+            if payload["type"] == "assistant.response":
+                assistant = payload
+
+            elif payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert assistant["turn_id"] == "turn-auto-continue"
+        assert len(core_service.calls) == 1
 
 
 def test_voice_websocket_recovers_after_midstream_stt_provider_failure(
