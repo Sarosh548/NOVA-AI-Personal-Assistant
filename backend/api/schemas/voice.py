@@ -28,6 +28,8 @@ class VoiceControlMessage(BaseModel):
     type: Literal[
         "session.authenticate",
         "turn.start",
+        "turn.monitor.start",
+        "turn.monitor.cancel",
         "turn.commit",
         "turn.cancel",
         "session.ping",
