@@ -1473,7 +1473,6 @@ async def voice_websocket(
                     and interrupt_monitor_turn_id is not None
                     and interrupt_event.get("turn_id")
                     == interrupt_monitor_turn_id
-                    and assistant_turn_id is not None
                 ):
                     if auto_turn_task is not None:
                         if auto_turn_task.done():
@@ -1491,6 +1490,18 @@ async def voice_websocket(
                     had_active_audio = (
                         tts_task is not None
                         and not tts_task.done()
+                    )
+                    had_active_response = (
+                        (
+                            previous_response_turn_id is not None
+                            and assistant_turn_id is not None
+                        )
+                        or had_active_audio
+                        or (
+                            assistant_execution_task is not None
+                            and not assistant_execution_task.done()
+                        )
+                        or assistant_response_bridge is not None
                     )
 
                     previous_tts_task = tts_task
@@ -1521,7 +1532,10 @@ async def voice_websocket(
                         response_bridge=previous_response_bridge,
                     )
 
-                    if previous_response_turn_id is not None:
+                    if (
+                        had_active_response
+                        and previous_response_turn_id is not None
+                    ):
                         await _send_websocket_json(websocket,
                             {
                                 "type": "assistant.response.cancelled",
