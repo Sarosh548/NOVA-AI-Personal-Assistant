@@ -1475,12 +1475,18 @@ async def voice_websocket(
                     == interrupt_monitor_turn_id
                     and assistant_turn_id is not None
                 ):
-                    if auto_turn_task is not None and not auto_turn_task.done():
-                        auto_turn_task.cancel()
-                        try:
-                            await auto_turn_task
-                        except asyncio.CancelledError:
-                            pass
+                    if auto_turn_task is not None:
+                        if auto_turn_task.done():
+                            try:
+                                auto_turn_task.result()
+                            except asyncio.CancelledError:
+                                pass
+                        else:
+                            auto_turn_task.cancel()
+                            try:
+                                await auto_turn_task
+                            except asyncio.CancelledError:
+                                pass
 
                     had_active_audio = (
                         tts_task is not None
