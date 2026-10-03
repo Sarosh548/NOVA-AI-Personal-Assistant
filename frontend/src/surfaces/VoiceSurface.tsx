@@ -646,6 +646,12 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.started") {
+        const responseTurnId = String(payload.turn_id ?? "")
+
+        if (responseTurnId) {
+          assistantTurnIdRef.current = responseTurnId
+        }
+
         setAudioState("preparing")
         setState("speaking")
         void startInterruptMonitorRef.current?.()
