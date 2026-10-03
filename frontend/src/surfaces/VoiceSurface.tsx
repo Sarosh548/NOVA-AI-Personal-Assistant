@@ -1014,8 +1014,9 @@ export function VoiceSurface({
       socket.send(
         JSON.stringify({
           type: "turn.start",
-          turn_id: turnId,
-          interrupt_response: true,
+          turn_id: turnId// Arm the listening turn without cancelling the response.
+            // Actual speech.started is what triggers backend barge-in.
+            interrupt_response: false,
           audio_format: {
             encoding: TARGET_ENCODING,
             sample_rate_hz: TARGET_SAMPLE_RATE,
