@@ -1581,6 +1581,11 @@ async def voice_websocket(
                     ),
                 }
             else:
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
                 continue
 
             if (
@@ -1687,7 +1692,11 @@ async def voice_websocket(
 
                 if (
                     control.audio_format is not None
-                    and control.type != "turn.start"
+                    and control.type
+                    not in {
+                        "turn.start",
+                        "turn.monitor.start",
+                    }
                 ):
                     await _send_error(
                         websocket,
@@ -1700,7 +1709,195 @@ async def voice_websocket(
                     continue
 
                 try:
+                    if control.type == "turn.monitor.start":
+                        if (
+                            interrupt_monitor_turn_id is not None
+                        ):
+                            continue
+
+                        response_active = (
+                            assistant_turn_id is not None
+                            and (
+                                (
+                                    tts_task is not None
+                                    and not tts_task.done()
+                                )
+                                or (
+                                    assistant_execution_task is not None
+                                    and not assistant_execution_task.done()
+                                )
+                                or assistant_response_bridge is not None
+                            )
+                        )
+
+                        if not response_active:
+                            raise VoiceProtocolError(
+                                "no_active_response",
+                                "There is no active assistant response to monitor.",
+                            )
+
+                        if session.active_turn is not None:
+                            raise VoiceProtocolError(
+                                "turn_already_active",
+                                "A voice turn is already active.",
+                            )
+
+                        event = session_service.start_turn(
+                            session=session,
+                            turn_id=control.turn_id,
+                        )
+
+                        try:
+                            audio_format = _audio_format_from_control(
+                                control,
+                                voice_settings,
+                            )
+
+                            stream_id = (
+                                await stt_orchestrator.start_turn(
+                                    user_id=context.user.id,
+                                    session_id=session.session_id,
+                                    turn_id=event["turn_id"],
+                                    audio_format=audio_format,
+                                )
+                            )
+                        except (
+                            VoiceSTTOrchestratorError,
+                            STTRuntimeError,
+                            ValueError,
+                        ) as exc:
+                            if session.active_turn is not None:
+                                session_service.cancel_turn(
+                                    session=session,
+                                    turn_id=event["turn_id"],
+                                )
+
+                            voice_metrics.record_provider_event(
+                                provider="deepgram",
+                                event="stream_failed",
+                            )
+                            voice_metrics.record_error(
+                                stage="stt",
+                                code="voice_interrupt_monitor_start_failed",
+                            )
+                            log_voice_event(
+                                event="voice_interrupt_monitor_start_failed",
+                                session_id=session.session_id,
+                                turn_id=event["turn_id"],
+                                provider="deepgram",
+                                code="voice_interrupt_monitor_start_failed",
+                                recoverable=True,
+                            )
+                            continue
+
+                        interrupt_monitor_turn_id = event["turn_id"]
+                        loop = asyncio.get_running_loop()
+                        final_delivery = loop.create_future()
+
+                        transcript_task = asyncio.create_task(
+                            _relay_transcripts(
+                                websocket=websocket,
+                                orchestrator=stt_orchestrator,
+                                session_service=session_service,
+                                session=session,
+                                turn_id=event["turn_id"],
+                                final_delivery=final_delivery,
+                                auto_turn_events=auto_turn_events,
+                                auto_turn_commit_grace_seconds=(
+                                    voice_settings
+                                    .voice_auto_turn_commit_grace_seconds
+                                ),
+                                interrupt_events=interrupt_events,
+                            )
+                        )
+
+                        await _send_websocket_json(websocket,
+                            {
+                                "type": "turn.monitor.started",
+                                "turn_id": event["turn_id"],
+                                "stream_id": stream_id,
+                            }
+                        )
+                        continue
+
+                    if control.type == "turn.monitor.cancel":
+                        if interrupt_monitor_turn_id is None:
+                            continue
+
+                        monitor_turn_id = (
+                            interrupt_monitor_turn_id
+                        )
+                        interrupt_monitor_turn_id = None
+
+                        try:
+                            await stt_orchestrator.cancel_turn()
+                        except Exception:
+                            pass
+
+                        if (
+                            session.active_turn is not None
+                            and session.active_turn.turn_id
+                            == monitor_turn_id
+                        ):
+                            try:
+                                session_service.cancel_turn(
+                                    session=session,
+                                    turn_id=monitor_turn_id,
+                                )
+                            except VoiceProtocolError:
+                                pass
+
+                        if transcript_task is not None:
+                            transcript_task.cancel()
+                            try:
+                                await transcript_task
+                            except asyncio.CancelledError:
+                                pass
+                            transcript_task = None
+
+                        final_delivery = None
+
+                        await _send_websocket_json(websocket,
+                            {
+                                "type": "turn.monitor.cancelled",
+                                "turn_id": monitor_turn_id,
+                            }
+                        )
+                        continue
+
                     if control.type == "turn.start":
+                        if interrupt_monitor_turn_id is not None:
+                            monitor_turn_id = interrupt_monitor_turn_id
+                            interrupt_monitor_turn_id = None
+
+                            try:
+                                await stt_orchestrator.cancel_turn()
+                            except Exception:
+                                pass
+
+                            if (
+                                session.active_turn is not None
+                                and session.active_turn.turn_id
+                                == monitor_turn_id
+                            ):
+                                try:
+                                    session_service.cancel_turn(
+                                        session=session,
+                                        turn_id=monitor_turn_id,
+                                    )
+                                except VoiceProtocolError:
+                                    pass
+
+                            if transcript_task is not None:
+                                transcript_task.cancel()
+                                try:
+                                    await transcript_task
+                                except asyncio.CancelledError:
+                                    pass
+                                transcript_task = None
+
+                            final_delivery = None
+
                         rate_limit_decision = (
                             _check_voice_turn_rate_limit(
                                 user_id=context.user.id,
@@ -2171,6 +2368,91 @@ async def voice_websocket(
                         continue
 
                     if control.type == "turn.cancel":
+                        if interrupt_monitor_turn_id is not None:
+                            monitor_turn_id = interrupt_monitor_turn_id
+                            interrupt_monitor_turn_id = None
+
+                            had_active_audio = (
+                                tts_task is not None
+                                and not tts_task.done()
+                            )
+                            previous_tts_task = tts_task
+                            previous_execution_task = (
+                                assistant_execution_task
+                            )
+                            previous_response_bridge = (
+                                assistant_response_bridge
+                            )
+                            previous_response_turn_id = assistant_turn_id
+
+                            tts_task = None
+                            assistant_execution_task = None
+                            session_service.invalidate_response(
+                                session
+                            )
+                            assistant_response_bridge = None
+                            assistant_turn_id = None
+                            assistant_response_generation = None
+
+                            await _cancel_voice_response(
+                                assistant_execution_task=(
+                                    previous_execution_task
+                                ),
+                                tts_task=previous_tts_task,
+                                response_bridge=previous_response_bridge,
+                            )
+
+                            try:
+                                await stt_orchestrator.cancel_turn()
+                            except Exception:
+                                pass
+
+                            if (
+                                session.active_turn is not None
+                                and session.active_turn.turn_id
+                                == monitor_turn_id
+                            ):
+                                try:
+                                    session_service.cancel_turn(
+                                        session=session,
+                                        turn_id=monitor_turn_id,
+                                    )
+                                except VoiceProtocolError:
+                                    pass
+
+                            if transcript_task is not None:
+                                transcript_task.cancel()
+                                try:
+                                    await transcript_task
+                                except asyncio.CancelledError:
+                                    pass
+                                transcript_task = None
+
+                            final_delivery = None
+
+                            if previous_response_turn_id is not None:
+                                await _send_websocket_json(websocket,
+                                    {
+                                        "type": "assistant.response.cancelled",
+                                        "turn_id": previous_response_turn_id,
+                                    }
+                                )
+
+                            if had_active_audio:
+                                await _send_websocket_json(websocket,
+                                    {
+                                        "type": "assistant.audio.cancelled",
+                                    }
+                                )
+
+                            await _send_websocket_json(websocket,
+                                {
+                                    "type": "turn.cancelled",
+                                    "turn_id": monitor_turn_id,
+                                }
+                            )
+                            continue
+
                         active_turn = session.active_turn
 
                         if active_turn is None:
@@ -2336,6 +2618,10 @@ async def voice_websocket(
                         active_turn = session.active_turn
 
                         if active_turn is not None:
+                            if (
+                                interrupt_monitor_turn_id is not None
+                            ):
+                                interrupt_monitor_turn_id = None
                             await stt_orchestrator.cancel_turn()
                             session_service.cancel_turn(
                                 session=session,
