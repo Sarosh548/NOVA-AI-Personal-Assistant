@@ -213,6 +213,14 @@ class VoiceSettings(BaseSettings):
         le=2,
     )
 
+    # Wait briefly after Deepgram signals an utterance boundary so a user
+    # can naturally continue speaking without losing the same voice turn.
+    voice_auto_turn_commit_grace_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        le=5,
+    )
+
     voice_default_audio_encoding: str = Field(
         default="pcm_s16le",
         min_length=1,
