@@ -2287,18 +2287,11 @@ async def voice_websocket(
                     )
                     return
 
+                # A few mic frames can already be in flight when a
+                # turn commits or is cancelled. Ignore those stale frames
+                # rather than turning a normal realtime race into a session
+                # error.
                 if session.active_turn is None:
-                    try:
-                        session_service.append_audio_frame(
-                            session=session,
-                            frame=binary_data,
-                        )
-                    except VoiceProtocolError as exc:
-                        await _send_error(
-                            websocket,
-                            code=exc.code,
-                            message=exc.message,
-                        )
                     continue
 
                 try:
