@@ -131,8 +131,10 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
         ) {
           this.speechTriggered = true
 
-          const frames = this.preRollFrames.slice()
-          frames.push(pcm.slice().buffer)
+          const frames = this.preRollFrames.map(
+            (frame) => frame.buffer,
+          )
+          frames.push(pcm.buffer)
           this.preRollFrames = []
 
           this.port.postMessage(
@@ -730,6 +732,7 @@ export function VoiceSurface({
 
       if (type === "assistant.response.cancelled") {
         clearAutoListenTimer()
+        setCaptureMonitoring(false)
         assistantAudioFinalRef.current = false
         assistantTurnIdRef.current = null
         stopPlayback()
@@ -745,6 +748,7 @@ export function VoiceSurface({
 
       if (type === "assistant.audio.cancelled") {
         clearAutoListenTimer()
+        setCaptureMonitoring(false)
         assistantAudioFinalRef.current = false
         assistantTurnIdRef.current = null
         setAudioState("idle")
