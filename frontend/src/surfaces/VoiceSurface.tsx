@@ -24,17 +24,45 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
   constructor() {
     super()
     this.active = false
+    this.monitoring = false
+    this.speechTriggered = false
     this.buffer = new Float32Array(0)
     this.position = 0
     this.targetRate = 16000
     this.chunkSize = 320
+    this.vadThreshold = 0.025
+    this.vadStartFrames = 3
+    this.consecutiveSpeechFrames = 0
+    this.preRollFrames = []
+    this.preRollMaxFrames = 10
 
     this.port.onmessage = (event) => {
-      if (event.data && event.data.type === "set-active") {
-        this.active = Boolean(event.data.active)
+      const data = event.data
+      if (!data) return
+
+      if (data.type === "set-active") {
+        this.active = Boolean(data.active)
+
         if (!this.active) {
           this.buffer = new Float32Array(0)
           this.position = 0
+        }
+
+        if (this.active) {
+          this.speechTriggered = false
+          this.consecutiveSpeechFrames = 0
+          this.preRollFrames = []
+        }
+        return
+      }
+
+      if (data.type === "set-monitoring") {
+        this.monitoring = Boolean(data.active)
+
+        if (!this.monitoring) {
+          this.speechTriggered = false
+          this.consecutiveSpeechFrames = 0
+          this.preRollFrames = []
         }
       }
     }
@@ -42,11 +70,7 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
 
   process(inputs) {
     const channel = inputs[0] && inputs[0][0]
-    if (!channel) return true
-
-    if (!this.active) {
-      return true
-    }
+    if (!channel || (!this.active && !this.monitoring)) return true
 
     const merged = new Float32Array(this.buffer.length + channel.length)
     merged.set(this.buffer)
@@ -85,7 +109,57 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
         this.position -= consumed
       }
 
-      this.port.postMessage(pcm.buffer, [pcm.buffer])
+      if (this.monitoring && !this.active) {
+        let sumSquares = 0
+
+        for (let index = 0; index < pcm.length; index += 1) {
+          const normalized = pcm[index] / 32768
+          sumSquares += normalized * normalized
+        }
+
+        const rms = Math.sqrt(sumSquares / pcm.length)
+
+        if (rms >= this.vadThreshold) {
+          this.consecutiveSpeechFrames += 1
+        } else {
+          this.consecutiveSpeechFrames = 0
+        }
+
+        if (
+          !this.speechTriggered &&
+          this.consecutiveSpeechFrames >= this.vadStartFrames
+        ) {
+          this.speechTriggered = true
+
+          const frames = this.preRollFrames.slice()
+          frames.push(pcm.slice().buffer)
+          this.preRollFrames = []
+
+          this.port.postMessage(
+            {
+              type: "speech-started",
+              frames,
+            },
+            frames,
+          )
+        } else {
+          this.preRollFrames.push(pcm.slice())
+
+          if (this.preRollFrames.length > this.preRollMaxFrames) {
+            this.preRollFrames.shift()
+          }
+        }
+      }
+
+      if (this.active) {
+        this.port.postMessage(
+          {
+            type: "audio",
+            buffer: pcm.buffer,
+          },
+          [pcm.buffer],
+        )
+      }
     }
 
     return true
@@ -204,6 +278,7 @@ export function VoiceSurface({
   const authRecoveryAttemptedRef = useRef(false)
   const assistantAudioFinalRef = useRef(false)
   const assistantTurnIdRef = useRef<string | null>(null)
+  const interruptionInProgressRef = useRef(false)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
   const startTurnRef = useRef<(() => Promise<void>) | null>(null)
@@ -266,6 +341,15 @@ export function VoiceSurface({
     if (workletRef.current) {
       workletRef.current.port.postMessage({
         type: "set-active",
+        active,
+      })
+    }
+  }, [])
+
+  const setCaptureMonitoring = useCallback((active: boolean) => {
+    if (workletRef.current) {
+      workletRef.current.port.postMessage({
+        type: "set-monitoring",
         active,
       })
     }
@@ -348,6 +432,7 @@ export function VoiceSurface({
     clearAutoListenTimer()
     releaseAudioCapture()
     stopPlayback()
+    interruptionInProgressRef.current = false
 
     const socket = socketRef.current
     socketRef.current = null
@@ -610,6 +695,7 @@ export function VoiceSurface({
 
       if (type === "assistant.response") {
         assistantTurnIdRef.current = String(payload.turn_id ?? "") || null
+        setCaptureMonitoring(true)
         setResponse(String(payload.response ?? ""))
         setAudioState((current) =>
           current === "playing" ? current : "preparing",
@@ -619,6 +705,9 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.started") {
+        assistantTurnIdRef.current =
+          String(payload.turn_id ?? "") || assistantTurnIdRef.current
+        setCaptureMonitoring(true)
         setAudioState("preparing")
         setState("speaking")
         return
@@ -722,6 +811,7 @@ export function VoiceSurface({
         }
 
         clearAutoListenTimer()
+        setCaptureMonitoring(false)
         assistantAudioFinalRef.current = false
         setAudioState("idle")
         releaseAudioCapture()
@@ -831,19 +921,96 @@ export function VoiceSurface({
     muteGain.gain.value = 0
 
     worklet.port.onmessage = (event) => {
-      const socketNow = socketRef.current
-      const turnId = turnIdRef.current
+      const data = event.data
 
       if (
-        !turnId ||
-        !socketNow ||
-        socketNow.readyState !== WebSocket.OPEN ||
-        !(event.data instanceof ArrayBuffer)
+        data &&
+        typeof data === "object" &&
+        data.type === "speech-started"
       ) {
+        const socketNow = socketRef.current
+        const assistantTurnId = assistantTurnIdRef.current
+
+        if (
+          interruptionInProgressRef.current ||
+          !assistantTurnId ||
+          turnIdRef.current !== null ||
+          !sessionReadyRef.current ||
+          !socketNow ||
+          socketNow.readyState !== WebSocket.OPEN
+        ) {
+          return
+        }
+
+        const frames = Array.isArray(data.frames)
+          ? data.frames.filter(
+              (frame: unknown): frame is ArrayBuffer =>
+                frame instanceof ArrayBuffer,
+            )
+          : []
+
+        if (frames.length === 0) return
+
+        interruptionInProgressRef.current = true
+        clearAutoListenTimer()
+        setCaptureMonitoring(false)
+        assistantAudioFinalRef.current = false
+        stopPlayback()
+        setResponse("")
+        setState("listening")
+
+        const newTurnId = requestId()
+        assistantTurnIdRef.current = null
+        turnIdRef.current = newTurnId
+
+        socketNow.send(
+          JSON.stringify({
+            type: "turn.cancel",
+            turn_id: assistantTurnId,
+          }),
+        )
+        socketNow.send(
+          JSON.stringify({
+            type: "turn.start",
+            turn_id: newTurnId,
+            audio_format: {
+              encoding: TARGET_ENCODING,
+              sample_rate_hz: TARGET_SAMPLE_RATE,
+              channels: TARGET_CHANNELS,
+            },
+          }),
+        )
+
+        setCaptureActive(true)
+
+        for (const frame of frames) {
+          socketNow.send(frame)
+        }
+
+        interruptionInProgressRef.current = false
         return
       }
 
-      socketNow.send(event.data)
+      if (
+        data &&
+        typeof data === "object" &&
+        data.type === "audio"
+      ) {
+        const socketNow = socketRef.current
+        const turnId = turnIdRef.current
+        const buffer = data.buffer
+
+        if (
+          !turnId ||
+          !socketNow ||
+          socketNow.readyState !== WebSocket.OPEN ||
+          !(buffer instanceof ArrayBuffer)
+        ) {
+          return
+        }
+
+        socketNow.send(buffer)
+      }
     }
 
     source.connect(worklet)
@@ -866,6 +1033,7 @@ export function VoiceSurface({
     }
 
     clearAutoListenTimer()
+    setCaptureMonitoring(false)
     assistantAudioFinalRef.current = false
     assistantTurnIdRef.current = null
     stopPlayback()
@@ -873,6 +1041,7 @@ export function VoiceSurface({
     confirmedTranscriptRef.current = ""
     setTranscript("")
     setError(null)
+    setCaptureMonitoring(false)
 
     try {
       const worklet = await ensureAudioCapture()
@@ -926,6 +1095,7 @@ export function VoiceSurface({
 
   const scheduleAutoListen = useCallback(() => {
     clearAutoListenTimer()
+    setCaptureMonitoring(false)
 
     if (
       !assistantAudioFinalRef.current ||
@@ -959,7 +1129,7 @@ export function VoiceSurface({
       assistantAudioFinalRef.current = false
       void startTurnRef.current?.()
     }, remainingMilliseconds + 80)
-  }, [clearAutoListenTimer])
+  }, [clearAutoListenTimer, setCaptureMonitoring])
 
   useEffect(() => {
     scheduleAutoListenRef.current = scheduleAutoListen
@@ -1068,7 +1238,12 @@ export function VoiceSurface({
     setAudioState("idle")
     setState("ready")
     return true
-  }, [clearAutoListenTimer, deactivateCapture, stopPlayback])
+  }, [
+    clearAutoListenTimer,
+    deactivateCapture,
+    setCaptureMonitoring,
+    stopPlayback,
+  ])
 
   const handleVoiceButton = () => {
     if (state === "listening") {
