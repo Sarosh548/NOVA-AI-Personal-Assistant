@@ -1669,6 +1669,141 @@ def test_voice_websocket_barge_in_cancels_previous_response_and_accepts_new_turn
     assert len(core_service.calls) == 2
 
 
+def test_voice_websocket_automatically_barges_in_on_speech_started(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        fake_stt = FakeVoiceSTTOrchestrator.instances[0]
+        fake_stt.emit_speech_started_on_second_audio = True
+
+        websocket.send_json(
+            {
+                "type": "turn.monitor.start",
+                "turn_id": "turn-monitor-1",
+            }
+        )
+
+        monitor_started = websocket.receive_json()
+        assert monitor_started == {
+            "type": "turn.monitor.started",
+            "turn_id": "turn-monitor-1",
+            "stream_id": "fake-stt-stream-1",
+        }
+
+        websocket.send_bytes(b"interrupt")
+
+        seen = []
+        interrupted_turn = None
+
+        while interrupted_turn is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            seen.append(payload["type"])
+
+            if payload["type"] == "turn.started":
+                interrupted_turn = payload
+                continue
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert "speech.started" in seen
+        assert "assistant.response.cancelled" in seen
+        assert "assistant.audio.cancelled" in seen
+        assert interrupted_turn["turn_id"] == "turn-monitor-1"
+        assert interrupted_turn["interrupted"] is True
+        assert len(core_service.calls) == 1
+
+        websocket.send_bytes(b"second")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-monitor-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        core_service.release_first_execution.set()
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        while True:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+
+            if payload["type"] == "session.pong":
+                break
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert len(core_service.calls) == 2
+
+
 def test_voice_websocket_cancel_interrupts_active_turn(
     monkeypatch,
 ):
