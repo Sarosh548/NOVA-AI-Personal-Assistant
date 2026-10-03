@@ -303,8 +303,11 @@ class VoiceSettings(BaseSettings):
         le=8,
     )
 
+    # ElevenLabs realtime PCM chunks can exceed the original 64 KiB bound.
+    # Keep the runtime default aligned with the validated 1 MiB ceiling so
+    # normal provider audio chunks are not rejected after a server restart.
     voice_tts_audio_chunk_max_bytes: int = Field(
-        default=65_536,
+        default=1_048_576,
         ge=1_024,
         le=1_048_576,
     )
