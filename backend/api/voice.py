@@ -1108,6 +1108,8 @@ async def voice_websocket(
     assistant_response_generation: int | None = None
     final_delivery: asyncio.Future[None] | None = None
     auto_turn_events: asyncio.Queue[dict] = asyncio.Queue(maxsize=1)
+    interrupt_events: asyncio.Queue[dict] = asyncio.Queue(maxsize=1)
+    interrupt_monitor_turn_id: str | None = None
     conversation_execution_service = None
     session = None
     voice_session_lease_heartbeat_task: asyncio.Task[None] | None = None
@@ -1318,6 +1320,7 @@ async def voice_websocket(
                 websocket.receive()
             )
             auto_turn_task = None
+            interrupt_task = None
 
             if (
                 session.active_turn is not None
@@ -1328,6 +1331,15 @@ async def voice_websocket(
                     auto_turn_events.get()
                 )
 
+            if (
+                interrupt_monitor_turn_id is not None
+                and transcript_task is not None
+                and not transcript_task.done()
+            ):
+                interrupt_task = asyncio.create_task(
+                    interrupt_events.get()
+                )
+
             wait_tasks = [
                 receive_task,
                 voice_session_lease_failure_wait_task,
@@ -1335,6 +1347,9 @@ async def voice_websocket(
 
             if auto_turn_task is not None:
                 wait_tasks.append(auto_turn_task)
+
+            if interrupt_task is not None:
+                wait_tasks.append(interrupt_task)
 
             done, _pending = await asyncio.wait(
                 wait_tasks,
@@ -1403,6 +1418,7 @@ async def voice_websocket(
                 for task in (
                     receive_task,
                     auto_turn_task,
+                    interrupt_task,
                 ):
                     if task is not None and not task.done():
                         task.cancel()
@@ -1410,6 +1426,7 @@ async def voice_websocket(
                 for task in (
                     receive_task,
                     auto_turn_task,
+                    interrupt_task,
                 ):
                     if task is not None:
                         try:
@@ -1443,6 +1460,88 @@ async def voice_websocket(
                 )
                 return
 
+            interrupt_triggered = (
+                interrupt_task is not None
+                and interrupt_task in done
+            )
+
+            if interrupt_triggered:
+                interrupt_event = interrupt_task.result()
+
+                if (
+                    session.active_turn is not None
+                    and interrupt_monitor_turn_id is not None
+                    and interrupt_event.get("turn_id")
+                    == interrupt_monitor_turn_id
+                    and assistant_turn_id is not None
+                ):
+                    if auto_turn_task is not None and not auto_turn_task.done():
+                        auto_turn_task.cancel()
+                        try:
+                            await auto_turn_task
+                        except asyncio.CancelledError:
+                            pass
+
+                    had_active_audio = (
+                        tts_task is not None
+                        and not tts_task.done()
+                    )
+
+                    previous_tts_task = tts_task
+                    previous_execution_task = (
+                        assistant_execution_task
+                    )
+                    previous_response_bridge = (
+                        assistant_response_bridge
+                    )
+                    previous_response_turn_id = assistant_turn_id
+
+                    tts_task = None
+                    assistant_execution_task = None
+                    session_service.invalidate_response(
+                        session
+                    )
+
+                    assistant_response_bridge = None
+                    assistant_turn_id = None
+                    assistant_response_generation = None
+                    interrupt_monitor_turn_id = None
+
+                    await _cancel_voice_response(
+                        assistant_execution_task=(
+                            previous_execution_task
+                        ),
+                        tts_task=previous_tts_task,
+                        response_bridge=previous_response_bridge,
+                    )
+
+                    if previous_response_turn_id is not None:
+                        await _send_websocket_json(websocket,
+                            {
+                                "type": "assistant.response.cancelled",
+                                "turn_id": previous_response_turn_id,
+                            }
+                        )
+
+                    if had_active_audio:
+                        await _send_websocket_json(websocket,
+                            {
+                                "type": "assistant.audio.cancelled",
+                            }
+                        )
+
+                    event = {
+                        "type": "turn.started",
+                        "turn_id": session.active_turn.turn_id,
+                        "started_at": session.active_turn.started_at.isoformat(),
+                        "interrupted": True,
+                    }
+                    current_turn_started_monotonic = time.monotonic()
+                    await _send_websocket_json(websocket, event)
+
+                else:
+                    interrupt_monitor_turn_id = None
+
             if receive_task in done:
                 message = receive_task.result()
 
@@ -1462,7 +1561,7 @@ async def voice_websocket(
                             await auto_turn_task
                         except asyncio.CancelledError:
                             pass
-            else:
+            elif not interrupt_triggered:
                 auto_turn_event = auto_turn_task.result()
 
                 if (
@@ -1481,6 +1580,8 @@ async def voice_websocket(
                         }
                     ),
                 }
+            else:
+                continue
 
             if (
                 receive_task not in done
