@@ -443,6 +443,7 @@ class FakeVoiceSTTOrchestrator:
         self.audio_send_count = 0
         self.final_text = "hello world"
         self.emit_speech_started_on_second_audio = False
+        self.emit_speech_started = False
         self.emit_end_of_speech = False
         self.emit_utterance_end = False
         self.emit_error = False
@@ -469,6 +470,19 @@ class FakeVoiceSTTOrchestrator:
     ):
         self.audio_frames.append(frame)
         self.audio_send_count += 1
+
+        if self.emit_speech_started:
+            self.emit_speech_started = False
+            await self.events_queue.put(
+                {
+                    "type": "speech.started",
+                    "stream_id": "fake-stt-stream-1",
+                    "turn_id": self.turn_id,
+                    "sequence": 4,
+                    "timestamp_seconds": 2.0,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }
+            )
 
         if (
             self.emit_speech_started_on_second_audio
@@ -1522,6 +1536,111 @@ def test_voice_websocket_keeps_conversation_for_follow_up_turn(
     assert len(core_service.calls) == 2
     assert core_service.calls[0]["conversation_id"] == 42
     assert core_service.calls[1]["conversation_id"] == 42
+
+
+def test_voice_websocket_hands_free_barge_in_cancels_response(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+                "interrupt_response": False,
+            }
+        )
+
+        armed = websocket.receive_json()
+        assert armed["type"] == "turn.started"
+        assert armed["turn_id"] == "turn-2"
+
+        fake_stt = FakeVoiceSTTOrchestrator.instances[0]
+        fake_stt.emit_speech_started = True
+
+        websocket.send_bytes(b"interrupting")
+
+        cancelled_response = None
+        cancelled_audio = None
+
+        while (
+            cancelled_response is None
+            or cancelled_audio is None
+        ):
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+
+            if payload["type"] == "assistant.response.cancelled":
+                cancelled_response = payload
+            elif payload["type"] == "assistant.audio.cancelled":
+                cancelled_audio = payload
+            elif payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert cancelled_response == {
+            "type": "assistant.response.cancelled",
+            "turn_id": "turn-1",
+        }
+        assert cancelled_audio == {
+            "type": "assistant.audio.cancelled",
+        }
+        assert core_service.calls[0]["message"] == "hello world"
+
+        websocket.send_json(
+            {
+                "type": "turn.cancel",
+                "turn_id": "turn-2",
+            }
+        )
 
 
 def test_voice_websocket_barge_in_cancels_previous_response_and_accepts_new_turn(

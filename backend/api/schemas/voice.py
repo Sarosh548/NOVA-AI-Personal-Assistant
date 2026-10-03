@@ -37,6 +37,7 @@ class VoiceControlMessage(BaseModel):
     turn_id: str | None = None
     access_token: str | None = None
     audio_format: VoiceAudioFormat | None = None
+    interrupt_response: bool = True
 
     model_config = ConfigDict(
         extra="forbid",
