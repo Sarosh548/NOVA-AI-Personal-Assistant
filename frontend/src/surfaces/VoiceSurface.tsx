@@ -196,6 +196,8 @@ export function VoiceSurface({
   const playbackGenerationRef = useRef(0)
   const autoListenTimerRef = useRef<number | null>(null)
   const turnIdRef = useRef<string | null>(null)
+  const bargeInArmedRef = useRef(false)
+  const bargeInSpeechDetectedRef = useRef(false)
   const sessionReadyRef = useRef(false)
   const intentionalCloseRef = useRef(false)
   const reconnectingRef = useRef(false)
@@ -206,9 +208,9 @@ export function VoiceSurface({
   const assistantTurnIdRef = useRef<string | null>(null)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
-  const startTurnRef = useRef<(() => Promise<void>) | null>(null)
+  const armBargeInTurnRef = useRef<(() => Promise<void>) | null>(null)
+  const cancelArmedBargeInTurnRef = useRef<(() => void) | null>(null)
   const scheduleAutoListenRef = useRef<(() => void) | null>(null)
-
   const clearPlaybackTimer = () => {
     if (playbackTimerRef.current !== null) {
       window.clearTimeout(playbackTimerRef.current)
@@ -273,6 +275,8 @@ export function VoiceSurface({
 
   const deactivateCapture = useCallback(() => {
     turnIdRef.current = null
+    bargeInArmedRef.current = false
+    bargeInSpeechDetectedRef.current = false
     setCaptureActive(false)
   }, [setCaptureActive])
 
@@ -558,11 +562,17 @@ export function VoiceSurface({
       }
 
       if (type === "speech.started") {
+        if (bargeInArmedRef.current) {
+          bargeInSpeechDetectedRef.current = true
+        }
         setState("listening")
         return
       }
 
       if (type === "transcript.partial") {
+        if (bargeInArmedRef.current) {
+          bargeInSpeechDetectedRef.current = true
+        }
         const partialText = String(payload.text ?? "")
         setTranscript(
           mergeTranscriptText(
@@ -575,6 +585,9 @@ export function VoiceSurface({
       }
 
       if (type === "transcript.final") {
+        if (bargeInArmedRef.current) {
+          bargeInSpeechDetectedRef.current = true
+        }
         const finalText = String(payload.text ?? "")
         const completeText = mergeTranscriptText(
           confirmedTranscriptRef.current,
@@ -615,12 +628,14 @@ export function VoiceSurface({
           current === "playing" ? current : "preparing",
         )
         setState("speaking")
+        void armBargeInTurnRef.current?.()
         return
       }
 
       if (type === "assistant.audio.started") {
         setAudioState("preparing")
         setState("speaking")
+        void armBargeInTurnRef.current?.()
         return
       }
 
@@ -690,6 +705,14 @@ export function VoiceSurface({
         setProviderFinalObserved(payload.provider_final === true)
 
         assistantAudioFinalRef.current = true
+
+        if (
+          bargeInArmedRef.current
+          && !bargeInSpeechDetectedRef.current
+        ) {
+          cancelArmedBargeInTurnRef.current?.()
+        }
+
         if (playbackSourcesRef.current.size === 0) {
           setAudioState("idle")
         }
@@ -868,6 +891,8 @@ export function VoiceSurface({
     clearAutoListenTimer()
     assistantAudioFinalRef.current = false
     assistantTurnIdRef.current = null
+    bargeInArmedRef.current = false
+    bargeInSpeechDetectedRef.current = false
     stopPlayback()
     setResponse("")
     confirmedTranscriptRef.current = ""
@@ -923,6 +948,96 @@ export function VoiceSurface({
       startTurnRef.current = null
     }
   }, [startTurn])
+
+  const cancelArmedBargeInTurn = useCallback(() => {
+    if (
+      !bargeInArmedRef.current
+      || bargeInSpeechDetectedRef.current
+    ) {
+      return
+    }
+
+    const socket = socketRef.current
+    const turnId = turnIdRef.current
+
+    if (
+      socket
+      && socket.readyState === WebSocket.OPEN
+      && turnId
+    ) {
+      socket.send(
+        JSON.stringify({
+          type: "turn.cancel",
+          turn_id: turnId,
+        }),
+      )
+    }
+
+    deactivateCapture()
+  }, [deactivateCapture])
+
+  const armBargeInTurn = useCallback(async () => {
+    if (
+      !sessionReadyRef.current
+      || intentionalCloseRef.current
+      || turnIdRef.current !== null
+      || assistantTurnIdRef.current === null
+    ) {
+      return
+    }
+
+    try {
+      const worklet = await ensureAudioCapture()
+      const socket = socketRef.current
+
+      if (
+        !socket
+        || socket.readyState !== WebSocket.OPEN
+        || assistantTurnIdRef.current === null
+        || turnIdRef.current !== null
+      ) {
+        return
+      }
+
+      const turnId = requestId()
+
+      bargeInArmedRef.current = true
+      bargeInSpeechDetectedRef.current = false
+      turnIdRef.current = turnId
+
+      socket.send(
+        JSON.stringify({
+          type: "turn.start",
+          turn_id: turnId,
+          interrupt_response: false,
+          audio_format: {
+            encoding: TARGET_ENCODING,
+            sample_rate_hz: TARGET_SAMPLE_RATE,
+            channels: TARGET_CHANNELS,
+          },
+        }),
+      )
+
+      worklet.port.postMessage({ type: "set-active", active: true })
+    } catch {
+      // Barge-in is an enhancement while the current response continues.
+      // A failure to arm it must not interrupt the response itself.
+    }
+  }, [ensureAudioCapture])
+
+  useEffect(() => {
+    armBargeInTurnRef.current = armBargeInTurn
+    return () => {
+      armBargeInTurnRef.current = null
+    }
+  }, [armBargeInTurn])
+
+  useEffect(() => {
+    cancelArmedBargeInTurnRef.current = cancelArmedBargeInTurn
+    return () => {
+      cancelArmedBargeInTurnRef.current = null
+    }
+  }, [cancelArmedBargeInTurn])
 
   const scheduleAutoListen = useCallback(() => {
     clearAutoListenTimer()
