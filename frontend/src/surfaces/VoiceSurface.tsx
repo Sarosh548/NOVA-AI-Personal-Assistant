@@ -492,6 +492,11 @@ export function VoiceSurface({
                 setAudioState("idle")
 
                 if (
+                  bargeInArmedRef.current &&
+                  turnIdRef.current !== null
+                ) {
+                  setState("listening")
+                } else if (
                   assistantAudioFinalRef.current &&
                   turnIdRef.current === null &&
                   sessionReadyRef.current &&
@@ -558,6 +563,10 @@ export function VoiceSurface({
       }
 
       if (type === "turn.started") {
+        if (bargeInArmedRef.current) {
+          return
+        }
+
         setState("listening")
         return
       }
@@ -706,13 +715,6 @@ export function VoiceSurface({
         setProviderFinalObserved(payload.provider_final === true)
 
         assistantAudioFinalRef.current = true
-
-        if (
-          bargeInArmedRef.current
-          && !bargeInSpeechDetectedRef.current
-        ) {
-          cancelArmedBargeInTurnRef.current?.()
-        }
 
         if (playbackSourcesRef.current.size === 0) {
           setAudioState("idle")
