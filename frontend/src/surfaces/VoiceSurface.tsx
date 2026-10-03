@@ -208,6 +208,7 @@ export function VoiceSurface({
   const assistantTurnIdRef = useRef<string | null>(null)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
+  const startTurnRef = useRef<(() => Promise<void>) | null>(null)
   const armBargeInTurnRef = useRef<(() => Promise<void>) | null>(null)
   const cancelArmedBargeInTurnRef = useRef<(() => void) | null>(null)
   const scheduleAutoListenRef = useRef<(() => void) | null>(null)
