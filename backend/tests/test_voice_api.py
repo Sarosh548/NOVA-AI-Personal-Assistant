@@ -446,6 +446,7 @@ class FakeVoiceSTTOrchestrator:
         self.emit_speech_started = False
         self.emit_end_of_speech = False
         self.emit_utterance_end = False
+        self.emit_final_after_utterance_end = False
         self.emit_error = False
         self.instances.append(self)
 
@@ -525,17 +526,19 @@ class FakeVoiceSTTOrchestrator:
             )
 
         if self.emit_utterance_end:
-            await self.events_queue.put(
-                {
-                    "type": "transcript.final",
-                    "stream_id": "fake-stt-stream-1",
-                    "turn_id": self.turn_id,
-                    "sequence": 2,
-                    "text": self.final_text,
-                    "is_end_of_speech": False,
-                    "created_at": "2026-01-01T00:00:00+00:00",
-                }
-            )
+            if not self.emit_final_after_utterance_end:
+                await self.events_queue.put(
+                    {
+                        "type": "transcript.final",
+                        "stream_id": "fake-stt-stream-1",
+                        "turn_id": self.turn_id,
+                        "sequence": 2,
+                        "text": self.final_text,
+                        "is_end_of_speech": False,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                )
+
             await self.events_queue.put(
                 {
                     "type": "transcript.utterance_end",
@@ -546,6 +549,19 @@ class FakeVoiceSTTOrchestrator:
                     "created_at": "2026-01-01T00:00:00+00:00",
                 }
             )
+
+            if self.emit_final_after_utterance_end:
+                await self.events_queue.put(
+                    {
+                        "type": "transcript.final",
+                        "stream_id": "fake-stt-stream-1",
+                        "turn_id": self.turn_id,
+                        "sequence": 4,
+                        "text": self.final_text,
+                        "is_end_of_speech": False,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                )
 
         if self.emit_error:
             await self.events_queue.put(
@@ -2124,6 +2140,71 @@ def test_voice_websocket_auto_commits_on_utterance_end(
         assert "turn.committed" in seen_types
         assert assistant["turn_id"] == "turn-auto-utterance-end"
         assert assistant["response"] == "Sure, done."
+
+
+def test_voice_websocket_commits_when_final_arrives_after_utterance_end(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+    _patch_auto_turn_commit_grace(
+        monkeypatch,
+        0.01,
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-final-after-end",
+            }
+        )
+        websocket.receive_json()
+
+        fake_stt = FakeVoiceSTTOrchestrator.instances[0]
+        fake_stt.emit_utterance_end = True
+        fake_stt.emit_final_after_utterance_end = True
+
+        websocket.send_bytes(
+            b"input-audio",
+        )
+
+        assistant = None
+        seen_types = []
+
+        while assistant is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            seen_types.append(payload["type"])
+
+            if payload["type"] == "assistant.response":
+                assistant = payload
+
+            elif payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert "transcript.utterance_end" in seen_types
+        assert "transcript.final" in seen_types
+        assert "turn.committed" in seen_types
+        assert assistant["turn_id"] == "turn-final-after-end"
 
 
 def test_voice_websocket_keeps_turn_alive_when_user_continues(
