@@ -574,6 +574,8 @@ export function VoiceSurface({
       if (type === "speech.started") {
         if (bargeInArmedRef.current) {
           bargeInSpeechDetectedRef.current = true
+          confirmedTranscriptRef.current = ""
+          setTranscript("")
         }
         setState("listening")
         return
@@ -582,6 +584,7 @@ export function VoiceSurface({
       if (type === "transcript.partial") {
         if (bargeInArmedRef.current) {
           bargeInSpeechDetectedRef.current = true
+          confirmedTranscriptRef.current = ""
         }
         const partialText = String(payload.text ?? "")
         setTranscript(
@@ -1012,7 +1015,7 @@ export function VoiceSurface({
         JSON.stringify({
           type: "turn.start",
           turn_id: turnId,
-          interrupt_response: false,
+          interrupt_response: true,
           audio_format: {
             encoding: TARGET_ENCODING,
             sample_rate_hz: TARGET_SAMPLE_RATE,
