@@ -2288,17 +2288,10 @@ async def voice_websocket(
                     return
 
                 if session.active_turn is None:
-                    try:
-                        session_service.append_audio_frame(
-                            session=session,
-                            frame=binary_data,
-                        )
-                    except VoiceProtocolError as exc:
-                        await _send_error(
-                            websocket,
-                            code=exc.code,
-                            message=exc.message,
-                        )
+                    # Audio can arrive at the transport boundary just after a
+                    # turn is committed or cancelled. It is stale capture,
+                    # not a protocol failure, so discard it without taking
+                    # the voice session offline.
                     continue
 
                 try:

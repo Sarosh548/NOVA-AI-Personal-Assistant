@@ -28,10 +28,18 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
     this.position = 0
     this.targetRate = 16000
     this.chunkSize = 320
+    this.vadConsecutiveFrames = 0
+    this.vadTriggered = false
+    this.vadSilenceFrames = 0
+    this.vadThreshold = 0.025
 
     this.port.onmessage = (event) => {
       if (event.data && event.data.type === "set-active") {
         this.active = Boolean(event.data.active)
+        this.vadConsecutiveFrames = 0
+        this.vadSilenceFrames = 0
+        this.vadTriggered = false
+
         if (!this.active) {
           this.buffer = new Float32Array(0)
           this.position = 0
@@ -44,8 +52,41 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
     const channel = inputs[0] && inputs[0][0]
     if (!channel) return true
 
+    let energy = 0
+    for (let index = 0; index < channel.length; index += 1) {
+      const sample = channel[index]
+      energy += sample * sample
+    }
+
+    const rms = Math.sqrt(energy / Math.max(1, channel.length))
+
     if (!this.active) {
-      return true
+      if (rms >= this.vadThreshold) {
+        this.vadConsecutiveFrames += 1
+        this.vadSilenceFrames = 0
+      } else {
+        this.vadConsecutiveFrames = 0
+        this.vadSilenceFrames += 1
+      }
+
+      if (
+        !this.vadTriggered &&
+        this.vadConsecutiveFrames >= 6
+      ) {
+        this.vadTriggered = true
+        this.port.postMessage({
+          type: "vad.speech_started",
+        })
+      }
+
+      if (
+        this.vadTriggered &&
+        this.vadSilenceFrames >= 12
+      ) {
+        this.vadTriggered = false
+        this.vadConsecutiveFrames = 0
+        this.vadSilenceFrames = 0
+      }
     }
 
     const merged = new Float32Array(this.buffer.length + channel.length)
@@ -196,6 +237,9 @@ export function VoiceSurface({
   const playbackGenerationRef = useRef(0)
   const autoListenTimerRef = useRef<number | null>(null)
   const turnIdRef = useRef<string | null>(null)
+  const preRollRef = useRef<ArrayBuffer[]>([])
+  const bargeInInProgressRef = useRef(false)
+  const bargeInHandlerRef = useRef<(() => Promise<void>) | null>(null)
   const sessionReadyRef = useRef(false)
   const intentionalCloseRef = useRef(false)
   const reconnectingRef = useRef(false)
@@ -831,15 +875,30 @@ export function VoiceSurface({
     muteGain.gain.value = 0
 
     worklet.port.onmessage = (event) => {
+      if (
+        event.data &&
+        event.data.type === "vad.speech_started"
+      ) {
+        void bargeInHandlerRef.current?.()
+        return
+      }
+
+      if (!(event.data instanceof ArrayBuffer)) {
+        return
+      }
+
       const socketNow = socketRef.current
       const turnId = turnIdRef.current
 
       if (
         !turnId ||
         !socketNow ||
-        socketNow.readyState !== WebSocket.OPEN ||
-        !(event.data instanceof ArrayBuffer)
+        socketNow.readyState !== WebSocket.OPEN
       ) {
+        preRollRef.current.push(event.data)
+        if (preRollRef.current.length > 8) {
+          preRollRef.current.shift()
+        }
         return
       }
 
@@ -859,7 +918,9 @@ export function VoiceSurface({
     return worklet
   }, [ensureAudioOutput, releaseAudioCapture])
 
-  const startTurn = useCallback(async () => {
+  const startTurn = useCallback(async (
+    preservePreRoll = false,
+  ) => {
     if (!sessionReadyRef.current) {
       setError("Voice is still connecting. Try again in a moment.")
       return
@@ -873,6 +934,13 @@ export function VoiceSurface({
     confirmedTranscriptRef.current = ""
     setTranscript("")
     setError(null)
+
+    const preRollAudio = preservePreRoll
+      ? preRollRef.current.splice(0)
+      : []
+    if (!preservePreRoll) {
+      preRollRef.current = []
+    }
 
     try {
       const worklet = await ensureAudioCapture()
@@ -895,6 +963,13 @@ export function VoiceSurface({
           },
         }),
       )
+
+      for (const audio of preRollAudio) {
+        if (socket.readyState !== WebSocket.OPEN) {
+          break
+        }
+        socket.send(audio)
+      }
 
       worklet.port.postMessage({ type: "set-active", active: true })
       setState("listening")
@@ -1069,6 +1144,33 @@ export function VoiceSurface({
     setState("ready")
     return true
   }, [clearAutoListenTimer, deactivateCapture, stopPlayback])
+
+  const handleBargeIn = useCallback(async () => {
+    if (
+      bargeInInProgressRef.current ||
+      !sessionReadyRef.current ||
+      !assistantTurnIdRef.current
+    ) {
+      return
+    }
+
+    bargeInInProgressRef.current = true
+
+    try {
+      if (cancelActiveVoice()) {
+        await startTurn(true)
+      }
+    } finally {
+      bargeInInProgressRef.current = false
+    }
+  }, [cancelActiveVoice, startTurn])
+
+  useEffect(() => {
+    bargeInHandlerRef.current = handleBargeIn
+    return () => {
+      bargeInHandlerRef.current = null
+    }
+  }, [handleBargeIn])
 
   const handleVoiceButton = () => {
     if (state === "listening") {
