@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import logging
 from collections.abc import AsyncIterator
 from urllib.parse import urlencode
@@ -73,6 +74,7 @@ class DeepgramSTTStream(STTStream):
         self._finished = False
         self._cancelled = False
         self._closed = False
+        self._last_audio_sent_monotonic = time.monotonic()
 
     @property
     def stream_id(self) -> str:
@@ -120,6 +122,7 @@ class DeepgramSTTStream(STTStream):
                 await self._websocket.send(
                     frame
                 )
+                self._last_audio_sent_monotonic = time.monotonic()
             except ConnectionClosed as exc:
                 raise STTAdapterError(
                     "Deepgram STT connection closed while sending audio."
@@ -470,6 +473,38 @@ class DeepgramSTTStream(STTStream):
             created_at=utc_now(),
         )
 
+    def _silent_audio_frame(self) -> bytes | None:
+        encoding = self._request.audio_format.encoding
+
+        if encoding in {"pcm_s16le", "linear16"}:
+            samples = max(
+                1,
+                int(
+                    self._request.audio_format.sample_rate_hz
+                    * 0.02
+                ),
+            )
+            return b"\x00" * (
+                samples
+                * self._request.audio_format.channels
+                * 2
+            )
+
+        if encoding in {"mulaw", "ulaw", "alaw"}:
+            samples = max(
+                1,
+                int(
+                    self._request.audio_format.sample_rate_hz
+                    * 0.02
+                ),
+            )
+            return b"\x00" * (
+                samples
+                * self._request.audio_format.channels
+            )
+
+        return None
+
     async def _send_keepalives(self) -> None:
         try:
             while not self._cancelled and not self._closed and not self._finished:
@@ -481,6 +516,24 @@ class DeepgramSTTStream(STTStream):
                     return
 
                 async with self._send_lock:
+                    idle_seconds = (
+                        time.monotonic()
+                        - self._last_audio_sent_monotonic
+                    )
+
+                    if idle_seconds >= (
+                        self._settings
+                        .stt_keepalive_interval_seconds
+                    ):
+                        silence = self._silent_audio_frame()
+                        if silence is not None:
+                            await self._websocket.send(
+                                silence
+                            )
+                            self._last_audio_sent_monotonic = (
+                                time.monotonic()
+                            )
+
                     await self._websocket.send(
                         json.dumps(
                             {
