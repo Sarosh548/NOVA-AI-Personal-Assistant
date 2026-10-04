@@ -1521,6 +1521,7 @@ def test_voice_websocket_keeps_conversation_for_follow_up_turn(
             {
                 "type": "turn.start",
                 "turn_id": "turn-2",
+                "interrupt_response": False,
             }
         )
         websocket.receive_json()
