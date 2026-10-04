@@ -800,16 +800,9 @@ export function VoiceSurface({
           turn_id: String(payload.turn_id ?? ""),
           barge_in_armed: bargeInArmedRef.current,
         })
-        if (
-          bargeInArmedRef.current
-          && !bargeInSpeechDetectedRef.current
-        ) {
-          bargeInSpeechDetectedRef.current = true
-          confirmedTranscriptRef.current = ""
-          setTranscript("")
-          stopPlayback()
-        }
-        setState("listening")
+        // Deepgram speech detection is only an early signal. Do not interrupt
+        // playback or change the visible state until transcript.partial proves
+        // that the new turn contains recognizable speech.
         return
       }
 
@@ -1380,28 +1373,12 @@ export function VoiceSurface({
       return
     }
 
-    const socket = socketRef.current
-    const responseTurnId = assistantTurnIdRef.current
-
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return
-    }
-
-    bargeInSpeechDetectedRef.current = true
-    suppressAssistantAudioRef.current = true
-    stopPlayback()
-
     traceVoiceEvent("client.local_voice_start", {
-      response_turn_id: responseTurnId,
+      response_turn_id: assistantTurnIdRef.current,
     })
-
-    socket.send(
-      JSON.stringify({
-        type: "assistant.interrupt",
-        turn_id: responseTurnId,
-      }),
-    )
-  }, [stopPlayback])
+    // Local VAD is intentionally non-authoritative. It must never cancel or
+    // stop NOVA audio on its own because environmental sound can resemble speech.
+  }, [])
 
   useEffect(() => {
     localVoiceStartRef.current = handleLocalVoiceStart
