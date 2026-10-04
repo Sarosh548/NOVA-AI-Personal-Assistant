@@ -1003,6 +1003,8 @@ async def _relay_transcripts(
         except asyncio.QueueFull:
             pass
 
+    barge_in_partial_count = 0
+
     try:
         async for event in orchestrator.events():
             await _send_websocket_json(websocket,
@@ -1011,8 +1013,22 @@ async def _relay_transcripts(
 
             event_type = event.get("type")
 
+            if event_type == "speech.started":
+                barge_in_partial_count = 0
+
+            if event_type == "transcript.final":
+                barge_in_partial_count = 0
+
+            if event_type == "transcript.partial":
+                partial_text = str(event.get("text") or "").strip()
+                if partial_text:
+                    barge_in_partial_count += 1
+                else:
+                    barge_in_partial_count = 0
+
             if (
                 event_type == "transcript.partial"
+                and barge_in_partial_count >= 2
                 and barge_in_events is not None
                 and (
                     barge_in_enabled is None
