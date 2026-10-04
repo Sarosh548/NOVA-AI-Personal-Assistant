@@ -18,6 +18,7 @@ type MicrophonePermission = "unknown" | "prompt" | "granted" | "denied"
 const TARGET_SAMPLE_RATE = 16_000
 const TARGET_CHANNELS = 1
 const TARGET_ENCODING = "pcm_s16le"
+const VOICE_AUDIO_START_TIMEOUT_MS = 6_000
 
 
 const PCM_WORKLET_SOURCE = `
@@ -258,6 +259,8 @@ export function VoiceSurface({
   const browserSpeechFallbackPendingRef = useRef(false)
   const browserSpeechGenerationRef = useRef(0)
   const sttRecoveryAttemptsRef = useRef(0)
+  const audioRecoveryTimerRef = useRef<number | null>(null)
+  const assistantAudioStartedRef = useRef(false)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
   const startTurnRef = useRef<(() => Promise<void>) | null>(null)
@@ -278,7 +281,15 @@ export function VoiceSurface({
     }
   }, [])
 
+  const clearAudioRecoveryTimer = useCallback(() => {
+    if (audioRecoveryTimerRef.current !== null) {
+      window.clearTimeout(audioRecoveryTimerRef.current)
+      audioRecoveryTimerRef.current = null
+    }
+  }, [])
+
   const stopPlayback = useCallback(() => {
+    clearAudioRecoveryTimer()
     clearPlaybackTimer()
     clearAutoListenTimer()
     playbackGenerationRef.current += 1
@@ -294,7 +305,7 @@ export function VoiceSurface({
     playbackEndTimeRef.current = 0
     assistantAudioFinalRef.current = false
     setAudioState("idle")
-  }, [clearAutoListenTimer])
+  }, [clearAudioRecoveryTimer, clearAutoListenTimer])
 
   const ensureAudioOutput = useCallback(async () => {
     const audioContext = audioContextRef.current ?? new AudioContext()
@@ -379,6 +390,7 @@ export function VoiceSurface({
 
       browserSpeechFallbackPendingRef.current = false
       clearAutoListenTimer()
+      clearAudioRecoveryTimer()
       releaseAudioCapture()
       stopPlayback()
 
@@ -402,6 +414,8 @@ export function VoiceSurface({
       }
 
       stopBrowserSpeech()
+      setAudioState("preparing")
+      setState("speaking")
 
       const speechGeneration =
         browserSpeechGenerationRef.current
@@ -486,6 +500,7 @@ export function VoiceSurface({
       window.speechSynthesis.speak(utterance)
     },
     [
+      clearAudioRecoveryTimer,
       clearAutoListenTimer,
       releaseAudioCapture,
       stopBrowserSpeech,
@@ -532,6 +547,7 @@ export function VoiceSurface({
     reconnectAttemptRef.current = 0
     stopBrowserSpeech()
     browserSpeechFallbackPendingRef.current = false
+    clearAudioRecoveryTimer()
     sttRecoveryAttemptsRef.current = 0
     assistantResponseRef.current = ""
     assistantTurnIdRef.current = null
@@ -554,6 +570,7 @@ export function VoiceSurface({
       socket.close()
     }
   }, [
+    clearAudioRecoveryTimer,
     clearAutoListenTimer,
     releaseAudioCapture,
     stopPlayback,
@@ -868,6 +885,8 @@ export function VoiceSurface({
 
         const responseText = String(payload.response ?? "")
         assistantResponseRef.current = responseText
+        assistantAudioStartedRef.current = false
+        clearAudioRecoveryTimer()
 
         suppressAssistantAudioRef.current = false
         assistantTurnIdRef.current = String(payload.turn_id ?? "") || null
@@ -883,10 +902,40 @@ export function VoiceSurface({
         )
         setState("speaking")
         void armBargeInTurnRef.current?.()
+
+        audioRecoveryTimerRef.current = window.setTimeout(() => {
+          audioRecoveryTimerRef.current = null
+
+          if (
+            assistantAudioStartedRef.current
+            || browserSpeechActiveRef.current
+            || browserSpeechFallbackPendingRef.current
+            || assistantTurnIdRef.current !== String(payload.turn_id ?? "")
+            || intentionalCloseRef.current
+            || !sessionReadyRef.current
+          ) {
+            return
+          }
+
+          const fallbackText = assistantResponseRef.current.trim()
+          if (!fallbackText) {
+            setAudioState("idle")
+            setState("ready")
+            return
+          }
+
+          traceVoiceEvent("client.audio_fallback_watchdog", {
+            turn_id: String(payload.turn_id ?? ""),
+          })
+          browserSpeechFallbackPendingRef.current = true
+          void speakBrowserFallback(fallbackText)
+        }, VOICE_AUDIO_START_TIMEOUT_MS)
         return
       }
 
       if (type === "assistant.audio.started") {
+        clearAudioRecoveryTimer()
+        assistantAudioStartedRef.current = true
         traceVoiceEvent("server.assistant.audio.started", {
           turn_id: String(payload.turn_id ?? ""),
         })
@@ -913,6 +962,8 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response.cancelled") {
+        clearAudioRecoveryTimer()
+        assistantAudioStartedRef.current = false
         traceVoiceEvent("server.assistant.response.cancelled", {
           turn_id: String(payload.turn_id ?? ""),
         })
@@ -931,6 +982,8 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.cancelled") {
+        clearAudioRecoveryTimer()
+        assistantAudioStartedRef.current = false
         traceVoiceEvent("server.assistant.audio.cancelled")
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
@@ -944,6 +997,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.final") {
+        clearAudioRecoveryTimer()
         await playbackEventChainRef.current
         const serverChunkCount = Number(payload.audio_chunk_count)
         const serverByteCount = Number(payload.audio_byte_count)
@@ -1020,9 +1074,11 @@ export function VoiceSurface({
           && code === "assistant_audio_failed"
         ) {
           clearAutoListenTimer()
+          clearAudioRecoveryTimer()
           assistantAudioFinalRef.current = false
           browserSpeechFallbackPendingRef.current = true
-          setAudioState("idle")
+          setAudioState("preparing")
+          setState("speaking")
           stopPlayback()
           releaseAudioCapture()
           setState("thinking")
@@ -1585,6 +1641,7 @@ export function VoiceSurface({
     setState("ready")
     return true
   }, [
+    clearAudioRecoveryTimer,
     clearAutoListenTimer,
     deactivateCapture,
     stopBrowserSpeech,
