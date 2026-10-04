@@ -331,6 +331,26 @@ async def test_stream_sends_keepalive_during_silent_gap():
 
 
 @pytest.mark.asyncio
+async def test_stream_sends_silent_audio_heartbeat_when_input_is_idle():
+    websocket = FakeDeepgramWebSocket()
+
+    stream = DeepgramSTTStream(
+        websocket=websocket,
+        request=_request(),
+        settings=_settings(
+            stt_keepalive_interval_seconds=0.01
+        ),
+    )
+
+    await asyncio.sleep(0.05)
+
+    assert '{"type": "KeepAlive"}' in websocket.sent
+    assert b"\x00" * 640 in websocket.sent
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
 async def test_stream_sends_binary_audio():
     websocket = FakeDeepgramWebSocket()
 
