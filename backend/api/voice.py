@@ -2499,8 +2499,8 @@ async def voice_websocket(
                             event="interruption_audio_received",
                             session_id=session.session_id,
                             turn_id=session.active_turn.turn_id,
-                            response_turn_id=assistant_turn_id,
-                            audio_bytes=len(binary_data),
+                            provider="browser",
+                            code="assistant_response_active",
                         )
                         previous_tts_task = tts_task
                         previous_execution_task = assistant_execution_task
