@@ -1714,12 +1714,7 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
             }
         )
 
-        # The previous response may already have a queued cancellation event.
-        # Drain until the new turn-start acknowledgement arrives.
-        while True:
-            event = websocket.receive_json()
-            if event["type"] == "turn.started":
-                break
+        assert websocket.receive_json()["type"] == "turn.started"
 
         websocket.send_bytes(b"interrupting")
         partial = websocket.receive_json()
