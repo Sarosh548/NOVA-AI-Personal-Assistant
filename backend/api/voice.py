@@ -1012,10 +1012,7 @@ async def _relay_transcripts(
             event_type = event.get("type")
 
             if (
-                event_type in {
-                    "speech.started",
-                    "transcript.partial",
-                }
+                event_type == "transcript.partial"
                 and barge_in_events is not None
                 and (
                     barge_in_enabled is None
