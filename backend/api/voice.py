@@ -2485,6 +2485,63 @@ async def voice_websocket(
                     continue
 
                 try:
+                    # The browser can deliver the first PCM frame of a
+                    # hands-free interruption before Deepgram emits
+                    # speech.started/transcript.partial. When a new active
+                    # turn is receiving audio while NOVA still has an active
+                    # response, cancel that response immediately instead of
+                    # waiting for provider VAD.
+                    if assistant_turn_id is not None:
+                        previous_tts_task = tts_task
+                        previous_execution_task = assistant_execution_task
+                        previous_response_bridge = assistant_response_bridge
+                        previous_response_turn_id = assistant_turn_id
+                        had_active_audio = (
+                            previous_tts_task is not None
+                            and not previous_tts_task.done()
+                        )
+                        had_active_response = (
+                            (
+                                previous_tts_task is not None
+                                and not previous_tts_task.done()
+                            )
+                            or (
+                                previous_execution_task is not None
+                                and not previous_execution_task.done()
+                            )
+                            or previous_response_bridge is not None
+                        )
+
+                        if had_active_response:
+                            tts_task = None
+                            assistant_execution_task = None
+                            assistant_response_bridge = None
+                            assistant_turn_id = None
+                            assistant_response_generation = None
+                            session_service.invalidate_response(session)
+
+                            await _cancel_voice_response(
+                                assistant_execution_task=(
+                                    previous_execution_task
+                                ),
+                                tts_task=previous_tts_task,
+                                response_bridge=previous_response_bridge,
+                            )
+
+                            await _send_websocket_json(websocket,
+                                {
+                                    "type": "assistant.response.cancelled",
+                                    "turn_id": previous_response_turn_id,
+                                }
+                            )
+
+                            if had_active_audio:
+                                await _send_websocket_json(websocket,
+                                    {
+                                        "type": "assistant.audio.cancelled",
+                                    }
+                                )
+
                     session_service.append_audio_frame(
                         session=session,
                         frame=binary_data,
