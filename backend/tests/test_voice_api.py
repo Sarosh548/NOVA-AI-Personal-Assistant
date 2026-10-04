@@ -1712,6 +1712,7 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
             {
                 "type": "turn.start",
                 "turn_id": "turn-2",
+                "interrupt_response": False,
             }
         )
 
