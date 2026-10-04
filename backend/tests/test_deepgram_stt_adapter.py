@@ -85,6 +85,7 @@ def _settings(
         "stt_connect_retry_backoff_seconds": 0.01,
         "stt_ping_interval_seconds": 20.0,
         "stt_ping_timeout_seconds": 20.0,
+        "stt_keepalive_interval_seconds": 0.01,
         "stt_close_timeout_seconds": 5.0,
         "stt_provider_max_message_bytes": 1_048_576,
         "stt_provider_max_queue_items": 16,
@@ -305,6 +306,31 @@ async def test_pcm_s16le_encoding_is_mapped_to_deepgram_linear16(
 
 
 @pytest.mark.asyncio
+async def test_stream_sends_keepalive_during_silent_gap():
+    websocket = FakeDeepgramWebSocket()
+
+    stream = DeepgramSTTStream(
+        websocket=websocket,
+        request=_request(),
+        settings=_settings(
+            stt_keepalive_interval_seconds=0.01
+        ),
+    )
+
+    await asyncio.sleep(0.03)
+
+    keepalive_messages = [
+        payload
+        for payload in websocket.sent
+        if payload == '{"type": "KeepAlive"}'
+    ]
+
+    assert keepalive_messages
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
 async def test_stream_sends_binary_audio():
     websocket = FakeDeepgramWebSocket()
 
@@ -320,6 +346,31 @@ async def test_stream_sends_binary_audio():
 
     assert websocket.sent == [
         b"audio"
+    ]
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_stops_keepalive_after_finish():
+    websocket = FakeDeepgramWebSocket()
+
+    stream = DeepgramSTTStream(
+        websocket=websocket,
+        request=_request(),
+        settings=_settings(
+            stt_keepalive_interval_seconds=0.01
+        ),
+    )
+
+    await asyncio.sleep(0.02)
+    before_finish = list(websocket.sent)
+
+    await stream.finish()
+    await asyncio.sleep(0.03)
+
+    assert websocket.sent == before_finish + [
+        '{"type": "Finalize"}'
     ]
 
     await stream.close()
