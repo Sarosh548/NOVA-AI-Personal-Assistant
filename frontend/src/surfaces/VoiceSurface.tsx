@@ -257,6 +257,7 @@ export function VoiceSurface({
   const browserSpeechActiveRef = useRef(false)
   const browserSpeechFallbackPendingRef = useRef(false)
   const browserSpeechGenerationRef = useRef(0)
+  const sttRecoveryAttemptsRef = useRef(0)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
   const startTurnRef = useRef<(() => Promise<void>) | null>(null)
@@ -531,6 +532,7 @@ export function VoiceSurface({
     reconnectAttemptRef.current = 0
     stopBrowserSpeech()
     browserSpeechFallbackPendingRef.current = false
+    sttRecoveryAttemptsRef.current = 0
     assistantResponseRef.current = ""
     assistantTurnIdRef.current = null
     clearAutoListenTimer()
@@ -747,6 +749,7 @@ export function VoiceSurface({
 
       if (type === "session.ready") {
         traceVoiceEvent("server.session.ready")
+        sttRecoveryAttemptsRef.current = 0
         sessionReadyRef.current = true
         reconnectAttemptRef.current = 0
         authRecoveryAttemptedRef.current = false
@@ -794,6 +797,7 @@ export function VoiceSurface({
       }
 
       if (type === "transcript.partial") {
+        sttRecoveryAttemptsRef.current = 0
         traceVoiceEvent("server.transcript.partial", {
           turn_id: String(payload.turn_id ?? ""),
           text: String(payload.text ?? ""),
@@ -817,6 +821,7 @@ export function VoiceSurface({
       }
 
       if (type === "transcript.final") {
+        sttRecoveryAttemptsRef.current = 0
         if (bargeInArmedRef.current) {
           bargeInSpeechDetectedRef.current = true
         }
@@ -1021,13 +1026,48 @@ export function VoiceSurface({
           stopPlayback()
           releaseAudioCapture()
           setState("thinking")
-          setError(
-            "NOVA voice audio is temporarily unavailable. Continuing with local audio.",
-          )
+          setError(null)
 
           const fallbackText = assistantResponseRef.current.trim()
           if (fallbackText) {
             void speakBrowserFallback(fallbackText)
+          }
+
+          return
+        }
+
+        if (
+          recoverable
+          && code === "stt_error"
+        ) {
+          const attempt = sttRecoveryAttemptsRef.current + 1
+          sttRecoveryAttemptsRef.current = attempt
+
+          stopBrowserSpeech()
+          browserSpeechFallbackPendingRef.current = false
+          clearAutoListenTimer()
+          assistantAudioFinalRef.current = false
+          setAudioState("idle")
+          releaseAudioCapture()
+
+          if (attempt <= 2) {
+            setError(null)
+            setState("reconnecting")
+
+            const delay = attempt === 1 ? 250 : 750
+            window.setTimeout(() => {
+              if (
+                intentionalCloseRef.current
+                || !sessionReadyRef.current
+              ) {
+                return
+              }
+
+              void startTurnRef.current?.()
+            }, delay)
+          } else {
+            setState("ready")
+            setError("Voice listening needs a quick restart. Tap Talk to NOVA once.")
           }
 
           return
@@ -1042,8 +1082,7 @@ export function VoiceSurface({
 
         if (
           recoverable &&
-          (code === "stt_error" ||
-            code === "assistant_execution_failed")
+          code === "assistant_execution_failed"
         ) {
           setState("ready")
         } else {
