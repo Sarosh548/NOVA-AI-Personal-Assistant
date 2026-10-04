@@ -433,6 +433,14 @@ class STTProviderSettings(BaseSettings):
         le=300,
     )
 
+    # Deepgram closes idle streaming connections when no client frame arrives.
+    # Keep the stream alive during natural listening gaps.
+    stt_keepalive_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=30,
+    )
+
     stt_close_timeout_seconds: float = Field(
         default=10.0,
         gt=0,
