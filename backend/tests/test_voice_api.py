@@ -1661,6 +1661,136 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
         )
 
 
+def test_voice_websocket_explicit_interrupt_preserves_active_user_turn(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+                "interrupt_response": False,
+            }
+        )
+
+        armed = websocket.receive_json()
+        assert armed["type"] == "turn.started"
+        assert armed["turn_id"] == "turn-2"
+
+        websocket.send_json(
+            {
+                "type": "assistant.interrupt",
+                "turn_id": "turn-1",
+            }
+        )
+
+        cancelled = {}
+        while (
+            "assistant.response.cancelled" not in cancelled
+            or "assistant.audio.cancelled" not in cancelled
+        ):
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            cancelled[payload["type"]] = payload
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert cancelled["assistant.response.cancelled"] == {
+            "type": "assistant.response.cancelled",
+            "turn_id": "turn-1",
+        }
+        assert cancelled["assistant.audio.cancelled"] == {
+            "type": "assistant.audio.cancelled",
+        }
+
+        websocket.send_bytes(b"interrupting")
+
+        partial = None
+        while partial is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            if payload["type"] == "transcript.partial":
+                partial = payload
+
+        assert partial["turn_id"] == "turn-2"
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-2",
+            }
+        )
+
+        committed = None
+        while committed is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            if payload["type"] == "turn.committed":
+                committed = payload
+
+        assert committed["turn_id"] == "turn-2"
+
+        core_service.release_first_execution.set()
+
+
 def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_together(
     monkeypatch,
 ):
