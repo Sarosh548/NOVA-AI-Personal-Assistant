@@ -1718,13 +1718,10 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
 
         assert websocket.receive_json()["type"] == "turn.started"
 
+        # Send interruption audio and commit back-to-back. The first PCM
+        # frame must cancel the active response immediately, while the
+        # already-arrived commit must still be preserved.
         websocket.send_bytes(b"interrupting")
-        partial = websocket.receive_json()
-        assert partial["type"] == "transcript.partial"
-
-        # Commit immediately after the interruption transcript. The server
-        # may have the barge-in signal and the control message ready in the
-        # same event-loop cycle; the commit must not be dropped.
         websocket.send_json(
             {
                 "type": "turn.commit",
@@ -1739,7 +1736,7 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
         )
 
         seen = set()
-        for _ in range(12):
+        for _ in range(16):
             message = websocket.receive()
 
             if message.get("bytes") is not None:
@@ -1765,6 +1762,7 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
 
         assert "assistant.response.cancelled" in seen
         assert "assistant.audio.cancelled" in seen
+        assert "transcript.partial" in seen
         assert "turn.committed" in seen
         assert "assistant.response" in seen
 
