@@ -1722,6 +1722,74 @@ async def voice_websocket(
                     )
                     continue
 
+                if control.type == "assistant.interrupt":
+                    response_turn_id = assistant_turn_id
+
+                    if (
+                        response_turn_id is None
+                        or control.turn_id != response_turn_id
+                    ):
+                        continue
+
+                    previous_tts_task = tts_task
+                    previous_execution_task = assistant_execution_task
+                    previous_response_bridge = assistant_response_bridge
+                    had_active_audio = (
+                        previous_tts_task is not None
+                        and not previous_tts_task.done()
+                    )
+                    had_active_response = (
+                        (
+                            previous_tts_task is not None
+                            and not previous_tts_task.done()
+                        )
+                        or (
+                            previous_execution_task is not None
+                            and not previous_execution_task.done()
+                        )
+                        or previous_response_bridge is not None
+                    )
+
+                    if not had_active_response:
+                        continue
+
+                    tts_task = None
+                    assistant_execution_task = None
+                    assistant_response_bridge = None
+                    assistant_turn_id = None
+                    assistant_response_generation = None
+                    session_service.invalidate_response(session)
+
+                    await _cancel_voice_response(
+                        assistant_execution_task=previous_execution_task,
+                        tts_task=previous_tts_task,
+                        response_bridge=previous_response_bridge,
+                    )
+
+                    log_voice_event(
+                        event="assistant_response_interrupted",
+                        session_id=session.session_id,
+                        turn_id=response_turn_id,
+                    )
+
+                    await _send_websocket_json(
+                        websocket,
+                        {
+                            "type": "assistant.response.cancelled",
+                            "turn_id": response_turn_id,
+                        },
+                    )
+
+                    if had_active_audio:
+                        await _send_websocket_json(
+                            websocket,
+                            {
+                                "type": "assistant.audio.cancelled",
+                            },
+                        )
+
+                    continue
+
                 if (
                     control.audio_format is not None
                     and control.type != "turn.start"
