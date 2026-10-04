@@ -1861,6 +1861,16 @@ async def voice_websocket(
                                 "A voice turn is already active.",
                             )
 
+                        # A prior turn can leave a stale STT barge-in signal
+                        # queued if transcript delivery and response startup
+                        # overlap. A valid new turn must never inherit that
+                        # signal.
+                        while True:
+                            try:
+                                barge_in_events.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+
                         event = session_service.start_turn(
                             session=session,
                             turn_id=control.turn_id,
