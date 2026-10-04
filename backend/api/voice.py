@@ -2037,6 +2037,11 @@ async def voice_websocket(
                                 turn_id,
                             )
                         )
+                        # Publish the active response turn before any TTS
+                        # startup/event can reach the browser. This closes the
+                        # timing window where interruption audio could arrive
+                        # before assistant_turn_id was set.
+                        assistant_turn_id = turn_id
 
                         if conversation_execution_service is None:
                             voice_metrics.record_error(
@@ -2240,8 +2245,6 @@ async def voice_websocket(
                                 )
                             )
                         )
-                        assistant_turn_id = turn_id
-
                         continue
 
                     if control.type == "turn.cancel":
@@ -2492,6 +2495,13 @@ async def voice_websocket(
                     # response, cancel that response immediately instead of
                     # waiting for provider VAD.
                     if assistant_turn_id is not None:
+                        log_voice_event(
+                            event="interruption_audio_received",
+                            session_id=session.session_id,
+                            turn_id=session.active_turn.turn_id,
+                            response_turn_id=assistant_turn_id,
+                            audio_bytes=len(binary_data),
+                        )
                         previous_tts_task = tts_task
                         previous_execution_task = assistant_execution_task
                         previous_response_bridge = assistant_response_bridge
