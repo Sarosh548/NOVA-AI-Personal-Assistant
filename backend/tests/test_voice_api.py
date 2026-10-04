@@ -2752,6 +2752,7 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
         fake_tts = FakeVoiceTTSOrchestrator.instances[0]
 
         error_message = None
+        assistant_response = None
         while error_message is None:
             message = websocket.receive()
 
@@ -2769,11 +2770,16 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
                 continue
 
             if payload["type"] == "assistant.response":
+                assistant_response = payload
                 continue
+
+        assert assistant_response is not None
+        assert assistant_response["turn_id"] == "turn-tts-failure"
+        assert assistant_response["response"]
 
         assert error_message["code"] == "assistant_audio_failed"
         assert error_message["recoverable"] is True
-        assert error_message["recovery_action"] == "start_new_turn"
+        assert error_message["recovery_action"] == "fallback_to_local_audio"
 
         websocket.send_json(
             {
