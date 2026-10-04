@@ -253,6 +253,10 @@ export function VoiceSurface({
   const authRecoveryAttemptedRef = useRef(false)
   const assistantAudioFinalRef = useRef(false)
   const assistantTurnIdRef = useRef<string | null>(null)
+  const assistantResponseRef = useRef("")
+  const browserSpeechActiveRef = useRef(false)
+  const browserSpeechFallbackPendingRef = useRef(false)
+  const browserSpeechGenerationRef = useRef(0)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
   const startTurnRef = useRef<(() => Promise<void>) | null>(null)
@@ -359,6 +363,135 @@ export function VoiceSurface({
     }
   }, [deactivateCapture])
 
+  const stopBrowserSpeech = useCallback(() => {
+    browserSpeechGenerationRef.current += 1
+    browserSpeechActiveRef.current = false
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel()
+    }
+  }, [])
+
+  const speakBrowserFallback = useCallback(
+    (text: string) => {
+      const normalizedText = text.trim()
+
+      browserSpeechFallbackPendingRef.current = false
+      clearAutoListenTimer()
+      releaseAudioCapture()
+      stopPlayback()
+
+      if (!normalizedText) {
+        setAudioState("idle")
+        setState("ready")
+        return
+      }
+
+      if (
+        typeof window === "undefined"
+        || !("speechSynthesis" in window)
+        || !("SpeechSynthesisUtterance" in window)
+      ) {
+        setAudioState("idle")
+        setState("ready")
+        setError(
+          "NOVA voice audio is temporarily unavailable. Please try again.",
+        )
+        return
+      }
+
+      stopBrowserSpeech()
+
+      const speechGeneration =
+        browserSpeechGenerationRef.current
+
+      const utterance = new SpeechSynthesisUtterance(
+        normalizedText,
+      )
+
+      const voices = window.speechSynthesis.getVoices()
+      const preferredVoice =
+        voices.find((voice) =>
+          voice.lang.toLowerCase().startsWith("en")
+          && /samantha|aria|jenny|zira|susan|libby|female/i.test(
+            voice.name,
+          ),
+        )
+        ?? voices.find((voice) =>
+          voice.lang.toLowerCase().startsWith("en"),
+        )
+        ?? voices[0]
+
+      if (preferredVoice) {
+        utterance.voice = preferredVoice
+      }
+
+      utterance.rate = 1
+      utterance.pitch = 1
+
+      utterance.onstart = () => {
+        if (
+          browserSpeechGenerationRef.current !== speechGeneration
+        ) {
+          return
+        }
+
+        browserSpeechActiveRef.current = true
+        setAudioState("playing")
+        setState("speaking")
+      }
+
+      utterance.onend = () => {
+        if (
+          browserSpeechGenerationRef.current !== speechGeneration
+        ) {
+          return
+        }
+
+        browserSpeechActiveRef.current = false
+        setAudioState("idle")
+        setState("ready")
+        setError(null)
+
+        window.setTimeout(() => {
+          if (
+            browserSpeechGenerationRef.current !== speechGeneration
+            || intentionalCloseRef.current
+            || !sessionReadyRef.current
+          ) {
+            return
+          }
+
+          void startTurnRef.current?.()
+        }, 120)
+      }
+
+      utterance.onerror = () => {
+        if (
+          browserSpeechGenerationRef.current !== speechGeneration
+        ) {
+          return
+        }
+
+        browserSpeechActiveRef.current = false
+        setAudioState("idle")
+        setState("ready")
+        setError(
+          "NOVA could not play the local voice fallback. Try again.",
+        )
+      }
+
+      browserSpeechActiveRef.current = true
+      window.speechSynthesis.speak(utterance)
+    },
+    [
+      clearAutoListenTimer,
+      releaseAudioCapture,
+      stopBrowserSpeech,
+      stopPlayback,
+    ],
+  )
+
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       window.clearTimeout(reconnectTimerRef.current)
@@ -396,6 +529,9 @@ export function VoiceSurface({
     reconnectingRef.current = false
     intentionalCloseRef.current = true
     reconnectAttemptRef.current = 0
+    stopBrowserSpeech()
+    browserSpeechFallbackPendingRef.current = false
+    assistantResponseRef.current = ""
     assistantTurnIdRef.current = null
     clearAutoListenTimer()
     releaseAudioCapture()
@@ -724,9 +860,19 @@ export function VoiceSurface({
         traceVoiceEvent("server.assistant.response", {
           turn_id: String(payload.turn_id ?? ""),
         })
+
+        const responseText = String(payload.response ?? "")
+        assistantResponseRef.current = responseText
+
         suppressAssistantAudioRef.current = false
         assistantTurnIdRef.current = String(payload.turn_id ?? "") || null
-        setResponse(String(payload.response ?? ""))
+        setResponse(responseText)
+
+        if (browserSpeechFallbackPendingRef.current) {
+          void speakBrowserFallback(responseText)
+          return
+        }
+
         setAudioState((current) =>
           current === "playing" ? current : "preparing",
         )
@@ -864,6 +1010,31 @@ export function VoiceSurface({
           }
         }
 
+        if (
+          recoverable
+          && code === "assistant_audio_failed"
+        ) {
+          clearAutoListenTimer()
+          assistantAudioFinalRef.current = false
+          browserSpeechFallbackPendingRef.current = true
+          setAudioState("idle")
+          stopPlayback()
+          releaseAudioCapture()
+          setState("thinking")
+          setError(
+            "NOVA voice audio is temporarily unavailable. Continuing with local audio.",
+          )
+
+          const fallbackText = assistantResponseRef.current.trim()
+          if (fallbackText) {
+            void speakBrowserFallback(fallbackText)
+          }
+
+          return
+        }
+
+        stopBrowserSpeech()
+        browserSpeechFallbackPendingRef.current = false
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
         setAudioState("idle")
@@ -871,8 +1042,7 @@ export function VoiceSurface({
 
         if (
           recoverable &&
-          (code === "assistant_audio_failed" ||
-            code === "stt_error" ||
+          (code === "stt_error" ||
             code === "assistant_execution_failed")
         ) {
           setState("ready")
@@ -1014,6 +1184,9 @@ export function VoiceSurface({
     }
 
     clearAutoListenTimer()
+    stopBrowserSpeech()
+    browserSpeechFallbackPendingRef.current = false
+    assistantResponseRef.current = ""
     assistantAudioFinalRef.current = false
     assistantTurnIdRef.current = null
     bargeInArmedRef.current = false
@@ -1065,6 +1238,7 @@ export function VoiceSurface({
     ensureAudioCapture,
     clearAutoListenTimer,
     deactivateCapture,
+    stopBrowserSpeech,
     stopPlayback,
   ])
 
@@ -1334,10 +1508,25 @@ export function VoiceSurface({
   }, [online, connect, closeSocket, clearAutoListenTimer, clearReconnectTimer])
 
   const cancelActiveVoice = useCallback(() => {
+    const hadBrowserSpeech =
+      browserSpeechActiveRef.current
+      || browserSpeechFallbackPendingRef.current
+
+    stopBrowserSpeech()
+    browserSpeechFallbackPendingRef.current = false
+
     const socket = socketRef.current
     const turnId = turnIdRef.current ?? assistantTurnIdRef.current
 
     if (!socket || socket.readyState !== WebSocket.OPEN || !turnId) {
+      if (hadBrowserSpeech) {
+        clearAutoListenTimer()
+        stopPlayback()
+        setAudioState("idle")
+        setState("ready")
+        return true
+      }
+
       return false
     }
 
@@ -1356,7 +1545,12 @@ export function VoiceSurface({
     setAudioState("idle")
     setState("ready")
     return true
-  }, [clearAutoListenTimer, deactivateCapture, stopPlayback])
+  }, [
+    clearAutoListenTimer,
+    deactivateCapture,
+    stopBrowserSpeech,
+    stopPlayback,
+  ])
 
   const handleVoiceButton = () => {
     if (state === "listening") {
