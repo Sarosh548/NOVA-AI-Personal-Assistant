@@ -1521,6 +1521,7 @@ def test_voice_websocket_keeps_conversation_for_follow_up_turn(
             {
                 "type": "turn.start",
                 "turn_id": "turn-2",
+                "interrupt_response": False,
             }
         )
         websocket.receive_json()
@@ -1658,6 +1659,116 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
                 "turn_id": "turn-2",
             }
         )
+
+
+def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_together(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+                "interrupt_response": False,
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "turn.started"
+
+        websocket.send_bytes(b"interrupting")
+        partial = websocket.receive_json()
+        assert partial["type"] == "transcript.partial"
+
+        # Commit immediately after the interruption transcript. The server
+        # may have the barge-in signal and the control message ready in the
+        # same event-loop cycle; the commit must not be dropped.
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-2",
+            }
+        )
+
+        websocket.send_json(
+            {
+                "type": "session.ping",
+            }
+        )
+
+        seen = set()
+        for _ in range(12):
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            seen.add(payload["type"])
+
+            if payload["type"] == "session.pong":
+                if (
+                    "assistant.response" not in seen
+                    and "turn.committed" not in seen
+                ):
+                    break
+
+            if (
+                "assistant.response" in seen
+                and "assistant.response.cancelled" in seen
+                and "assistant.audio.cancelled" in seen
+                and "turn.committed" in seen
+            ):
+                break
+
+        assert "assistant.response.cancelled" in seen
+        assert "assistant.audio.cancelled" in seen
+        assert "turn.committed" in seen
+        assert "assistant.response" in seen
+
+        core_service.release_first_execution.set()
 
 
 def test_voice_websocket_barge_in_cancels_previous_response_and_accepts_new_turn(

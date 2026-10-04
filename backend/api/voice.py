@@ -1476,99 +1476,22 @@ async def voice_websocket(
                 )
                 return
 
+            message = None
+
             if barge_in_task is not None and barge_in_task in done:
                 barge_in_event = barge_in_task.result()
 
-                if (
-                    session.active_turn is None
-                    or barge_in_event.get("turn_id")
-                    != session.active_turn.turn_id
-                    or assistant_turn_id is None
-                ):
-                    if receive_task is not None and not receive_task.done():
-                        receive_task.cancel()
-                        try:
-                            await receive_task
-                        except asyncio.CancelledError:
-                            pass
-                    if auto_turn_task is not None and not auto_turn_task.done():
-                        auto_turn_task.cancel()
-                        try:
-                            await auto_turn_task
-                        except asyncio.CancelledError:
-                            pass
-                    continue
-
-                previous_tts_task = tts_task
-                previous_execution_task = assistant_execution_task
-                previous_response_bridge = assistant_response_bridge
-                previous_response_turn_id = assistant_turn_id
-                had_active_audio = (
-                    previous_tts_task is not None
-                    and not previous_tts_task.done()
-                )
-                had_active_response = (
-                    previous_response_turn_id is not None
-                    and (
-                        (
-                            previous_tts_task is not None
-                            and not previous_tts_task.done()
-                        )
-                        or (
-                            previous_execution_task is not None
-                            and not previous_execution_task.done()
-                        )
-                        or previous_response_bridge is not None
-                    )
-                )
-
-                if had_active_response:
-                    tts_task = None
-                    assistant_execution_task = None
-                    assistant_response_bridge = None
-                    assistant_turn_id = None
-                    assistant_response_generation = None
-                    session_service.invalidate_response(session)
-
-                    await _cancel_voice_response(
-                        assistant_execution_task=previous_execution_task,
-                        tts_task=previous_tts_task,
-                        response_bridge=previous_response_bridge,
-                    )
-
-                    if had_active_response:
-                        await _send_websocket_json(websocket,
-                            {
-                                "type": "assistant.response.cancelled",
-                                "turn_id": previous_response_turn_id,
-                            }
-                        )
-
-                    if had_active_audio:
-                        await _send_websocket_json(websocket,
-                            {
-                                "type": "assistant.audio.cancelled",
-                            }
-                        )
-
-                if receive_task is not None and not receive_task.done():
+                if receive_task in done:
+                    # A control message such as turn.commit may arrive in the
+                    # same event-loop cycle as the hands-free barge-in signal.
+                    # Preserve it so the interruption turn can still commit.
+                    message = receive_task.result()
+                else:
                     receive_task.cancel()
                     try:
                         await receive_task
                     except asyncio.CancelledError:
                         pass
-
-                if auto_turn_task is not None and not auto_turn_task.done():
-                    auto_turn_task.cancel()
-                    try:
-                        await auto_turn_task
-                    except asyncio.CancelledError:
-                        pass
-
-                continue
-
-            if receive_task in done:
-                message = receive_task.result()
 
                 if auto_turn_task is not None:
                     if auto_turn_task.done():
@@ -1581,37 +1504,121 @@ async def voice_websocket(
                             pass
                     else:
                         auto_turn_task.cancel()
-
                         try:
                             await auto_turn_task
                         except asyncio.CancelledError:
                             pass
 
-                if barge_in_task is not None and not barge_in_task.done():
-                    barge_in_task.cancel()
-                    try:
-                        await barge_in_task
-                    except asyncio.CancelledError:
-                        pass
-            else:
-                auto_turn_event = auto_turn_task.result()
-
                 if (
                     session.active_turn is None
-                    or auto_turn_event.get("turn_id")
+                    or barge_in_event.get("turn_id")
                     != session.active_turn.turn_id
+                    or assistant_turn_id is None
                 ):
+                    if message is None:
+                        continue
+                else:
+                    previous_tts_task = tts_task
+                    previous_execution_task = assistant_execution_task
+                    previous_response_bridge = assistant_response_bridge
+                    previous_response_turn_id = assistant_turn_id
+                    had_active_audio = (
+                        previous_tts_task is not None
+                        and not previous_tts_task.done()
+                    )
+                    had_active_response = (
+                        previous_response_turn_id is not None
+                        and (
+                            (
+                                previous_tts_task is not None
+                                and not previous_tts_task.done()
+                            )
+                            or (
+                                previous_execution_task is not None
+                                and not previous_execution_task.done()
+                            )
+                            or previous_response_bridge is not None
+                        )
+                    )
+
+                    if had_active_response:
+                        tts_task = None
+                        assistant_execution_task = None
+                        assistant_response_bridge = None
+                        assistant_turn_id = None
+                        assistant_response_generation = None
+                        session_service.invalidate_response(session)
+
+                        await _cancel_voice_response(
+                            assistant_execution_task=previous_execution_task,
+                            tts_task=previous_tts_task,
+                            response_bridge=previous_response_bridge,
+                        )
+
+                        if had_active_response:
+                            await _send_websocket_json(websocket,
+                                {
+                                    "type": "assistant.response.cancelled",
+                                    "turn_id": previous_response_turn_id,
+                                }
+                            )
+
+                        if had_active_audio:
+                            await _send_websocket_json(websocket,
+                                {
+                                    "type": "assistant.audio.cancelled",
+                                }
+                            )
+
+                if message is None:
                     continue
 
-                message = {
-                    "type": "websocket.receive",
-                    "text": json.dumps(
-                        {
-                            "type": "turn.commit",
-                            "turn_id": auto_turn_event["turn_id"],
-                        }
-                    ),
-                }
+            if message is None:
+                if receive_task in done:
+                    message = receive_task.result()
+
+                    if auto_turn_task is not None:
+                        if auto_turn_task.done():
+                            auto_turn_event = auto_turn_task.result()
+                            try:
+                                auto_turn_events.put_nowait(
+                                    auto_turn_event
+                                )
+                            except asyncio.QueueFull:
+                                pass
+                        else:
+                            auto_turn_task.cancel()
+
+                            try:
+                                await auto_turn_task
+                            except asyncio.CancelledError:
+                                pass
+
+                    if barge_in_task is not None and not barge_in_task.done():
+                        barge_in_task.cancel()
+                        try:
+                            await barge_in_task
+                        except asyncio.CancelledError:
+                            pass
+                else:
+                    auto_turn_event = auto_turn_task.result()
+
+                    if (
+                        session.active_turn is None
+                        or auto_turn_event.get("turn_id")
+                        != session.active_turn.turn_id
+                    ):
+                        continue
+
+                    message = {
+                        "type": "websocket.receive",
+                        "text": json.dumps(
+                            {
+                                "type": "turn.commit",
+                                "turn_id": auto_turn_event["turn_id"],
+                            }
+                        ),
+                    }
 
             if (
                 receive_task not in done
@@ -1853,6 +1860,16 @@ async def voice_websocket(
                                 "turn_already_active",
                                 "A voice turn is already active.",
                             )
+
+                        # A prior turn can leave a stale STT barge-in signal
+                        # queued if transcript delivery and response startup
+                        # overlap. A valid new turn must never inherit that
+                        # signal.
+                        while True:
+                            try:
+                                barge_in_events.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
 
                         event = session_service.start_turn(
                             session=session,
