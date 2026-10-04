@@ -198,6 +198,7 @@ export function VoiceSurface({
   const turnIdRef = useRef<string | null>(null)
   const bargeInArmedRef = useRef(false)
   const bargeInSpeechDetectedRef = useRef(false)
+  const suppressAssistantAudioRef = useRef(false)
   const sessionReadyRef = useRef(false)
   const intentionalCloseRef = useRef(false)
   const reconnectingRef = useRef(false)
@@ -441,6 +442,13 @@ export function VoiceSurface({
             ? event.data
             : await event.data.arrayBuffer()
 
+        if (
+          bargeInArmedRef.current
+          && suppressAssistantAudioRef.current
+        ) {
+          return
+        }
+
         setAudioChunkCount((count) => count + 1)
         setAudioByteCount((count) => count + payload.byteLength)
 
@@ -585,6 +593,7 @@ export function VoiceSurface({
           && !bargeInSpeechDetectedRef.current
         ) {
           bargeInSpeechDetectedRef.current = true
+          suppressAssistantAudioRef.current = true
           confirmedTranscriptRef.current = ""
           setTranscript("")
           stopPlayback()
@@ -596,9 +605,11 @@ export function VoiceSurface({
       if (type === "transcript.partial") {
         if (bargeInArmedRef.current) {
           if (!bargeInSpeechDetectedRef.current) {
+            suppressAssistantAudioRef.current = true
             stopPlayback()
           }
           bargeInSpeechDetectedRef.current = true
+          suppressAssistantAudioRef.current = true
           confirmedTranscriptRef.current = ""
         }
         const partialText = String(payload.text ?? "")
@@ -686,6 +697,7 @@ export function VoiceSurface({
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
         assistantTurnIdRef.current = null
+        suppressAssistantAudioRef.current = true
         stopPlayback()
         setResponse("")
         if (turnIdRef.current === payload.turn_id) {
@@ -930,6 +942,7 @@ export function VoiceSurface({
     assistantTurnIdRef.current = null
     bargeInArmedRef.current = false
     bargeInSpeechDetectedRef.current = false
+    suppressAssistantAudioRef.current = false
     stopPlayback()
     setResponse("")
     confirmedTranscriptRef.current = ""
