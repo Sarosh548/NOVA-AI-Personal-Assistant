@@ -114,6 +114,13 @@ function formatError(error: unknown, fallback: string): string {
   return error instanceof ApiRequestError ? error.detail : fallback
 }
 
+function traceVoiceEvent(
+  event: string,
+  details?: Record<string, unknown>,
+): void {
+  console.info("[NOVA voice trace]", event, details ?? {})
+}
+
 function mergeTranscriptText(
   confirmed: string,
   live: string,
@@ -199,6 +206,7 @@ export function VoiceSurface({
   const bargeInArmedRef = useRef(false)
   const bargeInSpeechDetectedRef = useRef(false)
   const suppressAssistantAudioRef = useRef(false)
+  const voiceTraceAudioFrameLoggedRef = useRef(false)
   const sessionReadyRef = useRef(false)
   const intentionalCloseRef = useRef(false)
   const reconnectingRef = useRef(false)
@@ -563,6 +571,7 @@ export function VoiceSurface({
       const type = payload.type
 
       if (type === "session.ready") {
+        traceVoiceEvent("server.session.ready")
         sessionReadyRef.current = true
         reconnectAttemptRef.current = 0
         authRecoveryAttemptedRef.current = false
@@ -579,6 +588,7 @@ export function VoiceSurface({
       }
 
       if (type === "turn.started") {
+        traceVoiceEvent("server.turn.started", { turn_id: payload.turn_id, barge_in_armed: bargeInArmedRef.current })
         if (bargeInArmedRef.current) {
           return
         }
@@ -588,6 +598,7 @@ export function VoiceSurface({
       }
 
       if (type === "speech.started") {
+        traceVoiceEvent("server.speech.started", { turn_id: payload.turn_id, barge_in_armed: bargeInArmedRef.current })
         if (
           bargeInArmedRef.current
           && !bargeInSpeechDetectedRef.current
@@ -603,6 +614,7 @@ export function VoiceSurface({
       }
 
       if (type === "transcript.partial") {
+        traceVoiceEvent("server.transcript.partial", { turn_id: payload.turn_id, text: String(payload.text ?? "") })
         if (bargeInArmedRef.current) {
           if (!bargeInSpeechDetectedRef.current) {
             suppressAssistantAudioRef.current = true
@@ -639,6 +651,7 @@ export function VoiceSurface({
       }
 
       if (type === "transcript.utterance_end") {
+        traceVoiceEvent("server.transcript.utterance_end", { turn_id: payload.turn_id })
         // UtteranceEnd is only a candidate boundary. The backend keeps the
         // same turn alive briefly in case the user naturally continues.
         setState("listening")
@@ -646,6 +659,7 @@ export function VoiceSurface({
       }
 
       if (type === "turn.committed") {
+        traceVoiceEvent("server.turn.committed", { turn_id: payload.turn_id, transcript: String(payload.transcript ?? "") })
         const committedTranscript = String(
           payload.transcript ?? "",
         ).trim()
@@ -661,6 +675,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response") {
+        traceVoiceEvent("server.assistant.response", { turn_id: payload.turn_id })
         suppressAssistantAudioRef.current = false
         assistantTurnIdRef.current = String(payload.turn_id ?? "") || null
         setResponse(String(payload.response ?? ""))
@@ -673,6 +688,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.started") {
+        traceVoiceEvent("server.assistant.audio.started", { turn_id: payload.turn_id })
         suppressAssistantAudioRef.current = false
         setAudioState("preparing")
         setState("speaking")
@@ -696,6 +712,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response.cancelled") {
+        traceVoiceEvent("server.assistant.response.cancelled", { turn_id: payload.turn_id })
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
         assistantTurnIdRef.current = null
@@ -712,6 +729,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.cancelled") {
+        traceVoiceEvent("server.assistant.audio.cancelled")
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
         assistantTurnIdRef.current = null
@@ -917,6 +935,16 @@ export function VoiceSurface({
         return
       }
 
+      if (!voiceTraceAudioFrameLoggedRef.current) {
+        voiceTraceAudioFrameLoggedRef.current = true
+        traceVoiceEvent("client.audio.frame.sent", {
+          turn_id: turnId,
+          bytes: event.data.byteLength,
+          barge_in_armed: bargeInArmedRef.current,
+          assistant_turn_id: assistantTurnIdRef.current,
+        })
+      }
+
       socketNow.send(event.data)
     }
 
@@ -945,6 +973,7 @@ export function VoiceSurface({
     bargeInArmedRef.current = false
     bargeInSpeechDetectedRef.current = false
     suppressAssistantAudioRef.current = false
+    voiceTraceAudioFrameLoggedRef.current = false
     stopPlayback()
     setResponse("")
     confirmedTranscriptRef.current = ""
@@ -961,6 +990,10 @@ export function VoiceSurface({
       const turnId = requestId()
       turnIdRef.current = turnId
 
+      traceVoiceEvent("client.turn.start", {
+        turn_id: turnId,
+        interrupt_response: true,
+      })
       socket.send(
         JSON.stringify({
           type: "turn.start",
@@ -1055,7 +1088,13 @@ export function VoiceSurface({
 
       bargeInArmedRef.current = true
       bargeInSpeechDetectedRef.current = false
+      voiceTraceAudioFrameLoggedRef.current = false
       turnIdRef.current = turnId
+
+      traceVoiceEvent("client.barge_in.armed", {
+        turn_id: turnId,
+        assistant_turn_id: assistantTurnIdRef.current,
+      })
 
       socket.send(
         JSON.stringify({
