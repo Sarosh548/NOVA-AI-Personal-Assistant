@@ -19,8 +19,6 @@ const TARGET_SAMPLE_RATE = 16_000
 const TARGET_CHANNELS = 1
 const TARGET_ENCODING = "pcm_s16le"
 
-const LOCAL_VAD_MIN_RMS = 0.02
-const LOCAL_VAD_ONSET_MS = 100
 
 const PCM_WORKLET_SOURCE = `
 class NovaPcmProcessor extends AudioWorkletProcessor {
