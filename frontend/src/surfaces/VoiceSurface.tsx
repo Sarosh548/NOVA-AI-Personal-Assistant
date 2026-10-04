@@ -580,10 +580,14 @@ export function VoiceSurface({
       }
 
       if (type === "speech.started") {
-        if (bargeInArmedRef.current) {
+        if (
+          bargeInArmedRef.current
+          && !bargeInSpeechDetectedRef.current
+        ) {
           bargeInSpeechDetectedRef.current = true
           confirmedTranscriptRef.current = ""
           setTranscript("")
+          stopPlayback()
         }
         setState("listening")
         return
@@ -591,6 +595,9 @@ export function VoiceSurface({
 
       if (type === "transcript.partial") {
         if (bargeInArmedRef.current) {
+          if (!bargeInSpeechDetectedRef.current) {
+            stopPlayback()
+          }
           bargeInSpeechDetectedRef.current = true
           confirmedTranscriptRef.current = ""
         }
