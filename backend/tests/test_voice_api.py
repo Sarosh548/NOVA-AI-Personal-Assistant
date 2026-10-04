@@ -1617,9 +1617,9 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
 
         fake_stt = FakeVoiceSTTOrchestrator.instances[0]
 
-        # The fake always emits transcript.partial; that event alone must
-        # trigger hands-free interruption without requiring speech.started.
-        websocket.send_bytes(b"interrupting")
+        # A single interim transcript is not enough for hands-free interruption.
+        websocket.send_bytes(b"interrupting-1")
+        websocket.send_bytes(b"interrupting-2")
 
         cancelled_response = None
         cancelled_audio = None
@@ -1848,11 +1848,13 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
 
         assert websocket.receive_json()["type"] == "turn.started"
 
-        websocket.send_bytes(b"interrupting")
+        websocket.send_bytes(b"interrupting-1")
         partial = websocket.receive_json()
         assert partial["type"] == "transcript.partial"
 
-        # Commit immediately after the interruption transcript. The server
+        websocket.send_bytes(b"interrupting-2")
+
+        # Commit immediately after the stable interruption transcript. The server
         # may have the barge-in signal and the control message ready in the
         # same event-loop cycle; the commit must not be dropped.
         websocket.send_json(
