@@ -661,6 +661,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response") {
+        suppressAssistantAudioRef.current = false
         assistantTurnIdRef.current = String(payload.turn_id ?? "") || null
         setResponse(String(payload.response ?? ""))
         setAudioState((current) =>
@@ -672,6 +673,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.started") {
+        suppressAssistantAudioRef.current = false
         setAudioState("preparing")
         setState("speaking")
         void armBargeInTurnRef.current?.()
