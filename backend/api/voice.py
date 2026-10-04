@@ -593,9 +593,12 @@ async def _run_tts_output(
             await _send_error(
                 websocket,
                 code="assistant_audio_failed",
-                message=str(exc),
+                message=(
+                    "NOVA voice audio is temporarily unavailable. "
+                    "Continuing with local audio fallback."
+                ),
                 recoverable=True,
-                recovery_action="start_new_turn",
+                recovery_action="fallback_to_local_audio",
             )
         except WebSocketDisconnect:
             pass
@@ -728,7 +731,13 @@ async def _run_voice_assistant_execution(
                 )
                 first_delta_observed = True
 
-            response_bridge.on_delta(delta)
+            try:
+                response_bridge.on_delta(delta)
+            except VoiceResponseStreamBridgeError:
+                # A failed TTS stream must not cancel the authoritative LLM
+                # response. The final response will still be delivered to the
+                # client so it can use the local browser speech fallback.
+                return
 
         execution_kwargs["on_response_delta"] = on_response_delta
 
@@ -2271,8 +2280,15 @@ async def voice_websocket(
 
                                     await _send_error(
                                         websocket,
-                                        code="assistant_audio_start_failed",
-                                        message=str(exc),
+                                        code="assistant_audio_failed",
+                                        message=(
+                                            "NOVA voice audio is temporarily unavailable. "
+                                            "Continuing with local audio fallback."
+                                        ),
+                                        recoverable=True,
+                                        recovery_action=(
+                                            "fallback_to_local_audio"
+                                        ),
                                     )
 
                         assistant_execution_task = (
