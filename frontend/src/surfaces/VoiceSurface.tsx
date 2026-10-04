@@ -244,6 +244,7 @@ export function VoiceSurface({
   const turnIdRef = useRef<string | null>(null)
   const bargeInArmedRef = useRef(false)
   const bargeInSpeechDetectedRef = useRef(false)
+  const bargeInPartialCountRef = useRef(0)
   const suppressAssistantAudioRef = useRef(false)
   const localVoiceStartRef = useRef<(() => void) | null>(null)
   const sessionReadyRef = useRef(false)
@@ -783,6 +784,7 @@ export function VoiceSurface({
       }
 
       if (type === "turn.started") {
+        bargeInPartialCountRef.current = 0
         traceVoiceEvent("server.turn.started", {
           turn_id: String(payload.turn_id ?? ""),
           barge_in_armed: bargeInArmedRef.current,
@@ -800,26 +802,43 @@ export function VoiceSurface({
           turn_id: String(payload.turn_id ?? ""),
           barge_in_armed: bargeInArmedRef.current,
         })
+        if (bargeInArmedRef.current) {
+          bargeInPartialCountRef.current = 0
+        }
         // Deepgram speech detection is only an early signal. Do not interrupt
-        // playback or change the visible state until transcript.partial proves
-        // that the new turn contains recognizable speech.
+        // playback or change the visible state until stable transcript
+        // evidence arrives.
         return
       }
 
       if (type === "transcript.partial") {
         sttRecoveryAttemptsRef.current = 0
+        const partialText = String(payload.text ?? "").trim()
         traceVoiceEvent("server.transcript.partial", {
           turn_id: String(payload.turn_id ?? ""),
-          text: String(payload.text ?? ""),
+          text: partialText,
         })
+
         if (bargeInArmedRef.current) {
+          if (partialText) {
+            bargeInPartialCountRef.current += 1
+          } else {
+            bargeInPartialCountRef.current = 0
+          }
+
+          // One interim result can be environmental noise or speaker bleed.
+          // Require two consecutive non-empty partials before interrupting.
+          if (bargeInPartialCountRef.current < 2) {
+            return
+          }
+
           if (!bargeInSpeechDetectedRef.current) {
             stopPlayback()
           }
           bargeInSpeechDetectedRef.current = true
           confirmedTranscriptRef.current = ""
         }
-        const partialText = String(payload.text ?? "")
+
         setTranscript(
           mergeTranscriptText(
             confirmedTranscriptRef.current,
@@ -1279,6 +1298,7 @@ export function VoiceSurface({
     assistantTurnIdRef.current = null
     bargeInArmedRef.current = false
     bargeInSpeechDetectedRef.current = false
+    bargeInPartialCountRef.current = 0
     suppressAssistantAudioRef.current = false
     stopPlayback()
     setResponse("")
@@ -1414,6 +1434,7 @@ export function VoiceSurface({
 
       bargeInArmedRef.current = true
       bargeInSpeechDetectedRef.current = false
+      bargeInPartialCountRef.current = 0
       suppressAssistantAudioRef.current = false
       turnIdRef.current = turnId
 
