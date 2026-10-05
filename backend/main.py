@@ -14,12 +14,14 @@ from fastapi.responses import (
 from pydantic import BaseModel
 
 from security import configure_api_security
+from config import get_settings
 
 from agent.graph import build_graph
 from api.activity import (
     router as activity_router,
 )
 from api.auth import router as auth_router
+from api import auth as auth_module
 from api.conversations import (
     router as conversations_router,
 )
@@ -74,6 +76,12 @@ from services.execution_context import (
 )
 from services.execution_service import (
     NOVAExecutionService,
+)
+from services.email_verification_service import (
+    EmailVerificationService,
+)
+from services.password_reset_service import (
+    PasswordResetService,
 )
 from services.idempotency_cleanup_scheduler import (
     IdempotencyCleanupScheduler,
@@ -522,6 +530,19 @@ async def startup_event():
             destination_service=(
                 notification_destination_service
             )
+        )
+    )
+
+    auth_module.email_verification_service = (
+        EmailVerificationService(
+            notification_service=notification_service,
+            secret_key=get_settings().auth_jwt_secret_key,
+        )
+    )
+    auth_module.password_reset_service = (
+        PasswordResetService(
+            notification_service=notification_service,
+            secret_key=get_settings().auth_jwt_secret_key,
         )
     )
 

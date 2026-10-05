@@ -22,6 +22,7 @@ def test_user_model_has_expected_columns():
         "id",
         "display_name",
         "is_active",
+        "email_verified_at",
         "created_at",
         "updated_at",
     }

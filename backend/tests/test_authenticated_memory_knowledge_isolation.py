@@ -8,7 +8,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from api.auth import get_token_service, router as auth_router
+from api.auth import (
+    get_email_verification_service,
+    get_token_service,
+    router as auth_router,
+)
 from api.knowledge import router as knowledge_router
 from api.memories import router as memory_router
 from config import Settings
@@ -32,6 +36,20 @@ class FakeEmbedding:
         return list(TEST_EMBEDDING)
 
 
+class FakeEmailVerificationService:
+    @staticmethod
+    def normalize_email(identifier: str) -> str:
+        return identifier.strip().lower()
+
+    def issue_verification_code(
+        self,
+        *,
+        email: str,
+        user_id: str,
+    ) -> bool:
+        return True
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -52,6 +70,9 @@ def _app() -> FastAPI:
         )
     )
     app.dependency_overrides[get_token_service] = lambda: token_service
+    app.dependency_overrides[
+        get_email_verification_service
+    ] = lambda: FakeEmailVerificationService()
     return app
 
 
@@ -67,9 +88,27 @@ def _register(client: TestClient, label: str) -> dict[str, str]:
     )
     assert response.status_code == 201
     body = response.json()
+    user_id = body["user"]["id"]
+
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        assert user is not None
+        user.email_verified_at = user.created_at
+        session.commit()
+
+    login_response = client.post(
+        "/auth/login",
+        data={
+            "grant_type": "password",
+            "username": identifier,
+            "password": PASSWORD,
+        },
+    )
+    assert login_response.status_code == 200
+
     return {
-        "id": body["user"]["id"],
-        "access_token": body["access_token"],
+        "id": user_id,
+        "access_token": login_response.json()["access_token"],
     }
 
 

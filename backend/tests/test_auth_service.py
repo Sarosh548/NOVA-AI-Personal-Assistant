@@ -1,4 +1,5 @@
 from datetime import timedelta
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -50,6 +51,14 @@ def test_user(auth_service, test_identifier):
         password="CorrectPassword123!",
         display_name="Auth Test User",
     )
+
+    with Session(engine) as session:
+        persisted_user = session.get(User, user.id)
+        assert persisted_user is not None
+        persisted_user.email_verified_at = (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+        )
+        session.commit()
 
     try:
         yield user, identity

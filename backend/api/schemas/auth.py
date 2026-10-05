@@ -36,6 +36,78 @@ class RefreshRequest(BaseModel):
     )
 
 
+class RegisterResponse(BaseModel):
+    """
+    Result of creating a NOVA account.
+
+    New accounts are not authenticated automatically. Email-backed
+    registrations must verify their email before sign-in is allowed.
+    """
+
+    user: "UserResponse"
+    email_verification_required: bool
+    message: str
+
+
+class VerifyEmailRequest(BaseModel):
+    """
+    Verify a one-time email verification code.
+    """
+
+    email: str = Field(
+        min_length=3,
+        max_length=255,
+    )
+
+    code: str = Field(
+        min_length=6,
+        max_length=6,
+    )
+
+
+class ResendVerificationRequest(BaseModel):
+    """
+    Request a new email verification code.
+    """
+
+    email: str = Field(
+        min_length=3,
+        max_length=255,
+    )
+
+
+class PasswordResetRequest(BaseModel):
+    """
+    Request a password reset code by email.
+    """
+
+    email: str = Field(
+        min_length=3,
+        max_length=255,
+    )
+
+
+class ResetPasswordRequest(BaseModel):
+    """
+    Verify a password reset code and set the new password.
+    """
+
+    email: str = Field(
+        min_length=3,
+        max_length=255,
+    )
+
+    code: str = Field(
+        min_length=6,
+        max_length=6,
+    )
+
+    new_password: str = Field(
+        min_length=8,
+        max_length=256,
+    )
+
+
 class UserResponse(BaseModel):
     """
     Safe public representation of the canonical NOVA user.

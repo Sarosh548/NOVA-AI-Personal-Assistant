@@ -17,12 +17,15 @@ from fastapi.security import (
     OAuth2PasswordBearer,
     OAuth2PasswordRequestFormStrict,
 )
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from config import (
     RateLimitSettings,
     get_rate_limit_settings,
 )
 
+from models.auth_identity import AuthIdentity
 from models.user import User
 from models.user_session import UserSession
 from services.audit_service import AuditService
@@ -39,9 +42,29 @@ from services.user_service import UserService
 from api.schemas.auth import (
     RefreshRequest,
     RegisterRequest,
+    PasswordResetRequest,
+    RegisterResponse,
+    ResendVerificationRequest,
+    ResetPasswordRequest,
     TokenResponse,
     UserResponse,
+    VerifyEmailRequest,
 )
+from services.email_verification_service import (
+    EmailNotVerified,
+    EmailVerificationError,
+    EmailVerificationRateLimited,
+    EmailVerificationService,
+)
+from services.password_reset_service import (
+    PasswordResetError,
+    PasswordResetRateLimited,
+    PasswordResetService,
+)
+
+
+email_verification_service: EmailVerificationService | None = None
+password_reset_service: PasswordResetService | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +97,26 @@ def get_user_service() -> UserService:
 def get_rate_limit_service() -> RateLimitService:
     return RateLimitService()
 
+
+
+def get_email_verification_service() -> EmailVerificationService:
+    if email_verification_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email verification service is unavailable.",
+        )
+
+    return email_verification_service
+
+
+def get_password_reset_service() -> PasswordResetService:
+    if password_reset_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset service is unavailable.",
+        )
+
+    return password_reset_service
 
 
 def _set_rate_limit_headers(
@@ -342,7 +385,7 @@ def get_current_auth_context(
 
 @router.post(
     "/register",
-    response_model=TokenResponse,
+    response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
     dependencies=[
         Depends(enforce_auth_endpoint_rate_limit)
@@ -354,30 +397,66 @@ def register(
         AuthService,
         Depends(get_auth_service),
     ],
-    token_service: Annotated[
-        TokenService,
-        Depends(get_token_service),
+    verification_service: Annotated[
+        EmailVerificationService,
+        Depends(get_email_verification_service),
     ],
-) -> TokenResponse:
+) -> RegisterResponse:
     """
-    Register a local-password NOVA account and create its first
-    authenticated session.
+    Register a new NOVA account using an email address.
+
+    Account creation never authenticates the user. A verification code
+    is sent before the account can be used for password sign-in.
     """
     try:
+        email = verification_service.normalize_email(
+            request.identifier
+        )
+
         user, _identity = (
             auth_service.register_password_user(
-                identifier=request.identifier,
+                identifier=email,
                 password=request.password,
                 display_name=request.display_name,
             )
         )
 
-        user_session, refresh_token = (
-            auth_service.create_session(
-                user.id,
-            )
+        sent = verification_service.issue_verification_code(
+            email=email,
+            user_id=user.id,
         )
 
+        if not sent:
+            _record_auth_audit(
+                action="register",
+                status_value="failure",
+                user_id=user.id,
+                metadata={
+                    "reason": "verification_email_delivery_failed"
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Account created, but NOVA could not send the "
+                    "verification email. Please try again later."
+                ),
+            )
+
+    except HTTPException:
+        raise
+    except EmailVerificationError as exc:
+        _record_auth_audit(
+            action="register",
+            status_value="failure",
+            metadata={
+                "reason": "invalid_registration_email"
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except ValueError as exc:
         _record_auth_audit(
             action="register",
@@ -395,30 +474,194 @@ def register(
         action="register",
         status_value="success",
         user_id=user.id,
-        resource_id=user_session.id,
+        metadata={
+            "email_verification_required": True
+        },
     )
 
-    access_token = (
-        token_service.create_access_token(
-            user_id=user.id,
-            session_id=user_session.id,
+    return RegisterResponse(
+        user=UserResponse.model_validate(user),
+        email_verification_required=True,
+        message="Verification code sent to your email.",
+    )
+
+
+@router.post(
+    "/verify-email",
+    response_model=UserResponse,
+    dependencies=[
+        Depends(enforce_auth_endpoint_rate_limit)
+    ],
+)
+def verify_email(
+    request: VerifyEmailRequest,
+    verification_service: Annotated[
+        EmailVerificationService,
+        Depends(get_email_verification_service),
+    ],
+) -> UserResponse:
+    try:
+        user = verification_service.verify_code(
+            email=request.email,
+            code=request.code,
         )
+    except EmailVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    _record_auth_audit(
+        action="verify_email",
+        status_value="success",
+        user_id=user.id,
     )
 
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer",
-        expires_in=(
-            token_service.settings
-            .auth_access_token_expire_minutes
-            * 60
+    return UserResponse.model_validate(user)
+
+
+@router.post(
+    "/resend-verification",
+    response_model=dict[str, str],
+    dependencies=[
+        Depends(enforce_auth_endpoint_rate_limit)
+    ],
+)
+def resend_verification(
+    request: ResendVerificationRequest,
+    verification_service: Annotated[
+        EmailVerificationService,
+        Depends(get_email_verification_service),
+    ],
+) -> dict[str, str]:
+    try:
+        email = verification_service.normalize_email(
+            request.email
+        )
+
+        with Session(verification_service.engine) as session:
+            identity = session.scalar(
+                select(AuthIdentity).where(
+                    AuthIdentity.provider == "password",
+                    AuthIdentity.provider_subject == email,
+                )
+            )
+
+            if identity is None:
+                raise EmailVerificationError(
+                    "No account exists for that email address."
+                )
+
+            sent = verification_service.issue_verification_code(
+                email=email,
+                user_id=identity.user_id,
+                enforce_cooldown=True,
+            )
+
+        if not sent:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "NOVA could not send the verification email. "
+                    "Please try again later."
+                ),
+            )
+
+    except HTTPException:
+        raise
+    except EmailVerificationRateLimited as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": "60"},
+        ) from exc
+    except EmailVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "message": "A new verification code has been sent.",
+    }
+
+
+@router.post(
+    "/request-password-reset",
+    response_model=dict[str, str],
+    dependencies=[
+        Depends(enforce_auth_endpoint_rate_limit)
+    ],
+)
+def request_password_reset(
+    request: PasswordResetRequest,
+    reset_service: Annotated[
+        PasswordResetService,
+        Depends(get_password_reset_service),
+    ],
+) -> dict[str, str]:
+    try:
+        reset_service.request_reset(
+            email=request.email,
+        )
+    except PasswordResetRateLimited as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": "60"},
+        ) from exc
+    except EmailVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "message": (
+            "If an account exists for that email, "
+            "a password reset code has been sent."
         ),
-        session_id=user_session.id,
-        user=UserResponse.model_validate(
-            user
-        ),
+    }
+
+
+@router.post(
+    "/reset-password",
+    response_model=UserResponse,
+    dependencies=[
+        Depends(enforce_auth_endpoint_rate_limit)
+    ],
+)
+def reset_password(
+    request: ResetPasswordRequest,
+    reset_service: Annotated[
+        PasswordResetService,
+        Depends(get_password_reset_service),
+    ],
+) -> UserResponse:
+    try:
+        user = reset_service.reset_password(
+            email=request.email,
+            code=request.code,
+            new_password=request.new_password,
+        )
+    except PasswordResetError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except EmailVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    _record_auth_audit(
+        action="reset_password",
+        status_value="success",
+        user_id=user.id,
     )
+
+    return UserResponse.model_validate(user)
 
 
 @router.post(
@@ -452,6 +695,18 @@ def login(
                 password=form_data.password,
             )
         )
+    except EmailNotVerified as exc:
+        _record_auth_audit(
+            action="login",
+            status_value="failure",
+            metadata={
+                "reason": "email_not_verified"
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except ValueError as exc:
         _record_auth_audit(
             action="login",

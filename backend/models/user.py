@@ -58,6 +58,11 @@ class User(Base):
         default=True,
     )
 
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=_utc_now_naive,

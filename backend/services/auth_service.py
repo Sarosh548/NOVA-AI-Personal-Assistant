@@ -15,6 +15,10 @@ from models.auth_identity import AuthIdentity
 from models.user import User
 from models.user_session import UserSession
 from models.refresh_token_history import RefreshTokenHistory
+from services.email_verification_service import (
+    EmailNotVerified,
+    EmailVerificationService,
+)
 
 
 class RefreshTokenReplayDetected(ValueError):
@@ -266,6 +270,16 @@ class AuthService:
                 identity.password_hash,
             ):
                 return None
+
+            if (
+                EmailVerificationService.is_email_identifier(
+                    normalized_identifier
+                )
+                and user.email_verified_at is None
+            ):
+                raise EmailNotVerified(
+                    "Please verify your email before signing in."
+                )
 
             return user
 
