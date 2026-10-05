@@ -5,21 +5,51 @@ import { getRefreshToken } from "../api/client"
 import { Icon } from "../components/Icon"
 import { useAuth } from "./AuthProvider"
 
-type AuthMode = "sign-in" | "sign-up"
+type AuthMode =
+  | "sign-in"
+  | "sign-up"
+  | "verify-email"
+  | "forgot-password"
+  | "reset-password"
 
 export function AuthScreen() {
-  const { signIn, signUp, error, clearError, retrySessionRestore } = useAuth()
+  const {
+    signIn,
+    signUp,
+    verifyEmail,
+    resendVerification,
+    requestPasswordReset,
+    resetPassword,
+    error,
+    clearError,
+    retrySessionRestore,
+  } = useAuth()
   const [mode, setMode] = useState<AuthMode>("sign-in")
   const [identifier, setIdentifier] = useState("")
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [displayName, setDisplayName] = useState("")
+  const [verificationCode, setVerificationCode] = useState("")
+  const [verificationEmail, setVerificationEmail] = useState("")
+  const [resetEmail, setResetEmail] = useState("")
+  const [newPassword, setNewPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isResending, setIsResending] = useState(false)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const identifierRef = useRef<HTMLInputElement | null>(null)
+  const verificationCodeRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      identifierRef.current?.focus()
+      if (mode === "verify-email" || mode === "reset-password") {
+        verificationCodeRef.current?.focus()
+      } else {
+        identifierRef.current?.focus()
+      }
     })
 
     return () => window.cancelAnimationFrame(frame)
@@ -28,6 +58,8 @@ export function AuthScreen() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     clearError()
+    setLocalError(null)
+    setSuccessMessage(null)
 
     if (!isApiBaseUrlConfigured) {
       return
@@ -38,8 +70,58 @@ export function AuthScreen() {
     try {
       if (mode === "sign-in") {
         await signIn(identifier.trim(), password)
+      } else if (mode === "sign-up") {
+        const email = identifier.trim().toLowerCase()
+        await signUp(email, password, displayName)
+        setVerificationEmail(email)
+        setVerificationCode("")
+        setPassword("")
+        setShowPassword(false)
+        setDisplayName("")
+        setMode("verify-email")
+        setSuccessMessage("We sent a 6-digit verification code to your email.")
+      } else if (mode === "verify-email") {
+        await verifyEmail(
+          verificationEmail,
+          verificationCode.trim(),
+        )
+        setIdentifier(verificationEmail)
+        setVerificationCode("")
+        setMode("sign-in")
+        setSuccessMessage("Email verified. Sign in to continue.")
+      } else if (mode === "forgot-password") {
+        const email = identifier.trim().toLowerCase()
+        await requestPasswordReset(email)
+        setResetEmail(email)
+        setVerificationCode("")
+        setNewPassword("")
+        setConfirmPassword("")
+        setShowNewPassword(false)
+        setShowConfirmPassword(false)
+        setMode("reset-password")
+        setSuccessMessage(
+          "If an account exists for that email, a 6-digit reset code was sent.",
+        )
       } else {
-        await signUp(identifier.trim(), password, displayName)
+        if (newPassword !== confirmPassword) {
+          setLocalError("New password and confirmation do not match.")
+          return
+        }
+
+        await resetPassword(
+          resetEmail,
+          verificationCode.trim(),
+          newPassword,
+        )
+        setIdentifier(resetEmail)
+        setPassword("")
+        setNewPassword("")
+        setConfirmPassword("")
+        setVerificationCode("")
+        setShowNewPassword(false)
+        setShowConfirmPassword(false)
+        setMode("sign-in")
+        setSuccessMessage("Password updated. Sign in with your new password.")
       }
     } finally {
       setIsSubmitting(false)
@@ -48,14 +130,66 @@ export function AuthScreen() {
 
   const switchMode = () => {
     clearError()
+    setLocalError(null)
+    setSuccessMessage(null)
+    setPassword("")
+    setNewPassword("")
+    setConfirmPassword("")
+    setShowPassword(false)
+    setShowNewPassword(false)
+    setShowConfirmPassword(false)
+    setVerificationCode("")
+
+    setMode((current) => {
+      if (current === "sign-in") return "sign-up"
+      return "sign-in"
+    })
+  }
+
+  const openForgotPassword = () => {
+    clearError()
+    setLocalError(null)
+    setSuccessMessage(null)
     setPassword("")
     setShowPassword(false)
-    setMode((current) =>
-      current === "sign-in" ? "sign-up" : "sign-in",
-    )
+    setMode("forgot-password")
+  }
+
+  const handleBackToSignIn = () => {
+    clearError()
+    setLocalError(null)
+    setSuccessMessage(null)
+    setPassword("")
+    setNewPassword("")
+    setConfirmPassword("")
+    setShowPassword(false)
+    setShowNewPassword(false)
+    setShowConfirmPassword(false)
+    setVerificationCode("")
+    setMode("sign-in")
+  }
+
+  const handleResend = async () => {
+    clearError()
+    setLocalError(null)
+    setSuccessMessage(null)
+    setIsResending(true)
+
+    try {
+      await resendVerification(verificationEmail)
+      setSuccessMessage("A new verification code has been sent.")
+    } finally {
+      setIsResending(false)
+    }
   }
 
   const isSignIn = mode === "sign-in"
+  const isSignUp = mode === "sign-up"
+  const isVerifyEmail = mode === "verify-email"
+  const isForgotPassword = mode === "forgot-password"
+  const isResetPassword = mode === "reset-password"
+  const isPasswordEntry = isSignIn || isSignUp
+  const visibleError = error ?? localError
 
   return (
     <main className="auth-screen">
@@ -75,14 +209,35 @@ export function AuthScreen() {
 
         <div className="auth-heading">
           <div className="section-kicker">
-            {isSignIn ? "WELCOME BACK" : "CREATE YOUR NOVA"}
+            {isVerifyEmail || isResetPassword
+              ? isVerifyEmail
+                ? "VERIFY YOUR EMAIL"
+                : "RESET YOUR PASSWORD"
+              : isForgotPassword
+                ? "PASSWORD RECOVERY"
+                : isSignIn
+                  ? "WELCOME BACK"
+                  : "CREATE YOUR NOVA"}
           </div>
           <h1 id="auth-title">
-            {isSignIn ? "Continue with NOVA." : "Start your personal assistant."}
+            {isVerifyEmail
+              ? "Check your inbox."
+              : isForgotPassword
+                ? "Forgot your password?"
+                : isResetPassword
+                  ? "Choose a new password."
+                  : isSignIn
+                    ? "Continue with NOVA."
+                    : "Start your personal assistant."}
           </h1>
           <p>
-            Your conversations, plans, memory, and authorized actions stay
-            connected to your personal NOVA account.
+            {isVerifyEmail
+              ? "Enter the 6-digit code we sent to " + verificationEmail + "."
+              : isForgotPassword
+                ? "Enter your account email and NOVA will send a 6-digit recovery code."
+                : isResetPassword
+                  ? "Enter the code sent to " + resetEmail + " and choose a new password."
+                  : "Your conversations, plans, memory, and authorized actions stay connected to your personal NOVA account."}
           </p>
         </div>
 
@@ -99,9 +254,9 @@ export function AuthScreen() {
         <form
           className="auth-form"
           onSubmit={handleSubmit}
-          aria-busy={isSubmitting}
+          aria-busy={isSubmitting || isResending}
         >
-          {mode === "sign-up" && (
+          {isSignUp && (
             <label>
               <span>Name</span>
               <input
@@ -114,49 +269,155 @@ export function AuthScreen() {
             </label>
           )}
 
-          <label>
-            <span>Email or username</span>
-            <input
-              ref={identifierRef}
-              autoComplete="username"
-              autoCapitalize="none"
-              spellCheck={false}
-              value={identifier}
-              onChange={(event) => setIdentifier(event.target.value)}
-              placeholder="you@example.com"
-              required
-              maxLength={255}
-            />
-          </label>
-
-          <label>
-            <span>Password</span>
-            <div className="password-field">
+          {(isSignIn || isSignUp || isForgotPassword) && (
+            <label>
+              <span>{isSignIn ? "Email or username" : "Email"}</span>
               <input
-                type={showPassword ? "text" : "password"}
-                autoComplete={isSignIn ? "current-password" : "new-password"}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="At least 8 characters"
+                ref={identifierRef}
+                type={isSignIn ? "text" : "email"}
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={identifier}
+                onChange={(event) => setIdentifier(event.target.value)}
+                placeholder="you@example.com"
                 required
-                minLength={8}
-                maxLength={256}
+                maxLength={255}
               />
-              <button
-                className="password-toggle"
-                type="button"
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                aria-pressed={showPassword}
-                onClick={() => setShowPassword((current) => !current)}
-              >
-                <Icon name={showPassword ? "eye-off" : "eye"} size={17} />
-              </button>
-            </div>
-          </label>
+            </label>
+          )}
 
-          {error && (
+          {(isVerifyEmail || isResetPassword) && (
+            <label>
+              <span>{isResetPassword ? "Reset code" : "Verification code"}</span>
+              <input
+                ref={verificationCodeRef}
+                className="auth-verification-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={verificationCode}
+                onChange={(event) =>
+                  setVerificationCode(
+                    event.target.value.replace(/\D/g, "").slice(0, 6),
+                  )
+                }
+                placeholder="000000"
+                pattern="\d{6}"
+                minLength={6}
+                maxLength={6}
+                required
+              />
+            </label>
+          )}
+
+          {isPasswordEntry && (
+            <label>
+              <span>Password</span>
+              <div className="password-field">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  autoComplete={isSignIn ? "current-password" : "new-password"}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="At least 8 characters"
+                  required
+                  minLength={8}
+                  maxLength={256}
+                />
+                <button
+                  className="password-toggle"
+                  type="button"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  aria-pressed={showPassword}
+                  onClick={() => setShowPassword((current) => !current)}
+                >
+                  <Icon name={showPassword ? "eye-off" : "eye"} size={17} />
+                </button>
+              </div>
+            </label>
+          )}
+
+          {isResetPassword && (
+            <>
+              <label>
+                <span>New password</span>
+                <div className="password-field">
+                  <input
+                    type={showNewPassword ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    placeholder="At least 8 characters"
+                    required
+                    minLength={8}
+                    maxLength={256}
+                  />
+                  <button
+                    className="password-toggle"
+                    type="button"
+                    aria-label={showNewPassword ? "Hide new password" : "Show new password"}
+                    aria-pressed={showNewPassword}
+                    onClick={() => setShowNewPassword((current) => !current)}
+                  >
+                    <Icon name={showNewPassword ? "eye-off" : "eye"} size={17} />
+                  </button>
+                </div>
+              </label>
+
+              <label>
+                <span>Confirm new password</span>
+                <div className="password-field">
+                  <input
+                    type={showConfirmPassword ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    placeholder="Enter the new password again"
+                    required
+                    minLength={8}
+                    maxLength={256}
+                  />
+                  <button
+                    className="password-toggle"
+                    type="button"
+                    aria-label={
+                      showConfirmPassword
+                        ? "Hide password confirmation"
+                        : "Show password confirmation"
+                    }
+                    aria-pressed={showConfirmPassword}
+                    onClick={() => setShowConfirmPassword((current) => !current)}
+                  >
+                    <Icon
+                      name={showConfirmPassword ? "eye-off" : "eye"}
+                      size={17}
+                    />
+                  </button>
+                </div>
+              </label>
+            </>
+          )}
+
+          {isSignIn && (
+            <button
+              className="auth-forgot"
+              type="button"
+              onClick={openForgotPassword}
+            >
+              Forgot password?
+            </button>
+          )}
+
+          {successMessage && (
+            <div className="auth-notice" role="status">
+              {successMessage}
+            </div>
+          )}
+
+          {visibleError && (
             <div className="auth-error" role="alert">
-              {error}
+              {visibleError}
             </div>
           )}
 
@@ -173,29 +434,77 @@ export function AuthScreen() {
           <button
             className="primary-action auth-submit"
             type="submit"
-            disabled={isSubmitting || !isApiBaseUrlConfigured}
+            disabled={isSubmitting || isResending || !isApiBaseUrlConfigured}
           >
             {isSubmitting ? (
               <>
                 <span className="auth-spinner" aria-hidden="true" />
-                {isSignIn ? "Signing in…" : "Creating account…"}
+                {isVerifyEmail || isResetPassword
+                  ? "Verifying…"
+                  : isForgotPassword
+                    ? "Sending code…"
+                    : isSignIn
+                      ? "Signing in…"
+                      : "Creating account…"}
               </>
             ) : (
               <>
                 <Icon name="arrow" size={17} />
-                {isSignIn ? "Sign in" : "Create account"}
+                {isVerifyEmail
+                  ? "Verify email"
+                  : isForgotPassword
+                    ? "Send reset code"
+                    : isResetPassword
+                      ? "Set new password"
+                      : isSignIn
+                        ? "Sign in"
+                        : "Create account"}
               </>
             )}
           </button>
+
+          {isVerifyEmail && (
+            <button
+              className="secondary-action"
+              type="button"
+              disabled={isSubmitting || isResending}
+              onClick={() => void handleResend()}
+            >
+              {isResending ? "Sending code…" : "Resend code"}
+            </button>
+          )}
+
+          {(isForgotPassword || isResetPassword) && (
+            <button
+              className="secondary-action"
+              type="button"
+              disabled={isSubmitting || isResending}
+              onClick={handleBackToSignIn}
+            >
+              Back to sign in
+            </button>
+          )}
         </form>
 
         <div className="auth-switch">
-          <span>
-            {isSignIn ? "New to NOVA?" : "Already have a NOVA account?"}
-          </span>
-          <button type="button" onClick={switchMode}>
-            {isSignIn ? "Create account" : "Sign in"}
-          </button>
+          {!isForgotPassword && !isResetPassword && (
+            <>
+              <span>
+                {isVerifyEmail
+                  ? "Entered the wrong email?"
+                  : isSignIn
+                    ? "New to NOVA?"
+                    : "Already have a NOVA account?"}
+              </span>
+              <button type="button" onClick={switchMode}>
+                {isVerifyEmail
+                  ? "Back to sign in"
+                  : isSignIn
+                    ? "Create account"
+                    : "Sign in"}
+              </button>
+            </>
+          )}
         </div>
       </section>
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 
 import { AuthScreen } from "../auth/AuthScreen"
 import { AppErrorBoundary } from "../components/AppErrorBoundary"
@@ -19,6 +19,7 @@ import { surfaceFromHash, surfaceHash, type SurfaceKey } from "./navigation"
 
 export function AppRoot() {
   const { status, user, signOut } = useAuth()
+  const previousAuthStatusRef = useRef(status)
   const [activeSurface, setActiveSurfaceState] = useState<SurfaceKey>(() =>
     surfaceFromHash(window.location.hash) ?? "Home",
   )
@@ -51,6 +52,20 @@ export function AppRoot() {
     document.title =
       activeSurface === "Home" ? "NOVA — Personal AI" : `NOVA — ${activeSurface}`
   }, [activeSurface])
+
+  useEffect(() => {
+    const previousStatus = previousAuthStatusRef.current
+
+    if (status === "authenticated" && previousStatus !== "authenticated") {
+      setActiveSurfaceState("Home")
+      const nextHash = surfaceHash("Home")
+      if (window.location.hash !== nextHash) {
+        window.history.pushState(null, "", nextHash)
+      }
+    }
+
+    previousAuthStatusRef.current = status
+  }, [status])
 
   if (status === "loading") {
     return (

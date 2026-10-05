@@ -14,7 +14,16 @@ import {
   getRefreshToken,
   SESSION_EXPIRED_EVENT,
 } from "../api/client"
-import { getCurrentUser, login, logout, register } from "../api/auth"
+import {
+  getCurrentUser,
+  login,
+  logout,
+  register,
+  requestPasswordReset,
+  resendVerification,
+  resetPassword,
+  verifyEmail,
+} from "../api/auth"
 import type { NovaUser } from "../api/types"
 
 type AuthStatus =
@@ -33,6 +42,14 @@ type AuthContextValue = {
     displayName: string,
   ) => Promise<void>
   signOut: () => Promise<void>
+  verifyEmail: (email: string, code: string) => Promise<void>
+  resendVerification: (email: string) => Promise<void>
+  requestPasswordReset: (email: string) => Promise<void>
+  resetPassword: (
+    email: string,
+    code: string,
+    newPassword: string,
+  ) => Promise<void>
   retrySessionRestore: () => Promise<void>
   clearError: () => void
 }
@@ -134,13 +151,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setError(null)
 
       try {
-        const response = await register({
+        await register({
           identifier,
           password,
           display_name: displayName.trim() || undefined,
         })
-        setUser(response.user)
-        setStatus("authenticated")
+        setUser(null)
+        setStatus("unauthenticated")
       } catch (error) {
         setStatus("unauthenticated")
         setError(
@@ -165,6 +182,89 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const verifyEmailAddress = useCallback(
+    async (email: string, code: string) => {
+      setError(null)
+
+      try {
+        await verifyEmail({
+          email,
+          code,
+        })
+      } catch (error) {
+        setError(
+          error instanceof ApiRequestError
+            ? error.detail
+            : "Email verification failed. Please try again.",
+        )
+        throw error
+      }
+    },
+    [],
+  )
+
+  const resendEmailVerification = useCallback(
+    async (email: string) => {
+      setError(null)
+
+      try {
+        await resendVerification(email)
+      } catch (error) {
+        setError(
+          error instanceof ApiRequestError
+            ? error.detail
+            : "Could not resend the verification code. Please try again.",
+        )
+        throw error
+      }
+    },
+    [],
+  )
+
+  const requestPasswordResetCode = useCallback(
+    async (email: string) => {
+      setError(null)
+
+      try {
+        await requestPasswordReset(email)
+      } catch (error) {
+        setError(
+          error instanceof ApiRequestError
+            ? error.detail
+            : "Could not send a password reset code. Please try again.",
+        )
+        throw error
+      }
+    },
+    [],
+  )
+
+  const resetPasswordForUser = useCallback(
+    async (
+      email: string,
+      code: string,
+      newPassword: string,
+    ) => {
+      setError(null)
+
+      try {
+        await resetPassword({
+          email,
+          code,
+          new_password: newPassword,
+        })
+      } catch (error) {
+        setError(
+          error instanceof ApiRequestError
+            ? error.detail
+            : "Password reset failed. Please try again.",
+        )
+        throw error
+      }
+    },
+    [],
+  )
+
   const clearError = useCallback(() => setError(null), [])
 
   const value = useMemo(
@@ -175,6 +275,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn,
       signUp,
       signOut,
+      verifyEmail: verifyEmailAddress,
+      resendVerification: resendEmailVerification,
+      requestPasswordReset: requestPasswordResetCode,
+      resetPassword: resetPasswordForUser,
       retrySessionRestore,
       clearError,
     }),
@@ -185,6 +289,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn,
       signUp,
       signOut,
+      verifyEmailAddress,
+      resendEmailVerification,
+      requestPasswordResetCode,
+      resetPasswordForUser,
       retrySessionRestore,
       clearError,
     ],

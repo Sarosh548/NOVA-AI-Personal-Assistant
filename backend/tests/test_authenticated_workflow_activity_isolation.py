@@ -9,7 +9,11 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from api.activity import router as activity_router
-from api.auth import get_token_service, router as auth_router
+from api.auth import (
+    get_email_verification_service,
+    get_token_service,
+    router as auth_router,
+)
 from api.workflows import router as workflow_router
 from config import Settings
 from database.connection import engine
@@ -26,6 +30,20 @@ PASSWORD = "CorrectPassword123!"
 TEST_SECRET = (
     "workflow-activity-isolation-test-secret-key-longer-than-32"
 )
+
+
+class FakeEmailVerificationService:
+    @staticmethod
+    def normalize_email(identifier: str) -> str:
+        return identifier.strip().lower()
+
+    def issue_verification_code(
+        self,
+        *,
+        email: str,
+        user_id: str,
+    ) -> bool:
+        return True
 
 
 def _now() -> datetime:
@@ -56,6 +74,10 @@ def _build_app() -> FastAPI:
         get_token_service
     ] = lambda: token_service
 
+    app.dependency_overrides[
+        get_email_verification_service
+    ] = lambda: FakeEmailVerificationService()
+
     return app
 
 
@@ -80,10 +102,27 @@ def _register_user(
     assert response.status_code == 201
 
     body = response.json()
+    user_id = body["user"]["id"]
+
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        assert user is not None
+        user.email_verified_at = user.created_at
+        session.commit()
+
+    login_response = client.post(
+        "/auth/login",
+        data={
+            "grant_type": "password",
+            "username": identifier,
+            "password": PASSWORD,
+        },
+    )
+    assert login_response.status_code == 200
 
     return {
-        "id": body["user"]["id"],
-        "access_token": body["access_token"],
+        "id": user_id,
+        "access_token": login_response.json()["access_token"],
     }
 
 

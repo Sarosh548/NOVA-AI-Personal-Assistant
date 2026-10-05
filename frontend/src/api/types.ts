@@ -15,6 +15,12 @@ export type TokenResponse = {
   user: NovaUser
 }
 
+export type RegisterResponse = {
+  user: NovaUser
+  email_verification_required: boolean
+  message: string
+}
+
 export type ApiError = {
   detail: string | Array<Record<string, unknown>>
 }

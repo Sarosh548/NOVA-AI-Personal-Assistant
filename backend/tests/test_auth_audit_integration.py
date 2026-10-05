@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 import api.auth as auth_module
 from api.auth import (
     get_auth_service,
+    get_email_verification_service,
     get_token_service,
     get_user_service,
     router as auth_router,
@@ -24,6 +25,7 @@ from services.audit_service import AuditService
 from services.auth_service import AuthService
 from services.token_service import TokenService
 from services.user_service import UserService
+
 from services.request_context import (
     normalize_request_id,
     reset_request_id,
@@ -34,6 +36,20 @@ from services.request_context import (
 TEST_SECRET = (
     "audit-integration-test-secret-key-longer-than-32"
 )
+
+
+class FakeEmailVerificationService:
+    @staticmethod
+    def normalize_email(identifier: str) -> str:
+        return identifier.strip().lower()
+
+    def issue_verification_code(
+        self,
+        *,
+        email: str,
+        user_id: str,
+    ) -> bool:
+        return True
 
 
 def build_runtime():
@@ -150,6 +166,10 @@ def test_authentication_lifecycle_writes_audit_events(
             get_user_service
         ] = lambda: user_service
 
+        app.dependency_overrides[
+            get_email_verification_service
+        ] = lambda: FakeEmailVerificationService()
+
         client = TestClient(app)
 
         identifier = (
@@ -172,6 +192,14 @@ def test_authentication_lifecycle_writes_audit_events(
 
         body = register.json()
         user_id = body["user"]["id"]
+
+        with Session(db_engine) as session:
+            user = session.get(User, user_id)
+            assert user is not None
+            user.email_verified_at = (
+                user.created_at
+            )
+            session.commit()
 
         login = client.post(
             "/auth/login",

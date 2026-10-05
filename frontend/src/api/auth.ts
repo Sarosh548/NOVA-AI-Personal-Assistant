@@ -4,20 +4,60 @@ import {
   clearStoredSession,
   persistTokenResponse,
 } from "./client"
-import type { NovaUser, TokenResponse } from "./types"
+import type {
+  NovaUser,
+  RegisterResponse,
+  TokenResponse,
+} from "./types"
 
 export async function register(params: {
   identifier: string
   password: string
   display_name?: string
-}): Promise<TokenResponse> {
-  const response = await apiRequest<TokenResponse>("/auth/register", {
+}): Promise<RegisterResponse> {
+  return apiRequest<RegisterResponse>("/auth/register", {
     method: "POST",
     body: JSON.stringify(params),
   })
+}
 
-  persistTokenResponse(response)
-  return response
+export async function verifyEmail(params: {
+  email: string
+  code: string
+}): Promise<NovaUser> {
+  return apiRequest<NovaUser>("/auth/verify-email", {
+    method: "POST",
+    body: JSON.stringify(params),
+  })
+}
+
+export async function resendVerification(email: string): Promise<{
+  message: string
+}> {
+  return apiRequest<{ message: string }>("/auth/resend-verification", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  })
+}
+
+export async function requestPasswordReset(email: string): Promise<{
+  message: string
+}> {
+  return apiRequest<{ message: string }>("/auth/request-password-reset", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  })
+}
+
+export async function resetPassword(params: {
+  email: string
+  code: string
+  new_password: string
+}): Promise<NovaUser> {
+  return apiRequest<NovaUser>("/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify(params),
+  })
 }
 
 export async function login(params: {

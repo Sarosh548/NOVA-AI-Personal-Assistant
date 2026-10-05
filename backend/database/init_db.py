@@ -12,6 +12,10 @@ from models.workflow import Workflow
 from models.workflow_step import WorkflowStep
 from models.activity_event import ActivityEvent
 from models.user import User
+from models.email_verification_challenge import (
+    EmailVerificationChallenge,
+)
+from models.password_reset_challenge import PasswordResetChallenge
 from models.user_notification_preferences import (
     UserNotificationPreferences,
 )
