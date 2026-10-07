@@ -1809,6 +1809,33 @@ def _emit_response_delta(
         return
 
 
+def _calendar_empty_response(
+    state: NOVAState,
+    tool_result: dict,
+    calendar_list_requested: bool,
+) -> str | None:
+    """
+    Return a deterministic response for a successful empty Calendar list.
+    """
+    if not (
+        tool_result.get("tool") == "calendar"
+        and tool_result.get("success") is True
+        and calendar_list_requested
+        and isinstance(
+            tool_result.get("result"),
+            dict,
+        )
+        and isinstance(
+            tool_result["result"].get("events"),
+            list,
+        )
+        and not tool_result["result"]["events"]
+    ):
+        return None
+
+    return "I don't see any calendar events scheduled for that day."
+
+
 def agent_node(state: NOVAState) -> NOVAState:
     """
     Generate NOVA's final response.
