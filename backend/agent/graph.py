@@ -1810,17 +1810,15 @@ def _emit_response_delta(
 
 
 def _calendar_empty_response(
-    state: NOVAState,
     tool_result: dict,
-    calendar_list_requested: bool,
 ) -> str | None:
     """
     Return a deterministic response for a successful empty Calendar list.
     """
     if not (
         tool_result.get("tool") == "calendar"
+        and tool_result.get("action") == "list"
         and tool_result.get("success") is True
-        and calendar_list_requested
         and isinstance(
             tool_result.get("result"),
             dict,
@@ -1874,6 +1872,17 @@ def agent_node(state: NOVAState) -> NOVAState:
         "workflow_result",
         dict(DEFAULT_WORKFLOW_RESULT),
     )
+
+    calendar_empty_response = _calendar_empty_response(
+        tool_result
+    )
+
+    if calendar_empty_response is not None:
+        return {
+            **state,
+            "response": calendar_empty_response,
+            "web_sources": [],
+        }
 
     activity_report = state.get(
         "activity_report",
