@@ -432,9 +432,14 @@ class GoogleCalendarOAuthService:
                 )
             )
 
-            self._revoke_token(
-                refresh_token
-            )
+            try:
+                self._revoke_token(
+                    refresh_token
+                )
+            except ValueError:
+                # A stale/expired Google token must never prevent NOVA from
+                # removing its own local Calendar connection.
+                pass
 
             session.delete(
                 connection
