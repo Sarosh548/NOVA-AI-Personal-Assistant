@@ -2153,6 +2153,7 @@ Response rules:
 35. Only cite web source labels that exist in the live web search result list.
 36. Do not invent sources, citations, document names, or source details.
 37. If retrieved knowledge does not support a claim, do not cite it as support.
+38. When a Google Calendar tool result reports that authorization is invalid or expired, explain that Google Calendar access needs to be reconnected. Do not expose token refresh, token, OAuth, or other internal implementation wording unless the user explicitly asks about the technical error.
 """
 
     response_delta_callback = state.get(
