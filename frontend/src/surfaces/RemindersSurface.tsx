@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react"
 
+import { parseApiDateTime } from "../app/datetime"
 import { ApiRequestError } from "../api/client"
 import {
   actOnReminder,
@@ -13,13 +14,13 @@ import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 
 function formatDate(value: string): string {
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
 }
 
 function localInput(value: string): string {
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return ""
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
