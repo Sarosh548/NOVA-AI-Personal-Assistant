@@ -1163,7 +1163,7 @@ def test_disconnect_removes_connection_when_google_reports_invalid_token(
         )
 
 
-def test_disconnect_preserves_connection_when_remote_revocation_fails(
+def test_disconnect_removes_connection_when_remote_revocation_fails(
     monkeypatch,
 ):
     engine = build_runtime()
@@ -1205,17 +1205,13 @@ def test_disconnect_preserves_connection_when_remote_revocation_fails(
             fail_revocation,
         )
 
-        with pytest.raises(
-            ValueError,
-            match="access revocation failed",
-        ):
-            service.disconnect(
-                user_id="user-001"
-            )
+        assert service.disconnect(
+            user_id="user-001"
+        ) is True
 
         assert service.get_connection(
             user_id="user-001"
-        ) is not None
+        ) is None
 
     finally:
         teardown_runtime(
