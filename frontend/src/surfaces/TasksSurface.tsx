@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react"
 
+import { parseApiDateTime } from "../app/datetime"
 import { ApiRequestError } from "../api/client"
 import {
   actOnTask,
@@ -14,7 +15,7 @@ import { Icon } from "../components/Icon"
 
 function formatDate(value: string | null): string {
   if (!value) return "No due date"
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return "No due date"
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
@@ -24,7 +25,7 @@ function formatDate(value: string | null): string {
 
 function localInput(value: string | null): string {
   if (!value) return ""
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return ""
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`

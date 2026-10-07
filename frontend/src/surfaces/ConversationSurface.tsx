@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 
+import { parseApiDateTime } from "../app/datetime"
 import { ApiRequestError } from "../api/client"
 import {
   createConversation,
@@ -31,7 +32,7 @@ function requestId(): string {
 }
 
 function formatTime(value: string): string {
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return ""
   const now = new Date()
   const sameDay =

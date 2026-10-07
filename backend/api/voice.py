@@ -593,9 +593,12 @@ async def _run_tts_output(
             await _send_error(
                 websocket,
                 code="assistant_audio_failed",
-                message=str(exc),
+                message=(
+                    "NOVA voice audio is temporarily unavailable. "
+                    "Continuing with local audio fallback."
+                ),
                 recoverable=True,
-                recovery_action="start_new_turn",
+                recovery_action="fallback_to_local_audio",
             )
         except WebSocketDisconnect:
             pass
@@ -728,7 +731,13 @@ async def _run_voice_assistant_execution(
                 )
                 first_delta_observed = True
 
-            response_bridge.on_delta(delta)
+            try:
+                response_bridge.on_delta(delta)
+            except VoiceResponseStreamBridgeError:
+                # A failed TTS stream must not cancel the authoritative LLM
+                # response. The final response will still be delivered to the
+                # client so it can use the local browser speech fallback.
+                return
 
         execution_kwargs["on_response_delta"] = on_response_delta
 
@@ -994,6 +1003,8 @@ async def _relay_transcripts(
         except asyncio.QueueFull:
             pass
 
+    barge_in_partial_count = 0
+
     try:
         async for event in orchestrator.events():
             await _send_websocket_json(websocket,
@@ -1002,11 +1013,22 @@ async def _relay_transcripts(
 
             event_type = event.get("type")
 
+            if event_type == "speech.started":
+                barge_in_partial_count = 0
+
+            if event_type == "transcript.final":
+                barge_in_partial_count = 0
+
+            if event_type == "transcript.partial":
+                partial_text = str(event.get("text") or "").strip()
+                if partial_text:
+                    barge_in_partial_count += 1
+                else:
+                    barge_in_partial_count = 0
+
             if (
-                event_type in {
-                    "speech.started",
-                    "transcript.partial",
-                }
+                event_type == "transcript.partial"
+                and barge_in_partial_count >= 2
                 and barge_in_events is not None
                 and (
                     barge_in_enabled is None
@@ -1722,6 +1744,74 @@ async def voice_websocket(
                     )
                     continue
 
+                if control.type == "assistant.interrupt":
+                    response_turn_id = assistant_turn_id
+
+                    if (
+                        response_turn_id is None
+                        or control.turn_id != response_turn_id
+                    ):
+                        continue
+
+                    previous_tts_task = tts_task
+                    previous_execution_task = assistant_execution_task
+                    previous_response_bridge = assistant_response_bridge
+                    had_active_audio = (
+                        previous_tts_task is not None
+                        and not previous_tts_task.done()
+                    )
+                    had_active_response = (
+                        (
+                            previous_tts_task is not None
+                            and not previous_tts_task.done()
+                        )
+                        or (
+                            previous_execution_task is not None
+                            and not previous_execution_task.done()
+                        )
+                        or previous_response_bridge is not None
+                    )
+
+                    if not had_active_response:
+                        continue
+
+                    tts_task = None
+                    assistant_execution_task = None
+                    assistant_response_bridge = None
+                    assistant_turn_id = None
+                    assistant_response_generation = None
+                    session_service.invalidate_response(session)
+
+                    await _cancel_voice_response(
+                        assistant_execution_task=previous_execution_task,
+                        tts_task=previous_tts_task,
+                        response_bridge=previous_response_bridge,
+                    )
+
+                    log_voice_event(
+                        event="assistant_response_interrupted",
+                        session_id=session.session_id,
+                        turn_id=response_turn_id,
+                    )
+
+                    await _send_websocket_json(
+                        websocket,
+                        {
+                            "type": "assistant.response.cancelled",
+                            "turn_id": response_turn_id,
+                        },
+                    )
+
+                    if had_active_audio:
+                        await _send_websocket_json(
+                            websocket,
+                            {
+                                "type": "assistant.audio.cancelled",
+                            },
+                        )
+
+                    continue
+
                 if (
                     control.audio_format is not None
                     and control.type != "turn.start"
@@ -2203,8 +2293,15 @@ async def voice_websocket(
 
                                     await _send_error(
                                         websocket,
-                                        code="assistant_audio_start_failed",
-                                        message=str(exc),
+                                        code="assistant_audio_failed",
+                                        message=(
+                                            "NOVA voice audio is temporarily unavailable. "
+                                            "Continuing with local audio fallback."
+                                        ),
+                                        recoverable=True,
+                                        recovery_action=(
+                                            "fallback_to_local_audio"
+                                        ),
                                     )
 
                         assistant_execution_task = (

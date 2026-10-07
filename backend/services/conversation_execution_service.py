@@ -138,7 +138,7 @@ class ConversationExecutionService:
                 "conversation_id": conversation_id,
             }
 
-        if not history:
+        if not history and not resolved_context.is_voice:
             title = (
                 self.llm_service
                 .generate_conversation_title(

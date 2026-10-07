@@ -1809,6 +1809,31 @@ def _emit_response_delta(
         return
 
 
+def _calendar_empty_response(
+    tool_result: dict,
+) -> str | None:
+    """
+    Return a deterministic response for a successful empty Calendar list.
+    """
+    if not (
+        tool_result.get("tool") == "calendar"
+        and tool_result.get("action") == "list"
+        and tool_result.get("success") is True
+        and isinstance(
+            tool_result.get("result"),
+            dict,
+        )
+        and isinstance(
+            tool_result["result"].get("events"),
+            list,
+        )
+        and not tool_result["result"]["events"]
+    ):
+        return None
+
+    return "I don't see any calendar events scheduled for that day."
+
+
 def agent_node(state: NOVAState) -> NOVAState:
     """
     Generate NOVA's final response.
@@ -1847,6 +1872,17 @@ def agent_node(state: NOVAState) -> NOVAState:
         "workflow_result",
         dict(DEFAULT_WORKFLOW_RESULT),
     )
+
+    calendar_empty_response = _calendar_empty_response(
+        tool_result
+    )
+
+    if calendar_empty_response is not None:
+        return {
+            **state,
+            "response": calendar_empty_response,
+            "web_sources": [],
+        }
 
     activity_report = state.get(
         "activity_report",
@@ -2153,6 +2189,7 @@ Response rules:
 35. Only cite web source labels that exist in the live web search result list.
 36. Do not invent sources, citations, document names, or source details.
 37. If retrieved knowledge does not support a claim, do not cite it as support.
+38. When a Google Calendar tool result reports that authorization is invalid or expired, explain that Google Calendar access needs to be reconnected. Do not expose token refresh, token, OAuth, or other internal implementation wording unless the user explicitly asks about the technical error.
 """
 
     response_delta_callback = state.get(

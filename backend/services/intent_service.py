@@ -6,13 +6,25 @@ from zoneinfo import ZoneInfo
 
 from openai import OpenAI
 
+from config import LLMSettings, get_llm_settings
+
 
 MODEL_NAME = "openai/gpt-oss-20b"
 USER_TIMEZONE = "Asia/Karachi"
 
 
 class IntentService:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        settings: LLMSettings | None = None,
+    ):
+        active_settings = (
+            settings
+            if settings is not None
+            else get_llm_settings()
+        )
+
         groq_api_key = os.getenv("GROQ_API_KEY")
 
         if not groq_api_key:
@@ -23,7 +35,15 @@ class IntentService:
         self.client = OpenAI(
             api_key=groq_api_key,
             base_url="https://api.groq.com/openai/v1",
+            timeout=(
+                active_settings.llm_request_timeout_seconds
+            ),
+            max_retries=(
+                active_settings.llm_max_retries
+            ),
         )
+
+        self.settings = active_settings
 
     def analyze(
         self,

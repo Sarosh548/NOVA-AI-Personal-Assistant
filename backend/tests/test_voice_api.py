@@ -1617,9 +1617,9 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
 
         fake_stt = FakeVoiceSTTOrchestrator.instances[0]
 
-        # The fake always emits transcript.partial; that event alone must
-        # trigger hands-free interruption without requiring speech.started.
-        websocket.send_bytes(b"interrupting")
+        # A single interim transcript is not enough for hands-free interruption.
+        websocket.send_bytes(b"interrupting-1")
+        websocket.send_bytes(b"interrupting-2")
 
         cancelled_response = None
         cancelled_audio = None
@@ -1659,6 +1659,136 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
                 "turn_id": "turn-2",
             }
         )
+
+
+def test_voice_websocket_explicit_interrupt_preserves_active_user_turn(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+                "interrupt_response": False,
+            }
+        )
+
+        armed = websocket.receive_json()
+        assert armed["type"] == "turn.started"
+        assert armed["turn_id"] == "turn-2"
+
+        websocket.send_json(
+            {
+                "type": "assistant.interrupt",
+                "turn_id": "turn-1",
+            }
+        )
+
+        cancelled = {}
+        while (
+            "assistant.response.cancelled" not in cancelled
+            or "assistant.audio.cancelled" not in cancelled
+        ):
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            cancelled[payload["type"]] = payload
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert cancelled["assistant.response.cancelled"] == {
+            "type": "assistant.response.cancelled",
+            "turn_id": "turn-1",
+        }
+        assert cancelled["assistant.audio.cancelled"] == {
+            "type": "assistant.audio.cancelled",
+        }
+
+        websocket.send_bytes(b"interrupting")
+
+        partial = None
+        while partial is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            if payload["type"] == "transcript.partial":
+                partial = payload
+
+        assert partial["turn_id"] == "turn-2"
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-2",
+            }
+        )
+
+        committed = None
+        while committed is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            if payload["type"] == "turn.committed":
+                committed = payload
+
+        assert committed["turn_id"] == "turn-2"
+
+        core_service.release_first_execution.set()
 
 
 def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_together(
@@ -1718,11 +1848,13 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
 
         assert websocket.receive_json()["type"] == "turn.started"
 
-        websocket.send_bytes(b"interrupting")
+        websocket.send_bytes(b"interrupting-1")
         partial = websocket.receive_json()
         assert partial["type"] == "transcript.partial"
 
-        # Commit immediately after the interruption transcript. The server
+        websocket.send_bytes(b"interrupting-2")
+
+        # Commit immediately after the stable interruption transcript. The server
         # may have the barge-in signal and the control message ready in the
         # same event-loop cycle; the commit must not be dropped.
         websocket.send_json(
@@ -2622,6 +2754,7 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
         fake_tts = FakeVoiceTTSOrchestrator.instances[0]
 
         error_message = None
+        assistant_response = None
         while error_message is None:
             message = websocket.receive()
 
@@ -2639,11 +2772,16 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
                 continue
 
             if payload["type"] == "assistant.response":
+                assistant_response = payload
                 continue
+
+        assert assistant_response is not None
+        assert assistant_response["turn_id"] == "turn-tts-failure"
+        assert assistant_response["response"]
 
         assert error_message["code"] == "assistant_audio_failed"
         assert error_message["recoverable"] is True
-        assert error_message["recovery_action"] == "start_new_turn"
+        assert error_message["recovery_action"] == "fallback_to_local_audio"
 
         websocket.send_json(
             {

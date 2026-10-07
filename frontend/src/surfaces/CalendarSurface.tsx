@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react"
 
+import { parseApiDateTime } from "../app/datetime"
 import { ApiRequestError } from "../api/client"
 import {
   createCalendarEvent,
@@ -86,11 +87,11 @@ function formatEventTime(event: CalendarEvent | null): string {
   }
 
   if (typeof start?.dateTime === "string") {
-    const startDate = new Date(start.dateTime)
+    const startDate = parseApiDateTime(start.dateTime)
     if (Number.isNaN(startDate.getTime())) return start.dateTime
 
     if (typeof end?.dateTime === "string") {
-      const endDate = new Date(end.dateTime)
+      const endDate = parseApiDateTime(end.dateTime)
       if (!Number.isNaN(endDate.getTime())) {
         return `${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(startDate)} – ${new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(endDate)}`
       }
@@ -127,7 +128,7 @@ function allDayBoundary(event: CalendarEvent | null, key: "start" | "end"): stri
 
 function localInput(value: string): string {
   if (!value) return ""
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return ""
   return dateTimeInputValue(date)
 }
@@ -174,6 +175,14 @@ function attendeeText(event: CalendarEvent): string {
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof ApiRequestError ? error.detail : fallback
+}
+
+function isCalendarAuthorizationError(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.status === 401 &&
+    /google calendar authorization is invalid or expired/i.test(error.detail)
+  )
 }
 
 export function CalendarSurface() {
@@ -223,7 +232,16 @@ export function CalendarSurface() {
       setNextPageToken(result.next_page_token ?? null)
       setLastSyncedAt(new Date().toISOString())
     } catch (err) {
-      setError(errorText(err, "NOVA could not load Google Calendar events."))
+      if (isCalendarAuthorizationError(err)) {
+        setConnected(false)
+        setCalendarId(null)
+        setEvents([])
+        setNextPageToken(null)
+        setLastSyncedAt(null)
+        setError("Google Calendar authorization has expired. Reconnect Google Calendar to continue.")
+      } else {
+        setError(errorText(err, "NOVA could not load Google Calendar events."))
+      }
     } finally {
       if (reset) setLoading(false)
       else setLoadingMore(false)
@@ -260,7 +278,16 @@ export function CalendarSurface() {
       setNextPageToken(result.next_page_token ?? null)
       setLastSyncedAt(new Date().toISOString())
     } catch (err) {
-      setError(errorText(err, "NOVA could not load Google Calendar."))
+      if (isCalendarAuthorizationError(err)) {
+        setConnected(false)
+        setCalendarId(null)
+        setEvents([])
+        setNextPageToken(null)
+        setLastSyncedAt(null)
+        setError("Google Calendar authorization has expired. Reconnect Google Calendar to continue.")
+      } else {
+        setError(errorText(err, "NOVA could not load Google Calendar."))
+      }
     } finally {
       setLoading(false)
     }

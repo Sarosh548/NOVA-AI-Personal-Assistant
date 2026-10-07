@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+import logging
 from collections.abc import AsyncIterator
 from urllib.parse import urlencode
 
@@ -65,10 +67,14 @@ class DeepgramSTTStream(STTStream):
         self._receiver_task: asyncio.Task[None] = asyncio.create_task(
             self._receive_provider_events()
         )
+        self._keepalive_task: asyncio.Task[None] = asyncio.create_task(
+            self._send_keepalives()
+        )
         self._sequence = 0
         self._finished = False
         self._cancelled = False
         self._closed = False
+        self._last_audio_sent_monotonic = time.monotonic()
 
     @property
     def stream_id(self) -> str:
@@ -116,6 +122,7 @@ class DeepgramSTTStream(STTStream):
                 await self._websocket.send(
                     frame
                 )
+                self._last_audio_sent_monotonic = time.monotonic()
             except ConnectionClosed as exc:
                 raise STTAdapterError(
                     "Deepgram STT connection closed while sending audio."
@@ -182,6 +189,7 @@ class DeepgramSTTStream(STTStream):
 
         self._cancelled = True
 
+        await self._stop_keepalive()
         await self._stop_receiver()
         await self._safe_close_provider()
 
@@ -193,6 +201,7 @@ class DeepgramSTTStream(STTStream):
 
         self._closed = True
 
+        await self._stop_keepalive()
         await self._stop_receiver()
         await self._safe_close_provider()
 
@@ -325,14 +334,47 @@ class DeepgramSTTStream(STTStream):
             raise
         except ConnectionClosed as exc:
             if not self._cancelled and not self._closed:
+                close_code = getattr(exc, "code", None)
+                close_reason = str(getattr(exc, "reason", "") or "").strip()
+                logging.getLogger("nova.stt").warning(
+                    "Deepgram STT connection closed",
+                    extra={
+                        "nova_context": {
+                            "event": "deepgram_connection_closed",
+                            "session_id": self._request.session_id,
+                            "turn_id": self._request.turn_id,
+                            "close_code": close_code,
+                            "close_reason": close_reason[:256],
+                        }
+                    },
+                )
                 await self._events.put(
                     STTAdapterError(
-                        "Deepgram STT connection closed unexpectedly."
+                        (
+                            "Deepgram STT connection closed unexpectedly"
+                            + (
+                                f" ({close_reason})"
+                                if close_reason
+                                else ""
+                            )
+                        )
                     )
                 )
                 return
         except WebSocketException as exc:
             if not self._cancelled and not self._closed:
+                logging.getLogger("nova.stt").warning(
+                    "Deepgram STT WebSocket failed",
+                    extra={
+                        "nova_context": {
+                            "event": "deepgram_websocket_failed",
+                            "session_id": self._request.session_id,
+                            "turn_id": self._request.turn_id,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:256],
+                        }
+                    },
+                )
                 await self._events.put(
                     STTAdapterError(
                         "Deepgram STT WebSocket failed."
@@ -341,6 +383,17 @@ class DeepgramSTTStream(STTStream):
                 return
         except Exception as exc:
             if not self._cancelled and not self._closed:
+                logging.getLogger("nova.stt").exception(
+                    "Deepgram STT event processing failed",
+                    extra={
+                        "nova_context": {
+                            "event": "deepgram_event_processing_failed",
+                            "session_id": self._request.session_id,
+                            "turn_id": self._request.turn_id,
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                )
                 await self._events.put(
                     STTAdapterError(
                         "Deepgram STT event processing failed."
@@ -419,6 +472,110 @@ class DeepgramSTTStream(STTStream):
             ),
             created_at=utc_now(),
         )
+
+    def _silent_audio_frame(self) -> bytes | None:
+        encoding = self._request.audio_format.encoding
+
+        if encoding in {"pcm_s16le", "linear16"}:
+            samples = max(
+                1,
+                int(
+                    self._request.audio_format.sample_rate_hz
+                    * 0.02
+                ),
+            )
+            return b"\x00" * (
+                samples
+                * self._request.audio_format.channels
+                * 2
+            )
+
+        if encoding in {"mulaw", "ulaw", "alaw"}:
+            samples = max(
+                1,
+                int(
+                    self._request.audio_format.sample_rate_hz
+                    * 0.02
+                ),
+            )
+            return b"\x00" * (
+                samples
+                * self._request.audio_format.channels
+            )
+
+        return None
+
+    async def _send_keepalives(self) -> None:
+        try:
+            while not self._cancelled and not self._closed and not self._finished:
+                await asyncio.sleep(
+                    self._settings.stt_keepalive_interval_seconds
+                )
+
+                if self._cancelled or self._closed or self._finished:
+                    return
+
+                async with self._send_lock:
+                    idle_seconds = (
+                        time.monotonic()
+                        - self._last_audio_sent_monotonic
+                    )
+
+                    if idle_seconds >= (
+                        self._settings
+                        .stt_keepalive_interval_seconds
+                    ):
+                        silence = self._silent_audio_frame()
+                        if silence is not None:
+                            await self._websocket.send(
+                                silence
+                            )
+                            self._last_audio_sent_monotonic = (
+                                time.monotonic()
+                            )
+
+                    await self._websocket.send(
+                        json.dumps(
+                            {
+                                "type": "KeepAlive"
+                            }
+                        )
+                    )
+        except asyncio.CancelledError:
+            raise
+        except ConnectionClosed:
+            return
+        except WebSocketException:
+            return
+        except Exception as exc:
+            if not self._cancelled and not self._closed:
+                logging.getLogger("nova.stt").warning(
+                    "Deepgram STT keepalive failed",
+                    extra={
+                        "nova_context": {
+                            "event": "deepgram_keepalive_failed",
+                            "session_id": self._request.session_id,
+                            "turn_id": self._request.turn_id,
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                )
+
+    async def _stop_keepalive(self) -> None:
+        task = self._keepalive_task
+
+        if task is None:
+            return
+
+        self._keepalive_task = None
+
+        if not task.done():
+            task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def _stop_receiver(self) -> None:
         task = self._receiver_task

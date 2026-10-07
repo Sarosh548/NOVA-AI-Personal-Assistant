@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
+import { parseApiDateTime } from "../app/datetime"
 import { ApiRequestError } from "../api/client"
 import {
   approveAndExecuteConfirmation,
@@ -43,7 +44,7 @@ const permissionActions: Permission["action"][] = [
 
 function formatDate(value: string | null): string {
   if (!value) return "—"
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",

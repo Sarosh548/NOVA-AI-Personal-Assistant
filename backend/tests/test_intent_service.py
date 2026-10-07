@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+import services.intent_service as intent_service_module
 from services.intent_service import IntentService
 
 
@@ -411,3 +414,33 @@ def test_analyze_applies_deterministic_fresh_web_routing(monkeypatch):
     assert result["query"] == "What's the latest FastAPI release?"
     assert result["requires_tool"] is True
 
+
+
+def test_intent_service_uses_bounded_llm_settings(monkeypatch):
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(
+        intent_service_module,
+        "OpenAI",
+        FakeOpenAI,
+    )
+    monkeypatch.setattr(
+        intent_service_module,
+        "get_llm_settings",
+        lambda: SimpleNamespace(
+            llm_request_timeout_seconds=7.5,
+            llm_max_retries=1,
+        ),
+    )
+
+    service = IntentService()
+
+    assert service.settings.llm_request_timeout_seconds == 7.5
+    assert service.settings.llm_max_retries == 1
+    assert captured["timeout"] == 7.5
+    assert captured["max_retries"] == 1

@@ -389,3 +389,19 @@ def test_execute_message_rejects_empty_input_without_side_effects():
     assert execution.calls == []
     assert llm.title_calls == []
     assert memory.calls == []
+
+
+def test_execute_message_skips_title_llm_for_realtime_voice():
+    service, conversation, execution, llm, memory = _service()
+
+    context = ExecutionContext.interactive(voice=True)
+
+    result = service.execute_message(
+        user_id="user-1",
+        message="Hello NOVA from voice",
+        execution_context=context,
+    )
+
+    assert result["response"] == "NOVA response"
+    assert llm.title_calls == []
+    assert execution.calls[0]["execution_context"].is_voice is True

@@ -18,6 +18,8 @@ type MicrophonePermission = "unknown" | "prompt" | "granted" | "denied"
 const TARGET_SAMPLE_RATE = 16_000
 const TARGET_CHANNELS = 1
 const TARGET_ENCODING = "pcm_s16le"
+const VOICE_AUDIO_START_TIMEOUT_MS = 6_000
+
 
 const PCM_WORKLET_SOURCE = `
 class NovaPcmProcessor extends AudioWorkletProcessor {
@@ -28,6 +30,9 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
     this.position = 0
     this.targetRate = 16000
     this.chunkSize = 320
+    this.speechSamples = 0
+    this.vadTriggered = false
+    this.noiseFloor = 0.003
 
     this.port.onmessage = (event) => {
       if (event.data && event.data.type === "set-active") {
@@ -35,6 +40,9 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
         if (!this.active) {
           this.buffer = new Float32Array(0)
           this.position = 0
+          this.speechSamples = 0
+          this.vadTriggered = false
+          this.noiseFloor = 0.003
         }
       }
     }
@@ -46,6 +54,35 @@ class NovaPcmProcessor extends AudioWorkletProcessor {
 
     if (!this.active) {
       return true
+    }
+
+    let energy = 0
+    for (let index = 0; index < channel.length; index += 1) {
+      const sample = channel[index]
+      energy += sample * sample
+    }
+
+    const rms = Math.sqrt(energy / Math.max(1, channel.length))
+    this.noiseFloor = this.noiseFloor * 0.995 + rms * 0.005
+    const threshold = Math.max(
+      0.02,
+      this.noiseFloor * 2.5,
+    )
+
+    if (rms >= threshold) {
+      this.speechSamples += channel.length
+      if (
+        !this.vadTriggered
+        && this.speechSamples >= sampleRate * 0.1
+      ) {
+        this.vadTriggered = true
+        this.port.postMessage({ type: "voice-start" })
+      }
+    } else {
+      this.speechSamples = Math.max(
+        0,
+        this.speechSamples - channel.length,
+      )
     }
 
     const merged = new Float32Array(this.buffer.length + channel.length)
@@ -112,6 +149,15 @@ function requestId(): string {
 
 function formatError(error: unknown, fallback: string): string {
   return error instanceof ApiRequestError ? error.detail : fallback
+}
+
+function traceVoiceEvent(
+  event: string,
+  details?: Record<string, unknown>,
+): void {
+  if (import.meta.env.DEV) {
+    console.info("[NOVA voice trace]", event, details ?? {})
+  }
 }
 
 function mergeTranscriptText(
@@ -198,6 +244,9 @@ export function VoiceSurface({
   const turnIdRef = useRef<string | null>(null)
   const bargeInArmedRef = useRef(false)
   const bargeInSpeechDetectedRef = useRef(false)
+  const bargeInPartialCountRef = useRef(0)
+  const suppressAssistantAudioRef = useRef(false)
+  const localVoiceStartRef = useRef<(() => void) | null>(null)
   const sessionReadyRef = useRef(false)
   const intentionalCloseRef = useRef(false)
   const reconnectingRef = useRef(false)
@@ -206,6 +255,13 @@ export function VoiceSurface({
   const authRecoveryAttemptedRef = useRef(false)
   const assistantAudioFinalRef = useRef(false)
   const assistantTurnIdRef = useRef<string | null>(null)
+  const assistantResponseRef = useRef("")
+  const browserSpeechActiveRef = useRef(false)
+  const browserSpeechFallbackPendingRef = useRef(false)
+  const browserSpeechGenerationRef = useRef(0)
+  const sttRecoveryAttemptsRef = useRef(0)
+  const audioRecoveryTimerRef = useRef<number | null>(null)
+  const assistantAudioStartedRef = useRef(false)
   const pingTimerRef = useRef<number | null>(null)
   const workletUrlRef = useRef<string | null>(null)
   const startTurnRef = useRef<(() => Promise<void>) | null>(null)
@@ -226,7 +282,15 @@ export function VoiceSurface({
     }
   }, [])
 
+  const clearAudioRecoveryTimer = useCallback(() => {
+    if (audioRecoveryTimerRef.current !== null) {
+      window.clearTimeout(audioRecoveryTimerRef.current)
+      audioRecoveryTimerRef.current = null
+    }
+  }, [])
+
   const stopPlayback = useCallback(() => {
+    clearAudioRecoveryTimer()
     clearPlaybackTimer()
     clearAutoListenTimer()
     playbackGenerationRef.current += 1
@@ -242,7 +306,7 @@ export function VoiceSurface({
     playbackEndTimeRef.current = 0
     assistantAudioFinalRef.current = false
     setAudioState("idle")
-  }, [clearAutoListenTimer])
+  }, [clearAudioRecoveryTimer, clearAutoListenTimer])
 
   const ensureAudioOutput = useCallback(async () => {
     const audioContext = audioContextRef.current ?? new AudioContext()
@@ -312,6 +376,139 @@ export function VoiceSurface({
     }
   }, [deactivateCapture])
 
+  const stopBrowserSpeech = useCallback(() => {
+    browserSpeechGenerationRef.current += 1
+    browserSpeechActiveRef.current = false
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel()
+    }
+  }, [])
+
+  const speakBrowserFallback = useCallback(
+    (text: string) => {
+      const normalizedText = text.trim()
+
+      browserSpeechFallbackPendingRef.current = false
+      clearAutoListenTimer()
+      clearAudioRecoveryTimer()
+      releaseAudioCapture()
+      stopPlayback()
+
+      if (!normalizedText) {
+        setAudioState("idle")
+        setState("ready")
+        return
+      }
+
+      if (
+        typeof window === "undefined"
+        || !("speechSynthesis" in window)
+        || !("SpeechSynthesisUtterance" in window)
+      ) {
+        setAudioState("idle")
+        setState("ready")
+        setError(
+          "NOVA voice audio is temporarily unavailable. Please try again.",
+        )
+        return
+      }
+
+      stopBrowserSpeech()
+      setAudioState("preparing")
+      setState("speaking")
+
+      const speechGeneration =
+        browserSpeechGenerationRef.current
+
+      const utterance = new SpeechSynthesisUtterance(
+        normalizedText,
+      )
+
+      const voices = window.speechSynthesis.getVoices()
+      const preferredVoice =
+        voices.find((voice) =>
+          voice.lang.toLowerCase().startsWith("en")
+          && /samantha|aria|jenny|zira|susan|libby|female/i.test(
+            voice.name,
+          ),
+        )
+        ?? voices.find((voice) =>
+          voice.lang.toLowerCase().startsWith("en"),
+        )
+        ?? voices[0]
+
+      if (preferredVoice) {
+        utterance.voice = preferredVoice
+      }
+
+      utterance.rate = 1
+      utterance.pitch = 1
+
+      utterance.onstart = () => {
+        if (
+          browserSpeechGenerationRef.current !== speechGeneration
+        ) {
+          return
+        }
+
+        browserSpeechActiveRef.current = true
+        setAudioState("playing")
+        setState("speaking")
+      }
+
+      utterance.onend = () => {
+        if (
+          browserSpeechGenerationRef.current !== speechGeneration
+        ) {
+          return
+        }
+
+        browserSpeechActiveRef.current = false
+        setAudioState("idle")
+        setState("ready")
+        setError(null)
+
+        window.setTimeout(() => {
+          if (
+            browserSpeechGenerationRef.current !== speechGeneration
+            || intentionalCloseRef.current
+            || !sessionReadyRef.current
+          ) {
+            return
+          }
+
+          void startTurnRef.current?.()
+        }, 120)
+      }
+
+      utterance.onerror = () => {
+        if (
+          browserSpeechGenerationRef.current !== speechGeneration
+        ) {
+          return
+        }
+
+        browserSpeechActiveRef.current = false
+        setAudioState("idle")
+        setState("ready")
+        setError(
+          "NOVA could not play the local voice fallback. Try again.",
+        )
+      }
+
+      browserSpeechActiveRef.current = true
+      window.speechSynthesis.speak(utterance)
+    },
+    [
+      clearAudioRecoveryTimer,
+      clearAutoListenTimer,
+      releaseAudioCapture,
+      stopBrowserSpeech,
+      stopPlayback,
+    ],
+  )
+
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       window.clearTimeout(reconnectTimerRef.current)
@@ -349,6 +546,11 @@ export function VoiceSurface({
     reconnectingRef.current = false
     intentionalCloseRef.current = true
     reconnectAttemptRef.current = 0
+    stopBrowserSpeech()
+    browserSpeechFallbackPendingRef.current = false
+    clearAudioRecoveryTimer()
+    sttRecoveryAttemptsRef.current = 0
+    assistantResponseRef.current = ""
     assistantTurnIdRef.current = null
     clearAutoListenTimer()
     releaseAudioCapture()
@@ -369,6 +571,7 @@ export function VoiceSurface({
       socket.close()
     }
   }, [
+    clearAudioRecoveryTimer,
     clearAutoListenTimer,
     releaseAudioCapture,
     stopPlayback,
@@ -440,6 +643,14 @@ export function VoiceSurface({
           event.data instanceof ArrayBuffer
             ? event.data
             : await event.data.arrayBuffer()
+
+        if (
+          bargeInArmedRef.current
+          && suppressAssistantAudioRef.current
+        ) {
+          traceVoiceEvent("client.audio.suppressed")
+          return
+        }
 
         setAudioChunkCount((count) => count + 1)
         setAudioByteCount((count) => count + payload.byteLength)
@@ -555,6 +766,8 @@ export function VoiceSurface({
       const type = payload.type
 
       if (type === "session.ready") {
+        traceVoiceEvent("server.session.ready")
+        sttRecoveryAttemptsRef.current = 0
         sessionReadyRef.current = true
         reconnectAttemptRef.current = 0
         authRecoveryAttemptedRef.current = false
@@ -571,6 +784,11 @@ export function VoiceSurface({
       }
 
       if (type === "turn.started") {
+        bargeInPartialCountRef.current = 0
+        traceVoiceEvent("server.turn.started", {
+          turn_id: String(payload.turn_id ?? ""),
+          barge_in_armed: bargeInArmedRef.current,
+        })
         if (bargeInArmedRef.current) {
           return
         }
@@ -580,28 +798,47 @@ export function VoiceSurface({
       }
 
       if (type === "speech.started") {
-        if (
-          bargeInArmedRef.current
-          && !bargeInSpeechDetectedRef.current
-        ) {
-          bargeInSpeechDetectedRef.current = true
-          confirmedTranscriptRef.current = ""
-          setTranscript("")
-          stopPlayback()
+        traceVoiceEvent("server.speech.started", {
+          turn_id: String(payload.turn_id ?? ""),
+          barge_in_armed: bargeInArmedRef.current,
+        })
+        if (bargeInArmedRef.current) {
+          bargeInPartialCountRef.current = 0
         }
-        setState("listening")
+        // Deepgram speech detection is only an early signal. Do not interrupt
+        // playback or change the visible state until stable transcript
+        // evidence arrives.
         return
       }
 
       if (type === "transcript.partial") {
+        sttRecoveryAttemptsRef.current = 0
+        const partialText = String(payload.text ?? "").trim()
+        traceVoiceEvent("server.transcript.partial", {
+          turn_id: String(payload.turn_id ?? ""),
+          text: partialText,
+        })
+
         if (bargeInArmedRef.current) {
+          if (partialText) {
+            bargeInPartialCountRef.current += 1
+          } else {
+            bargeInPartialCountRef.current = 0
+          }
+
+          // One interim result can be environmental noise or speaker bleed.
+          // Require two consecutive non-empty partials before interrupting.
+          if (bargeInPartialCountRef.current < 2) {
+            return
+          }
+
           if (!bargeInSpeechDetectedRef.current) {
             stopPlayback()
           }
           bargeInSpeechDetectedRef.current = true
           confirmedTranscriptRef.current = ""
         }
-        const partialText = String(payload.text ?? "")
+
         setTranscript(
           mergeTranscriptText(
             confirmedTranscriptRef.current,
@@ -613,6 +850,7 @@ export function VoiceSurface({
       }
 
       if (type === "transcript.final") {
+        sttRecoveryAttemptsRef.current = 0
         if (bargeInArmedRef.current) {
           bargeInSpeechDetectedRef.current = true
         }
@@ -635,6 +873,9 @@ export function VoiceSurface({
       }
 
       if (type === "turn.committed") {
+        traceVoiceEvent("server.turn.committed", {
+          turn_id: String(payload.turn_id ?? ""),
+        })
         const committedTranscript = String(
           payload.transcript ?? "",
         ).trim()
@@ -650,17 +891,67 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response") {
+        traceVoiceEvent("server.assistant.response", {
+          turn_id: String(payload.turn_id ?? ""),
+        })
+
+        const responseText = String(payload.response ?? "")
+        assistantResponseRef.current = responseText
+        assistantAudioStartedRef.current = false
+        clearAudioRecoveryTimer()
+
+        suppressAssistantAudioRef.current = false
         assistantTurnIdRef.current = String(payload.turn_id ?? "") || null
-        setResponse(String(payload.response ?? ""))
+        setResponse(responseText)
+
+        if (browserSpeechFallbackPendingRef.current) {
+          void speakBrowserFallback(responseText)
+          return
+        }
+
         setAudioState((current) =>
           current === "playing" ? current : "preparing",
         )
         setState("speaking")
         void armBargeInTurnRef.current?.()
+
+        audioRecoveryTimerRef.current = window.setTimeout(() => {
+          audioRecoveryTimerRef.current = null
+
+          if (
+            assistantAudioStartedRef.current
+            || browserSpeechActiveRef.current
+            || browserSpeechFallbackPendingRef.current
+            || assistantTurnIdRef.current !== String(payload.turn_id ?? "")
+            || intentionalCloseRef.current
+            || !sessionReadyRef.current
+          ) {
+            return
+          }
+
+          const fallbackText = assistantResponseRef.current.trim()
+          if (!fallbackText) {
+            setAudioState("idle")
+            setState("ready")
+            return
+          }
+
+          traceVoiceEvent("client.audio_fallback_watchdog", {
+            turn_id: String(payload.turn_id ?? ""),
+          })
+          browserSpeechFallbackPendingRef.current = true
+          void speakBrowserFallback(fallbackText)
+        }, VOICE_AUDIO_START_TIMEOUT_MS)
         return
       }
 
       if (type === "assistant.audio.started") {
+        clearAudioRecoveryTimer()
+        assistantAudioStartedRef.current = true
+        traceVoiceEvent("server.assistant.audio.started", {
+          turn_id: String(payload.turn_id ?? ""),
+        })
+        suppressAssistantAudioRef.current = false
         setAudioState("preparing")
         setState("speaking")
         void armBargeInTurnRef.current?.()
@@ -683,6 +974,11 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.response.cancelled") {
+        clearAudioRecoveryTimer()
+        assistantAudioStartedRef.current = false
+        traceVoiceEvent("server.assistant.response.cancelled", {
+          turn_id: String(payload.turn_id ?? ""),
+        })
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
         assistantTurnIdRef.current = null
@@ -698,6 +994,9 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.cancelled") {
+        clearAudioRecoveryTimer()
+        assistantAudioStartedRef.current = false
+        traceVoiceEvent("server.assistant.audio.cancelled")
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
         assistantTurnIdRef.current = null
@@ -710,6 +1009,7 @@ export function VoiceSurface({
       }
 
       if (type === "assistant.audio.final") {
+        clearAudioRecoveryTimer()
         await playbackEventChainRef.current
         const serverChunkCount = Number(payload.audio_chunk_count)
         const serverByteCount = Number(payload.audio_byte_count)
@@ -781,6 +1081,68 @@ export function VoiceSurface({
           }
         }
 
+        if (
+          recoverable
+          && code === "assistant_audio_failed"
+        ) {
+          clearAutoListenTimer()
+          clearAudioRecoveryTimer()
+          assistantAudioFinalRef.current = false
+          browserSpeechFallbackPendingRef.current = true
+          setAudioState("preparing")
+          setState("speaking")
+          stopPlayback()
+          releaseAudioCapture()
+          setState("thinking")
+          setError(null)
+
+          const fallbackText = assistantResponseRef.current.trim()
+          if (fallbackText) {
+            void speakBrowserFallback(fallbackText)
+          }
+
+          return
+        }
+
+        if (
+          recoverable
+          && code === "stt_error"
+        ) {
+          const attempt = sttRecoveryAttemptsRef.current + 1
+          sttRecoveryAttemptsRef.current = attempt
+
+          stopBrowserSpeech()
+          browserSpeechFallbackPendingRef.current = false
+          clearAutoListenTimer()
+          assistantAudioFinalRef.current = false
+          setAudioState("idle")
+          releaseAudioCapture()
+
+          if (attempt <= 2) {
+            setError(null)
+            setState("reconnecting")
+
+            const delay = attempt === 1 ? 250 : 750
+            window.setTimeout(() => {
+              if (
+                intentionalCloseRef.current
+                || !sessionReadyRef.current
+              ) {
+                return
+              }
+
+              void startTurnRef.current?.()
+            }, delay)
+          } else {
+            setState("ready")
+            setError("Voice listening needs a quick restart. Tap Talk to NOVA once.")
+          }
+
+          return
+        }
+
+        stopBrowserSpeech()
+        browserSpeechFallbackPendingRef.current = false
         clearAutoListenTimer()
         assistantAudioFinalRef.current = false
         setAudioState("idle")
@@ -788,9 +1150,7 @@ export function VoiceSurface({
 
         if (
           recoverable &&
-          (code === "assistant_audio_failed" ||
-            code === "stt_error" ||
-            code === "assistant_execution_failed")
+          code === "assistant_execution_failed"
         ) {
           setState("ready")
         } else {
@@ -891,6 +1251,11 @@ export function VoiceSurface({
     muteGain.gain.value = 0
 
     worklet.port.onmessage = (event) => {
+      if (event.data && event.data.type === "voice-start") {
+        localVoiceStartRef.current?.()
+        return
+      }
+
       const socketNow = socketRef.current
       const turnId = turnIdRef.current
 
@@ -926,10 +1291,15 @@ export function VoiceSurface({
     }
 
     clearAutoListenTimer()
+    stopBrowserSpeech()
+    browserSpeechFallbackPendingRef.current = false
+    assistantResponseRef.current = ""
     assistantAudioFinalRef.current = false
     assistantTurnIdRef.current = null
     bargeInArmedRef.current = false
     bargeInSpeechDetectedRef.current = false
+    bargeInPartialCountRef.current = 0
+    suppressAssistantAudioRef.current = false
     stopPlayback()
     setResponse("")
     confirmedTranscriptRef.current = ""
@@ -976,6 +1346,7 @@ export function VoiceSurface({
     ensureAudioCapture,
     clearAutoListenTimer,
     deactivateCapture,
+    stopBrowserSpeech,
     stopPlayback,
   ])
 
@@ -1013,6 +1384,29 @@ export function VoiceSurface({
     deactivateCapture()
   }, [deactivateCapture])
 
+  const handleLocalVoiceStart = useCallback(() => {
+    if (
+      !bargeInArmedRef.current
+      || bargeInSpeechDetectedRef.current
+      || assistantTurnIdRef.current === null
+    ) {
+      return
+    }
+
+    traceVoiceEvent("client.local_voice_start", {
+      response_turn_id: assistantTurnIdRef.current,
+    })
+    // Local VAD is intentionally non-authoritative. It must never cancel or
+    // stop NOVA audio on its own because environmental sound can resemble speech.
+  }, [])
+
+  useEffect(() => {
+    localVoiceStartRef.current = handleLocalVoiceStart
+    return () => {
+      localVoiceStartRef.current = null
+    }
+  }, [handleLocalVoiceStart])
+
   const armBargeInTurn = useCallback(async () => {
     if (
       !sessionReadyRef.current
@@ -1040,7 +1434,14 @@ export function VoiceSurface({
 
       bargeInArmedRef.current = true
       bargeInSpeechDetectedRef.current = false
+      bargeInPartialCountRef.current = 0
+      suppressAssistantAudioRef.current = false
       turnIdRef.current = turnId
+
+      traceVoiceEvent("client.barge_in.armed", {
+        turn_id: turnId,
+        assistant_turn_id: assistantTurnIdRef.current,
+      })
 
       socket.send(
         JSON.stringify({
@@ -1200,10 +1601,25 @@ export function VoiceSurface({
   }, [online, connect, closeSocket, clearAutoListenTimer, clearReconnectTimer])
 
   const cancelActiveVoice = useCallback(() => {
+    const hadBrowserSpeech =
+      browserSpeechActiveRef.current
+      || browserSpeechFallbackPendingRef.current
+
+    stopBrowserSpeech()
+    browserSpeechFallbackPendingRef.current = false
+
     const socket = socketRef.current
     const turnId = turnIdRef.current ?? assistantTurnIdRef.current
 
     if (!socket || socket.readyState !== WebSocket.OPEN || !turnId) {
+      if (hadBrowserSpeech) {
+        clearAutoListenTimer()
+        stopPlayback()
+        setAudioState("idle")
+        setState("ready")
+        return true
+      }
+
       return false
     }
 
@@ -1222,7 +1638,13 @@ export function VoiceSurface({
     setAudioState("idle")
     setState("ready")
     return true
-  }, [clearAutoListenTimer, deactivateCapture, stopPlayback])
+  }, [
+    clearAudioRecoveryTimer,
+    clearAutoListenTimer,
+    deactivateCapture,
+    stopBrowserSpeech,
+    stopPlayback,
+  ])
 
   const handleVoiceButton = () => {
     if (state === "listening") {
