@@ -72,9 +72,32 @@ class GoogleCalendarToolService:
             )
 
         except (ValueError, TypeError) as exc:
+            message = str(exc).strip()
+            normalized_message = message.lower()
+
+            auth_markers = (
+                "access token",
+                "refresh token",
+                "token refresh",
+                "authentication",
+                "authorization",
+                "unauthorized",
+                "invalid_grant",
+                "401",
+            )
+
+            error = (
+                "Google Calendar authorization is invalid or expired."
+                if any(
+                    marker in normalized_message
+                    for marker in auth_markers
+                )
+                else message
+            )
+
             return self._failure(
                 action=action,
-                error=str(exc),
+                error=error,
             )
 
         except Exception:
