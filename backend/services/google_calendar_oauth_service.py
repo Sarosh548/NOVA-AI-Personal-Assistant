@@ -426,20 +426,26 @@ class GoogleCalendarOAuthService:
             if connection is None:
                 return False
 
-            refresh_token = (
-                self.encryption_service.decrypt(
-                    connection.encrypted_refresh_token
-                )
-            )
-
             try:
-                self._revoke_token(
-                    refresh_token
+                refresh_token = (
+                    self.encryption_service.decrypt(
+                        connection.encrypted_refresh_token
+                    )
                 )
             except ValueError:
-                # A stale/expired Google token must never prevent NOVA from
-                # removing its own local Calendar connection.
-                pass
+                # A stale/corrupted encrypted token must never prevent NOVA
+                # from removing its own local Calendar connection.
+                refresh_token = None
+
+            if refresh_token is not None:
+                try:
+                    self._revoke_token(
+                        refresh_token
+                    )
+                except ValueError:
+                    # A stale/expired Google token must never prevent NOVA
+                    # from removing its own local Calendar connection.
+                    pass
 
             session.delete(
                 connection
