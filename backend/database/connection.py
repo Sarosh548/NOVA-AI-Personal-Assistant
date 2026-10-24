@@ -11,12 +11,21 @@ if not database_url:
     raise RuntimeError("DATABASE_URL is not set.")
 
 
+def normalize_database_url(database_url: str) -> str:
+    """Use the installed psycopg 3 driver for generic PostgreSQL URLs."""
+    if database_url.startswith("postgres://"):
+        return "postgresql+psycopg://" + database_url.removeprefix("postgres://")
+    if database_url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + database_url.removeprefix("postgresql://")
+    return database_url
+
+
 def build_engine(
     database_url: str,
     connect_timeout_seconds: int,
 ):
     return create_engine(
-        database_url,
+        normalize_database_url(database_url),
         echo=False,
         pool_pre_ping=True,
         pool_recycle=1800,
@@ -25,6 +34,8 @@ def build_engine(
         },
     )
 
+
+database_url = normalize_database_url(database_url)
 
 database_settings = get_database_settings()
 
