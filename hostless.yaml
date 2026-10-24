@@ -1,0 +1,12 @@
+build:
+  system: docker
+
+dockerfile_path: "./Dockerfile"
+working_directory: "/"
+build_context_directory: "/"
+start_command: "/app/cloud_entrypoint.sh"
+
+health_check:
+  type: http
+  http_path: "/health/ready"
+  interval_in_seconds: 30

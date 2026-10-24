@@ -13,8 +13,10 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin nova
 
 COPY backend /app/backend
+COPY scripts/cloud_entrypoint.sh /app/cloud_entrypoint.sh
 
-RUN chown -R nova:nova /app
+RUN chown -R nova:nova /app \
+    && chmod 0555 /app/cloud_entrypoint.sh
 
 USER nova
 
@@ -22,7 +24,7 @@ WORKDIR /app/backend
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD python -c "import os, urllib.request; port=os.environ.get('PORT', '8000'); urllib.request.urlopen(f'http://127.0.0.1:{port}/health/live', timeout=3)"
 
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["/app/cloud_entrypoint.sh"]
