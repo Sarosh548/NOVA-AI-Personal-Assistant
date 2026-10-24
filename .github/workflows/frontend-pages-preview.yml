@@ -33,7 +33,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Typecheck frontend
         working-directory: frontend
@@ -41,6 +41,8 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
+        env:
+          VITE_NOVA_API_BASE_URL: https://nova-backend.hostless.app
         run: npm run build -- --mode github-pages
 
       - name: Setup GitHub Pages
