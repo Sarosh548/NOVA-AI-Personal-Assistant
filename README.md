@@ -30,7 +30,7 @@ NOVA is a personal AI assistant project that combines a web workspace, a Python 
 - [Security and reliability design](#security-and-reliability-design)
 - [Honest current boundaries](#honest-current-boundaries)
 - [Desktop demo walkthrough](#desktop-demo-walkthrough)
-- [Interview preparation](#interview-preparation)
+- [Public cloud deployment](#public-cloud-deployment)
 
 ## What NOVA can do
 
@@ -113,8 +113,8 @@ NOVA-AI-Personal-Assistant/
 ├── docs/
 │   ├── architecture.svg
 │   ├── request-lifecycle.svg
-│   ├── INTERVIEW_GUIDE.md
-│   └── SCREENSHOT_CAPTURE_GUIDE.md
+│   │   ├── SCREENSHOT_CAPTURE_GUIDE.md
+  └── PUBLIC_DEPLOYMENT.md
 ├── .github/workflows/         # Backend CI, frontend CI, Pages preview
 ├── .env.example               # Local configuration template
 ├── docker-compose.local.yml   # Database, migration job, backend
@@ -227,7 +227,7 @@ All secrets belong in the backend/runtime environment—not in frontend source o
 
 ### GitHub Pages is a static frontend preview
 
-The frontend can be built and deployed to GitHub Pages, but **Pages does not host the FastAPI backend or PostgreSQL database**. A real sign-in requires a reachable backend endpoint, correct CORS/trusted-host settings, HTTPS for a public deployment, and a build-time <code>VITE_NOVA_API_BASE_URL</code>. In a public deployment, <code>localhost</code> points to the visitor's own machine, not to your development PC. Never put provider secrets in <code>VITE_*</code> variables.
+The published GitHub Pages URL is currently a **static frontend preview, not a working hosted NOVA service**: it cannot sign in until a public FastAPI backend and database are deployed and configured. Pages does not host the backend or PostgreSQL database. A public deployment needs a reachable HTTPS API, exact CORS/trusted-host settings, the build-time <code>VITE_NOVA_API_BASE_URL</code>, and provider secrets stored in the hosting dashboard. In a public deployment, <code>localhost</code> points to the visitor's own machine, not to your development PC. Never put provider secrets in <code>VITE_*</code> variables. See [Public cloud deployment](docs/PUBLIC_DEPLOYMENT.md) and the Render Blueprint in <code>render.yaml</code>.
 
 ## Health checks and tests
 
@@ -304,9 +304,9 @@ Use a dedicated demo account and generic, non-sensitive data.
 
 Do not show credentials, personal emails, private Calendar details, or destructive/financial operations in a portfolio demo.
 
-## Interview preparation
+## Public cloud deployment
 
-Read the companion [NOVA Interview Guide](docs/INTERVIEW_GUIDE.md) for a spoken project pitch, the end-to-end request path, technical Q&A, design trade-offs and an honest production-readiness answer. Learn why each boundary exists and be able to point to the code and tests that implement it.
+The repository includes a Render Blueprint and a step-by-step [public deployment guide](docs/PUBLIC_DEPLOYMENT.md). The blueprint is infrastructure configuration—not proof that services have been provisioned. Complete the hosting setup, supply provider secrets privately, wait for health checks, and test the public URL before describing NOVA as live. Capture actual app screenshots only after the public app is connected; the [screenshot guide](docs/SCREENSHOT_CAPTURE_GUIDE.md) explains the privacy-safe process.
 
 ## Contributing
 
