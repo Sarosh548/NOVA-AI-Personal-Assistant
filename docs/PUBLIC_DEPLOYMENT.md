@@ -30,7 +30,13 @@ Render's current plan limitations are documented in [Deploy for Free](https://re
 
 ## Required settings and secrets
 
-Render generates these values automatically via `generateValue: true`: `AUTH_JWT_SECRET_KEY` and `INTEGRATION_TOKEN_ENCRYPTION_KEY`. Keep the values private and do not rotate the encryption key without a deliberate plan for existing encrypted integration tokens.
+Render generates `AUTH_JWT_SECRET_KEY` automatically. `INTEGRATION_TOKEN_ENCRYPTION_KEY` must be a valid Fernet key, so generate it locally and enter it in Render's protected environment-variable form (never in chat or GitHub):
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Keep both values private and do not rotate the encryption key without a deliberate plan for existing encrypted integration tokens.
 
 The production guard requires the following actual provider settings before the API starts:
 
