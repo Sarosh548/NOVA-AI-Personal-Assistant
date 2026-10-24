@@ -62,3 +62,29 @@ def test_build_engine_passes_postgres_connect_timeout(
     }
     assert captured["kwargs"]["pool_pre_ping"] is True
     assert captured["kwargs"]["pool_recycle"] == 1800
+
+@pytest.mark.parametrize(
+    ("database_url", "expected"),
+    [
+        (
+            "postgres://user:pass@db.example:5432/nova_db",
+            "postgresql+psycopg://user:pass@db.example:5432/nova_db",
+        ),
+        (
+            "postgresql://user:pass@db.example:5432/nova_db",
+            "postgresql+psycopg://user:pass@db.example:5432/nova_db",
+        ),
+        (
+            "postgresql+psycopg://user:pass@db.example:5432/nova_db",
+            "postgresql+psycopg://user:pass@db.example:5432/nova_db",
+        ),
+    ],
+)
+def test_normalize_database_url_uses_psycopg3(
+    database_url,
+    expected,
+):
+    assert (
+        connection_module.normalize_database_url(database_url)
+        == expected
+    )
