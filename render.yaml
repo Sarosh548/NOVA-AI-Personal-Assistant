@@ -80,6 +80,7 @@ services:
 databases:
   - name: nova-db
     plan: free
+    postgresMajorVersion: "17"
     region: singapore
     databaseName: nova_db
     user: nova_user
