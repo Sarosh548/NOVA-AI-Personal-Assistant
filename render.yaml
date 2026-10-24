@@ -1,0 +1,85 @@
+# Public preview Blueprint for NOVA.
+# Free instances are for a temporary, non-sensitive demo only. See
+# docs/PUBLIC_DEPLOYMENT.md before using real accounts or storing personal data.
+services:
+  - type: web
+    name: nova-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: sh deploy/render_start.sh
+    healthCheckPath: /health/ready
+    autoDeployTrigger: commit
+    envVars:
+      - key: NOVA_ENV
+        value: production
+      - key: SECURITY_HSTS_ENABLED
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nova-db
+          property: connectionString
+      - key: AUTH_JWT_SECRET_KEY
+        generateValue: true
+      - key: INTEGRATION_TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: API_CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: API_TRUSTED_HOSTS
+        fromService:
+          type: web
+          name: nova-api
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: CALENDAR_GOOGLE_CLIENT_ID
+        sync: false
+      - key: CALENDAR_GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: CALENDAR_GOOGLE_REDIRECT_URI
+        sync: false
+      - key: CALENDAR_GOOGLE_SCOPES
+        value: https://www.googleapis.com/auth/calendar.events
+      - key: NOTIFICATION_DEFAULT_CHANNEL
+        value: email
+      - key: NOTIFICATION_SMTP_HOST
+        sync: false
+      - key: NOTIFICATION_SMTP_PORT
+        value: "2525"
+      - key: NOTIFICATION_SMTP_USERNAME
+        sync: false
+      - key: NOTIFICATION_SMTP_PASSWORD
+        sync: false
+      - key: NOTIFICATION_EMAIL_FROM_ADDRESS
+        sync: false
+      - key: NOTIFICATION_SMTP_STARTTLS
+        value: "true"
+      - key: NOTIFICATION_SMTP_USE_SSL
+        value: "false"
+
+  - type: web
+    name: nova-web
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    autoDeployTrigger: commit
+    envVars:
+      - key: VITE_NOVA_API_BASE_URL
+        sync: false
+
+databases:
+  - name: nova-db
+    plan: free
+    region: singapore
+    databaseName: nova_db
+    user: nova_user
