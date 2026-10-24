@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="850" viewBox="0 0 1440 850" role="img" aria-labelledby="title desc">
+  <title id="title">NOVA architecture</title>
+  <desc id="desc">React workspace sends requests to FastAPI, LangGraph coordinates memory, retrieval and tools, domain services enforce permissions and persist to PostgreSQL plus pgvector while provider adapters connect external services.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#151c36"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#020617" flood-opacity=".3"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#67e8f9"/></marker>
+    <style>
+      .title{font:700 38px system-ui,Segoe UI,sans-serif;fill:#f8fafc}
+      .subtitle{font:400 16px system-ui,Segoe UI,sans-serif;fill:#a9b7ce}
+      .cardtitle{font:700 20px system-ui,Segoe UI,sans-serif;fill:#f8fafc}
+      .body{font:400 15px system-ui,Segoe UI,sans-serif;fill:#d9e4f3}
+      .small{font:600 12px system-ui,Segoe UI,sans-serif;letter-spacing:1.6px;fill:#67e8f9}
+      .card{fill:#141f35;stroke:#32435f;stroke-width:1.4}
+      .line{fill:none;stroke:#67e8f9;stroke-width:2.8;marker-end:url(#arrow)}
+      .pill{fill:#172b40;stroke:#2d5269;stroke-width:1}
+      .pilltext{font:600 13px system-ui,Segoe UI,sans-serif;fill:#b8f4ff}
+    </style>
+  </defs>
+  <rect width="1440" height="850" rx="28" fill="url(#bg)"/>
+  <circle cx="1260" cy="70" r="205" fill="#7c3aed" opacity=".09"/>
+  <circle cx="160" cy="810" r="220" fill="#0891b2" opacity=".08"/>
+  <text x="56" y="70" class="small">SYSTEM MAP · DESKTOP SCOPE</text>
+  <text x="56" y="122" class="title">NOVA — from request to verified state</text>
+  <text x="56" y="153" class="subtitle">A layered architecture: UI → API boundary → agent graph → domain services → durable data and provider adapters</text>
+  <g filter="url(#shadow)">
+    <rect x="48" y="210" width="238" height="360" rx="18" class="card"/>
+    <rect x="314" y="210" width="238" height="360" rx="18" class="card"/>
+    <rect x="580" y="210" width="238" height="360" rx="18" class="card"/>
+    <rect x="846" y="210" width="238" height="360" rx="18" class="card"/>
+    <rect x="1112" y="210" width="280" height="360" rx="18" class="card"/>
+  </g>
+  <g>
+    <rect x="66" y="230" width="40" height="5" rx="2.5" fill="#67e8f9"/>
+    <text x="66" y="265" class="small">01 · EXPERIENCE</text>
+    <text x="66" y="300" class="cardtitle">React workspace</text>
+    <text x="66" y="337" class="body">Home dashboard</text>
+    <text x="66" y="365" class="body">Conversation + voice</text>
+    <text x="66" y="393" class="body">Tasks + reminders</text>
+    <text x="66" y="421" class="body">Calendar + knowledge</text>
+    <text x="66" y="449" class="body">Memory + activity</text>
+    <text x="66" y="477" class="body">Control Center + settings</text>
+    <rect x="66" y="512" width="188" height="30" rx="15" class="pill"/>
+    <text x="160" y="531" text-anchor="middle" class="pilltext">React · TypeScript · Vite</text>
+  </g>
+  <g>
+    <rect x="332" y="230" width="40" height="5" rx="2.5" fill="#a78bfa"/>
+    <text x="332" y="265" class="small">02 · API BOUNDARY</text>
+    <text x="332" y="300" class="cardtitle">FastAPI</text>
+    <text x="332" y="337" class="body">REST + WebSocket</text>
+    <text x="332" y="365" class="body">JWT authentication</text>
+    <text x="332" y="393" class="body">User-scoped access</text>
+    <text x="332" y="421" class="body">Schemas + validation</text>
+    <text x="332" y="449" class="body">Limits + health checks</text>
+    <text x="332" y="477" class="body">Idempotency + audit</text>
+    <rect x="332" y="512" width="188" height="30" rx="15" class="pill"/>
+    <text x="426" y="531" text-anchor="middle" class="pilltext">Python 3.12 · Pydantic</text>
+  </g>
+  <g>
+    <rect x="598" y="230" width="40" height="5" rx="2.5" fill="#c4b5fd"/>
+    <text x="598" y="265" class="small">03 · ORCHESTRATION</text>
+    <text x="598" y="300" class="cardtitle">LangGraph agent</text>
+    <text x="598" y="337" class="body">Conversation state</text>
+    <text x="598" y="365" class="body">Intent + planning</text>
+    <text x="598" y="393" class="body">Conditional tool routing</text>
+    <text x="598" y="421" class="body">Memory retrieval</text>
+    <text x="598" y="449" class="body">Knowledge / RAG context</text>
+    <text x="598" y="477" class="body">Grounded web research</text>
+    <rect x="598" y="512" width="188" height="30" rx="15" class="pill"/>
+    <text x="692" y="531" text-anchor="middle" class="pilltext">Stateful graph + tools</text>
+  </g>
+  <g>
+    <rect x="864" y="230" width="40" height="5" rx="2.5" fill="#86efac"/>
+    <text x="864" y="265" class="small">04 · EXECUTION</text>
+    <text x="864" y="300" class="cardtitle">Domain services</text>
+    <text x="864" y="337" class="body">Tasks + reminders</text>
+    <text x="864" y="365" class="body">Calendar OAuth / events</text>
+    <text x="864" y="393" class="body">Memory + knowledge</text>
+    <text x="864" y="421" class="body">Risk + permissions</text>
+    <text x="864" y="449" class="body">Confirmations + workflows</text>
+    <text x="864" y="477" class="body">Notifications + activity</text>
+    <rect x="864" y="512" width="188" height="30" rx="15" class="pill"/>
+    <text x="958" y="531" text-anchor="middle" class="pilltext">Boundaries + services</text>
+  </g>
+  <g>
+    <rect x="1130" y="230" width="40" height="5" rx="2.5" fill="#fbbf24"/>
+    <text x="1130" y="265" class="small">05 · STATE + ADAPTERS</text>
+    <text x="1130" y="300" class="cardtitle">Data &amp; providers</text>
+    <text x="1130" y="337" class="body">PostgreSQL + pgvector</text>
+    <text x="1130" y="365" class="body">SQLAlchemy + Alembic</text>
+    <text x="1130" y="393" class="body">Groq · LLM provider</text>
+    <text x="1130" y="421" class="body">Tavily · web search</text>
+    <text x="1130" y="449" class="body">Deepgram · speech-to-text</text>
+    <text x="1130" y="477" class="body">ElevenLabs · text-to-speech</text>
+    <text x="1130" y="505" class="body">Google Calendar · SMTP</text>
+    <rect x="1130" y="526" width="244" height="24" rx="12" class="pill"/>
+    <text x="1252" y="542" text-anchor="middle" class="pilltext">Provider keys are configured separately</text>
+  </g>
+  <path d="M286 390 H310" class="line"/>
+  <path d="M552 390 H576" class="line"/>
+  <path d="M818 390 H842" class="line"/>
+  <path d="M1084 390 H1108" class="line"/>
+  <rect x="48" y="625" width="1344" height="166" rx="18" fill="#0d192b" stroke="#2b3f5c" stroke-width="1.2"/>
+  <text x="76" y="666" class="small">CROSS-CUTTING RELIABILITY CONTROLS</text>
+  <g>
+    <rect x="76" y="691" width="208" height="52" rx="12" class="pill"/><text x="180" y="722" text-anchor="middle" class="pilltext">Schema validation</text>
+    <rect x="306" y="691" width="208" height="52" rx="12" class="pill"/><text x="410" y="722" text-anchor="middle" class="pilltext">Permission / risk gates</text>
+    <rect x="536" y="691" width="208" height="52" rx="12" class="pill"/><text x="640" y="722" text-anchor="middle" class="pilltext">Explicit confirmations</text>
+    <rect x="766" y="691" width="208" height="52" rx="12" class="pill"/><text x="870" y="722" text-anchor="middle" class="pilltext">Durable workflow leases</text>
+    <rect x="996" y="691" width="208" height="52" rx="12" class="pill"/><text x="1100" y="722" text-anchor="middle" class="pilltext">Health + test workflows</text>
+    <rect x="1226" y="691" width="138" height="52" rx="12" class="pill"/><text x="1295" y="713" text-anchor="middle" class="pilltext">Audit</text><text x="1295" y="730" text-anchor="middle" class="pilltext">events</text>
+  </g>
+  <text x="720" y="820" text-anchor="middle" class="subtitle">Design principle: the agent proposes and routes; services enforce policy, persist results and return observable outcomes.</text>
+</svg>

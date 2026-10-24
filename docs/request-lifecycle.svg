@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="590" viewBox="0 0 1440 590" role="img" aria-labelledby="title desc">
+  <title id="title">NOVA request lifecycle</title>
+  <desc id="desc">An assistant request flows through authentication, graph planning, permission and risk checks, confirmation when required, execution, verification, persistence and response.</desc>
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#17213b"/></linearGradient>
+    <marker id="arr2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#7dd3fc"/></marker>
+    <style>
+      .heading{font:700 30px system-ui,Segoe UI,sans-serif;fill:#f8fafc}
+      .caption{font:400 15px system-ui,Segoe UI,sans-serif;fill:#a9b7ce}
+      .nodeTitle{font:700 17px system-ui,Segoe UI,sans-serif;fill:#f8fafc}
+      .nodeBody{font:400 13px system-ui,Segoe UI,sans-serif;fill:#d9e4f3}
+      .label{font:600 12px system-ui,Segoe UI,sans-serif;fill:#7dd3fc;letter-spacing:1.2px}
+      .node{fill:#15233a;stroke:#37516f;stroke-width:1.4}
+      .gate{fill:#2b2144;stroke:#9b87f5;stroke-width:1.5}
+      .ok{fill:#15352f;stroke:#4ade80;stroke-width:1.4}
+      .line{fill:none;stroke:#7dd3fc;stroke-width:2.5;marker-end:url(#arr2)}
+      .dashed{fill:none;stroke:#a78bfa;stroke-width:2.5;stroke-dasharray:6 7;marker-end:url(#arr2)}
+    </style>
+  </defs>
+  <rect width="1440" height="590" rx="26" fill="url(#bg2)"/>
+  <text x="48" y="62" class="label">EXECUTION CONTRACT</text>
+  <text x="48" y="104" class="heading">From a request to an observable result</text>
+  <text x="48" y="132" class="caption">The system should not confuse a plan, an attempted action, and a verified outcome.</text>
+  <g>
+    <rect x="46" y="196" width="190" height="116" rx="16" class="node"/>
+    <text x="66" y="228" class="label">01</text><text x="66" y="256" class="nodeTitle">User request</text><text x="66" y="281" class="nodeBody">Text or supported voice</text>
+    <rect x="278" y="196" width="190" height="116" rx="16" class="node"/>
+    <text x="298" y="228" class="label">02</text><text x="298" y="256" class="nodeTitle">Authenticate</text><text x="298" y="281" class="nodeBody">User scope + validation</text>
+    <rect x="510" y="196" width="190" height="116" rx="16" class="node"/>
+    <text x="530" y="228" class="label">03</text><text x="530" y="256" class="nodeTitle">Plan / route</text><text x="530" y="281" class="nodeBody">Graph state + tools</text>
+    <rect x="742" y="196" width="190" height="116" rx="16" class="gate"/>
+    <text x="762" y="228" class="label">04</text><text x="762" y="256" class="nodeTitle">Risk + permission</text><text x="762" y="281" class="nodeBody">Allow, block, or ask</text>
+    <rect x="974" y="196" width="190" height="116" rx="16" class="node"/>
+    <text x="994" y="228" class="label">05</text><text x="994" y="256" class="nodeTitle">Execute</text><text x="994" y="281" class="nodeBody">Domain service / provider</text>
+    <rect x="1206" y="196" width="190" height="116" rx="16" class="ok"/>
+    <text x="1226" y="228" class="label">06</text><text x="1226" y="256" class="nodeTitle">Verify + persist</text><text x="1226" y="281" class="nodeBody">State, activity, response</text>
+  </g>
+  <path d="M236 254 H274" class="line"/><path d="M468 254 H506" class="line"/><path d="M700 254 H738" class="line"/><path d="M932 254 H970" class="line"/><path d="M1164 254 H1202" class="line"/>
+  <rect x="742" y="382" width="422" height="112" rx="16" class="gate"/>
+  <text x="766" y="414" class="label">CONDITIONAL PATH</text>
+  <text x="766" y="443" class="nodeTitle">Explicit user confirmation</text>
+  <text x="766" y="468" class="nodeBody">Required for configured sensitive actions before execution continues.</text>
+  <path d="M837 312 V354 H932 V382" class="dashed"/>
+  <text x="849" y="344" class="nodeBody">when required</text>
+  <path d="M1164 438 H1190 V312 H1202" class="dashed"/>
+  <text x="1180" y="426" text-anchor="end" class="nodeBody">approved</text>
+  <text x="48" y="546" class="caption">Reliability principle: report success only when the result path supports it. Otherwise report failure or uncertainty.</text>
+</svg>
