@@ -718,10 +718,26 @@ export function GeminiLiveVoiceSurface({
         }))
       }
 
-      socket.onmessage = (event) => {
-        if (socketRef.current !== socket || typeof event.data !== "string") return
+      // Gemini Live can deliver setupComplete as a binary WebSocket frame.
+      // Ask for ArrayBuffer frames and decode both binary and text payloads;
+      // ignoring non-string event.data leaves the session stuck until timeout.
+      socket.binaryType = "arraybuffer"
+      socket.onmessage = async (event: MessageEvent) => {
+        if (socketRef.current !== socket) return
         try {
-          const message = JSON.parse(event.data) as GeminiMessage
+          let payload: string
+          if (typeof event.data === "string") {
+            payload = event.data
+          } else if (event.data instanceof ArrayBuffer) {
+            payload = new TextDecoder().decode(event.data)
+          } else if (event.data instanceof Blob) {
+            payload = await event.data.text()
+          } else {
+            throw new Error("Unsupported Gemini Live WebSocket frame type.")
+          }
+
+          if (socketRef.current !== socket) return
+          const message = JSON.parse(payload) as GeminiMessage
           console.debug("[NOVA Gemini Live] server event", Object.keys(message))
           handleServerMessage(message)
         } catch (messageError) {
