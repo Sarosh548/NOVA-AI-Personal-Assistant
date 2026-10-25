@@ -48,6 +48,40 @@ def test_production_does_not_default_to_container_loopback_searxng(monkeypatch):
     assert service.searxng_endpoint == ""
 
 
+def test_live_sports_result_ranking_prefers_scorecards_over_previews():
+    results = [
+        {
+            "title": "Pakistan vs England match preview and prediction",
+            "url": "https://www.espncricinfo.com/series/preview",
+            "content": "Preview, team lineup and match prediction before the game.",
+            "score": 0.8,
+            "published_date": "2026-10-25",
+        },
+        {
+            "title": "Pakistan vs England live scorecard, score and match updates",
+            "url": "https://www.cricbuzz.com/live-cricket-score/123",
+            "content": "Live cricket scorecard showing current runs, wickets and overs.",
+            "score": 0.7,
+            "published_date": "2026-10-25",
+        },
+        {
+            "title": "Pakistan and England sports news roundup",
+            "url": "https://example.com/roundup",
+            "content": "A general sports news roundup.",
+            "score": 0.9,
+            "published_date": "2026-10-25",
+        },
+    ]
+
+    ranked = WebSearchService._rank_live_sports_results(
+        "Pakistan vs England cricket live score today",
+        results,
+    )
+
+    assert ranked[0]["title"] == "Pakistan vs England live scorecard, score and match updates"
+    assert ranked[-1]["title"] == "Pakistan vs England match preview and prediction"
+
+
 @pytest.mark.parametrize("tavily_mode", ["unavailable", "empty"])
 def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, tavily_mode):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
