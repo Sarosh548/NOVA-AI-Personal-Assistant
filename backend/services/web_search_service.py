@@ -1547,7 +1547,7 @@ class WebSearchService:
                 if not raw_results and last_sports_error is not None:
                     logger.warning("No fallback sources returned for live-sports query.")
 
-        if used_rss and not raw_results:
+        if used_rss and not raw_results and not is_live_sports_query:
             # A date-filtered RSS query can be too narrow; retry the same
             # query without a date filter, then simplify it once.
             attempts = [(normalized_query, None)]
