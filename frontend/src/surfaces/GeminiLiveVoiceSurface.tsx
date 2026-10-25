@@ -585,13 +585,6 @@ export function GeminiLiveVoiceSurface({
       return
     }
 
-    // Process an explicit Gemini toolCall before looking for a missed-action
-    // fallback; a valid function call always wins and keeps single-execution
-    // protection in sendToolCall authoritative.
-    if (message.toolCall && typeof message.toolCall === "object") {
-      void sendToolCall(message.toolCall as GeminiMessage)
-    }
-
     const serverContent = message.serverContent
     if (serverContent && typeof serverContent === "object") {
       if (serverContent.interrupted === true) {
@@ -635,6 +628,7 @@ export function GeminiLiveVoiceSurface({
       const turn = activeTurnRef.current
       if (
         hasModelOutput
+        && !message.toolCall
         && !turn.toolUsed
         && !turn.cancelled
         && shouldRouteToNova(turn.userText)
@@ -719,6 +713,10 @@ export function GeminiLiveVoiceSurface({
           setState("speaking")
         }
       }
+    }
+
+    if (message.toolCall && typeof message.toolCall === "object") {
+      void sendToolCall(message.toolCall as GeminiMessage)
     }
 
     if (message.toolCallCancellation) {
