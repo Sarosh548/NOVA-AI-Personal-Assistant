@@ -5665,3 +5665,112 @@ button:disabled {
     width: 116px !important;
   }
 }
+
+
+/* Live search feedback: keep the voice chat responsive and make retrieved
+   sources immediately visible and clickable while NOVA speaks its summary. */
+.nova-app.voice-app .gemini-live-search-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  align-self: stretch;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 2px;
+  padding: 8px 12px;
+  border: 1px solid rgba(110, 198, 255, .2);
+  border-radius: 999px;
+  background: rgba(13, 40, 72, .48);
+  color: rgba(206, 230, 251, .88);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.nova-app.voice-app .gemini-live-search-indicator {
+  display: inline-block;
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #68d9f3;
+}
+.nova-app.voice-app .gemini-live-search-status.loading .gemini-live-search-indicator {
+  animation: nova-search-pulse 1.1s ease-in-out infinite;
+}
+.nova-app.voice-app .gemini-live-search-status.complete .gemini-live-search-indicator {
+  background: #60e6b5;
+}
+.nova-app.voice-app .gemini-live-search-sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 10px;
+  align-self: stretch;
+  width: 100%;
+  margin: 0 0 8px;
+}
+.nova-app.voice-app .gemini-live-search-source {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 13px 15px;
+  border: 1px solid rgba(116, 190, 255, .2);
+  border-radius: 15px;
+  background: rgba(13, 39, 70, .66);
+  color: #edf6ff;
+  text-decoration: none;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .1);
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+.nova-app.voice-app .gemini-live-search-source:hover,
+.nova-app.voice-app .gemini-live-search-source:focus-visible {
+  border-color: rgba(86, 213, 250, .7);
+  background: rgba(18, 55, 94, .82);
+  transform: translateY(-1px);
+  outline: none;
+}
+.nova-app.voice-app .gemini-live-search-host {
+  color: #8ce3ee;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.nova-app.voice-app .gemini-live-search-source strong {
+  color: #f2f8ff;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.nova-app.voice-app .gemini-live-search-source p {
+  display: -webkit-box;
+  margin: 0;
+  color: rgba(205, 225, 243, .82);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.nova-app.voice-app .gemini-live-search-source small {
+  margin-top: auto;
+  color: rgba(173, 201, 225, .68);
+  font-size: 10px;
+}
+@keyframes nova-search-pulse {
+  0%, 100% { opacity: .45; transform: scale(.8); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+@media (max-width: 700px) {
+  .nova-app.voice-app .gemini-live-search-sources {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .nova-app.voice-app .gemini-live-search-source {
+    padding: 11px 12px;
+  }
+  .nova-app.voice-app .gemini-live-search-source strong { font-size: 12px; }
+  .nova-app.voice-app .gemini-live-search-source p { font-size: 11px; }
+}
