@@ -652,13 +652,13 @@ Return the full schema with null for absent values:
 
         if has_weather and has_weather_location:
             topic = "weather"
-        elif "news" in normalized or "headline" in normalized:
-            topic = "news"
         elif has_live_sports_question:
             # Scorecards, fixtures, and live-match status are best searched as
             # general web pages; a news-only search can return commentary but
             # miss the actual scoreboard/scorecard.
             topic = "general"
+        elif "news" in normalized or "headline" in normalized:
+            topic = "news"
         elif any(
             marker in normalized
             for marker in (
