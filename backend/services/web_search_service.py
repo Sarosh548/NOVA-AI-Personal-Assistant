@@ -83,14 +83,19 @@ class WebSearchService:
             else os.getenv("TAVILY_API_KEY", "").strip()
         )
 
-        configured_searxng_endpoint = (
-            searxng_endpoint
-            if searxng_endpoint is not None
-            else os.getenv(
-                "SEARXNG_URL",
-                DEFAULT_SEARXNG_ENDPOINT,
-            )
-        )
+        configured_searxng_endpoint = searxng_endpoint
+        if configured_searxng_endpoint is None:
+            configured_searxng_endpoint = os.getenv("SEARXNG_URL", "").strip()
+            if not configured_searxng_endpoint:
+                # The loopback SearXNG default is for local development only.
+                # In cloud containers it points back to this API container,
+                # not to a search service; don't waste a timeout on that dead end.
+                environment = os.getenv("NOVA_ENV", "development").strip().lower()
+                configured_searxng_endpoint = (
+                    ""
+                    if environment in {"production", "prod"}
+                    else DEFAULT_SEARXNG_ENDPOINT
+                )
         self.searxng_endpoint = str(
             configured_searxng_endpoint
         ).strip()
