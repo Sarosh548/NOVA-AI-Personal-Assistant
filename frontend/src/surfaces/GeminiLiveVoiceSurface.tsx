@@ -899,10 +899,10 @@ export function GeminiLiveVoiceSurface({
         )}
       </header>
 
-      <main className="voice-main">
-        <section className="voice-stage" aria-label="NOVA Gemini Live voice session">
+      <main className="voice-main gemini-live-main">
+        <section className="voice-stage gemini-live-stage" aria-label="NOVA Gemini Live voice session">
           <button
-            className={"voice-orb voice-orb-" + state}
+            className={"voice-orb gemini-live-orb voice-orb-" + state}
             type="button"
             onClick={handleVoiceButton}
             disabled={state === "connecting"}
@@ -924,7 +924,7 @@ export function GeminiLiveVoiceSurface({
 
           <div
             ref={transcriptPanelRef}
-            className="voice-live-transcript"
+            className="voice-live-transcript gemini-live-transcript"
             aria-label="Live voice conversation"
             aria-live="polite"
             aria-relevant="additions text"
