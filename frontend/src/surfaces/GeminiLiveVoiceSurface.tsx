@@ -988,7 +988,7 @@ export function GeminiLiveVoiceSurface({
       intentionalCloseRef.current = true
       releaseConnection()
     }
-  }, [persistTurn, releaseConnection, routeUndelegatedAction, sendToolCall, stopPlayback])
+  }, [persistTurn, releaseConnection, routeUndelegatedAction, sendToolCall, startSearchProgress, stopPlayback])
 
   const connect = useCallback(async () => {
     if (connectingRef.current || connectedRef.current) return
