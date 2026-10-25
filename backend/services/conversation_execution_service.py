@@ -1096,21 +1096,21 @@ class ConversationExecutionService:
         # live right now"). They must bypass the generic companion fast path
         # so the intent classifier and fresh-web-research guard can run.
         has_freshness_cue = re.search(
-            r"\\b(?:latest|current(?:ly)?|recent(?:ly)?|today(?:'s)?|"
-            r"right now|live|as of now|this week|this month|this year)\\b",
+            r"\b(?:latest|current(?:ly)?|recent(?:ly)?|today(?:'s)?|"
+            r"right now|live|as of now|this week|this month|this year)\b",
             normalized,
             flags=re.IGNORECASE,
         ) is not None
         has_live_information_subject = re.search(
-            r"\\b(?:news|headlines?|weather|forecast|prices?|rates?|stocks?|"
+            r"\b(?:news|headlines?|weather|forecast|prices?|rates?|stocks?|"
             r"score|scores|match|matches|cricket|football|sports?|playing|"
-            r"happening|updates?|status|version|versions)\\b",
+            r"happening|updates?|status|version|versions)\b",
             normalized,
             flags=re.IGNORECASE,
         ) is not None
         has_information_request = re.search(
-            r"\\b(?:what|who|which|when|where|why|how|tell me|show me|"
-            r"give me|find|search|look up|check|browse|is there|are there)\\b",
+            r"\b(?:what|who|which|when|where|why|how|tell me|show me|"
+            r"give me|find|search|look up|check|browse|is there|are there)\b",
             normalized,
             flags=re.IGNORECASE,
         ) is not None
