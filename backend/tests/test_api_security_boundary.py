@@ -26,12 +26,42 @@ def _client_for(
         body = await request.body()
         return {"size": len(body)}
 
+    @app.get("/health/live")
+    def health_live():
+        return {"status": "ok"}
+
+    @app.get("/health/ready")
+    def health_ready():
+        return {"status": "ready", "database": "ok"}
+
     configure_api_security(
         app,
         settings,
     )
 
     return TestClient(app)
+
+
+def test_internal_host_header_is_allowed_only_for_read_only_health_checks():
+    client = _client_for(
+        SecuritySettings(
+            api_trusted_hosts="nova-backend.hostless.app",
+        )
+    )
+
+    internal_headers = {"Host": "10.0.1.143:8000"}
+
+    live = client.get("/health/live", headers=internal_headers)
+    ready = client.get("/health/ready", headers=internal_headers)
+    probe = client.get("/probe", headers=internal_headers)
+    post_health = client.post("/health/ready", headers=internal_headers)
+
+    assert live.status_code == 200
+    assert live.json() == {"status": "ok"}
+    assert ready.status_code == 200
+    assert ready.json() == {"status": "ready", "database": "ok"}
+    assert probe.status_code == 400
+    assert post_health.status_code == 400
 
 
 def test_security_headers_are_added_without_hsts_by_default():

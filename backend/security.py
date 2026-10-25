@@ -32,6 +32,29 @@ class RequestBodySizeLimitExceeded(Exception):
     pass
 
 
+class HealthCheckTrustedHostMiddleware(TrustedHostMiddleware):
+    """Allow platform probes to reach read-only health endpoints.
+
+    Some managed runtimes probe a container by its internal IP, so the HTTP
+    Host header is not the app's public hostname. Keep host validation strict
+    for every application route and bypass it only for exact GET/HEAD health
+    paths that expose no user data.
+    """
+
+    _HEALTH_PATHS = frozenset({"/health/live", "/health/ready"})
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") in {"GET", "HEAD"}
+            and scope.get("path") in self._HEALTH_PATHS
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        await super().__call__(scope, receive, send)
+
+
 def _build_hsts_value(
     settings: SecuritySettings,
 ) -> str:
@@ -60,7 +83,7 @@ def configure_api_security(
     )
 
     app.add_middleware(
-        TrustedHostMiddleware,
+        HealthCheckTrustedHostMiddleware,
         allowed_hosts=list(
             security_settings.trusted_hosts()
         ),
