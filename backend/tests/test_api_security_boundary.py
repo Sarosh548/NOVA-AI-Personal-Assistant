@@ -131,6 +131,45 @@ def test_cors_requires_explicit_origin():
     ]
 
 
+def test_canonical_frontend_origin_is_allowed_with_other_origins_configured(monkeypatch):
+    monkeypatch.delenv("NOVA_FRONTEND_ORIGIN", raising=False)
+    client = _client_for(
+        SecuritySettings(
+            api_cors_allowed_origins=(
+                "https://nova-backend.hostless.app"
+            )
+        )
+    )
+
+    response = client.options(
+        "/probe",
+        headers={
+            "Origin": "https://sarosh548.github.io",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,authorization",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == (
+        "https://sarosh548.github.io"
+    )
+    assert "POST" in response.headers["Access-Control-Allow-Methods"]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://frontend.example.com",
+        "https://frontend.example.com/app",
+        "*",
+    ],
+)
+def test_frontend_origin_must_be_a_secure_exact_origin(origin):
+    with pytest.raises(ValidationError):
+        SecuritySettings(nova_frontend_origin=origin)
+
+
 def test_cors_rejects_unconfigured_origin():
     client = _client_for(
         SecuritySettings(
@@ -214,6 +253,10 @@ def test_security_configuration_reads_environment_values(
         "https://app.example.com",
     )
     monkeypatch.setenv(
+        "NOVA_FRONTEND_ORIGIN",
+        "https://frontend.example.com",
+    )
+    monkeypatch.setenv(
         "API_TRUSTED_HOSTS",
         "api.example.com",
     )
@@ -230,6 +273,7 @@ def test_security_configuration_reads_environment_values(
 
     assert settings.cors_allowed_origins() == (
         "https://app.example.com",
+        "https://frontend.example.com",
     )
     assert settings.trusted_hosts() == (
         "api.example.com",
