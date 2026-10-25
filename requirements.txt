@@ -13,7 +13,7 @@ httpx==0.28.1
 idna==3.19
 jiter==0.16.0
 langgraph==1.2.11
-livekit-api==1.2.2
+livekit-api==1.2.0
 openai==3.11.0
 pgvector==0.5.0
 prometheus-client==0.26.0
