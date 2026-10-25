@@ -2,6 +2,7 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    NOVA_ENV=production \
     HF_HOME=/tmp/nova-cache/huggingface \
     SENTENCE_TRANSFORMERS_HOME=/tmp/nova-cache/sentence-transformers \
     XDG_CACHE_HOME=/tmp/nova-cache
