@@ -37,6 +37,17 @@ def test_web_search_requires_a_search_provider():
         service.search(query="latest AI news")
 
 
+def test_production_does_not_default_to_container_loopback_searxng(monkeypatch):
+    monkeypatch.setenv("NOVA_ENV", "production")
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
+
+    service = WebSearchService(api_key="")
+
+    # In cloud, 127.0.0.1 points at NOVA itself unless a search container
+    # really runs beside it. Let news fall back to Google News RSS instead.
+    assert service.searxng_endpoint == ""
+
+
 def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
     monkeypatch,
 ):
