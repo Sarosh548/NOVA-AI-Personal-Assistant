@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from sentence_transformers import CrossEncoder
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder
 
 
 DEFAULT_RERANKER_MODEL = (
@@ -16,10 +17,9 @@ class RerankerService:
     """
     Cross-Encoder reranking for an existing candidate set.
 
-    The service is deliberately independent from database retrieval:
-    the existing bi-encoder/pgvector search produces candidates first,
-    then this service re-scores those candidates using query-passage
-    pairs and returns the candidates ordered by reranker score.
+    The transformer package and model weights are loaded only when a
+    real reranking request accesses `model`, not when the API imports
+    this service during startup.
     """
 
     def __init__(
@@ -43,11 +43,15 @@ class RerankerService:
         self.model_name = model_name
         self.batch_size = batch_size
         self.max_length = max_length
-        self._model = model
+        self._model: Any | None = model
 
     @property
     def model(self) -> CrossEncoder:
         if self._model is None:
+            # CrossEncoder imports torch/transformers. Keep those heavy
+            # imports off the FastAPI startup path and load only on use.
+            from sentence_transformers import CrossEncoder
+
             self._model = CrossEncoder(
                 self.model_name,
                 max_length=self.max_length,
