@@ -1162,6 +1162,10 @@ def test_force_fresh_web_research_routes_current_sports_scores_to_live_search():
             "Show me the latest football score today",
             "Show me the latest football score today",
         ),
+        (
+            "Show me the England vs Pakistan football score today",
+            "Pakistan vs England football live score today",
+        ),
     )
 
     for message, expected_query in messages:
