@@ -1,7 +1,10 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/tmp/nova-cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/tmp/nova-cache/sentence-transformers \
+    XDG_CACHE_HOME=/tmp/nova-cache
 
 WORKDIR /app
 
@@ -15,7 +18,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 COPY backend /app/backend
 COPY scripts/cloud_entrypoint.sh /app/cloud_entrypoint.sh
 
-RUN chown -R nova:nova /app \
+RUN mkdir -p /tmp/nova-cache/huggingface /tmp/nova-cache/sentence-transformers \
+    && chown -R nova:nova /app /tmp/nova-cache \
     && chmod 0555 /app/cloud_entrypoint.sh
 
 USER nova
