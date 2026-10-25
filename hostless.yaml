@@ -6,6 +6,16 @@ working_directory: "/"
 build_context_directory: "/"
 start_command: "/app/cloud_entrypoint.sh"
 
+# Balance the Hostless free account pool with the retained nova-db resource
+# (0.25 vCPU / 512 MB), so the app remains inside 0.5 vCPU / 1 GiB total.
+scaling:
+  min_cpu: 0.25
+  max_cpu: 0.25
+  min_memory: 512
+  max_memory: 512
+  min_replicas: 1
+  max_replicas: 1
+
 health_check:
   type: http
   http_path: "/health/ready"
