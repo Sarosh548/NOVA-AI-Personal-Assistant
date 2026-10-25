@@ -1460,6 +1460,7 @@ class WebSearchService:
 
         response: dict | None = None
         provider = "tavily" if self.api_key else "searxng"
+        searxng_attempted = False
         if self.api_key:
             try:
                 response = self._request_tavily(payload)
@@ -1468,6 +1469,7 @@ class WebSearchService:
                 provider = "searxng"
 
         if response is None:
+            searxng_attempted = True
             try:
                 response = self._request_searxng(
                     query=normalized_query,
@@ -1509,17 +1511,19 @@ class WebSearchService:
 
         if not used_rss and not raw_results and is_live_sports_query:
             # Search APIs sometimes return HTTP 200 with zero indexed results.
-            # Try the secondary provider once, then a keyless RSS fallback.
-            try:
-                response = self._request_searxng(
-                    query=normalized_query,
-                    topic="general",
-                    time_range=normalized_time_range,
-                )
-                raw_results = response.get("results", []) if isinstance(response, dict) else []
-            except Exception as exc:
-                logger.warning("Live-sports secondary search failed: %s", type(exc).__name__)
-                raw_results = []
+            # If SearXNG has not already been tried, call it once, then use RSS.
+            if not searxng_attempted:
+                searxng_attempted = True
+                try:
+                    response = self._request_searxng(
+                        query=normalized_query,
+                        topic="general",
+                        time_range=normalized_time_range,
+                    )
+                    raw_results = response.get("results", []) if isinstance(response, dict) else []
+                except Exception as exc:
+                    logger.warning("Live-sports secondary search failed: %s", type(exc).__name__)
+                    raw_results = []
 
             if not raw_results:
                 last_sports_error: Exception | None = None
