@@ -1486,7 +1486,11 @@ class WebSearchService:
                 provider = "rss"
                 response = None
                 last_error: Exception | None = None
-                for attempt in range(2):
+                # Live-score requests prefer bounded latency over a second
+                # identical feed request. Returning a transparent no-result
+                # state is safer than delaying the spoken turn by another timeout.
+                max_rss_attempts = 1 if is_live_sports_query else 2
+                for attempt in range(max_rss_attempts):
                     try:
                         response = self._request_google_news_rss(
                             query=normalized_query,
@@ -1496,7 +1500,7 @@ class WebSearchService:
                         break
                     except Exception as rss_exc:
                         last_error = rss_exc
-                        if attempt == 0:
+                        if attempt == 0 and max_rss_attempts > 1:
                             logger.warning("Google News RSS transient failure; retrying once: %s", type(rss_exc).__name__)
                 if response is None:
                     if last_error:
