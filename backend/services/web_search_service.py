@@ -1606,6 +1606,8 @@ class WebSearchService:
             rss=used_rss,
             resolve_rss_urls=not is_live_sports_query,
         )
+        if is_live_sports_query:
+            normalized = self._rank_live_sports_results(normalized_query, normalized)
         if normalized_topic == "news" and is_ai_news:
             relevant = [item for item in normalized if self._matches_ai_news_query(item)]
             if not relevant and normalized_time_range is not None and not used_rss:
@@ -1624,6 +1626,63 @@ class WebSearchService:
         if normalized_topic == "news":
             normalized = self._rank_news_results(normalized_query, normalized)
         return normalized[:normalized_max_results]
+
+    @staticmethod
+    def _rank_live_sports_results(query: str, results: list[dict]) -> list[dict]:
+        """Prefer actual live scoreboards over previews and generic sports news."""
+        normalized_query = " ".join(str(query or "").lower().split())
+        requested_teams = [
+            team for team in (
+                "pakistan", "england", "india", "australia", "new zealand",
+                "bangladesh", "sri lanka", "west indies", "afghanistan",
+                "manchester city", "manchester united", "liverpool", "arsenal",
+                "chelsea", "real madrid", "barcelona",
+            )
+            if team in normalized_query
+        ]
+        preferred_hosts = (
+            "espncricinfo.com", "cricbuzz.com", "icc-cricket.com", "espn.com",
+            "bbc.com", "bbc.co.uk", "premierleague.com", "fifa.com",
+            "skysports.com", "livescore.com", "flashscore.com", "soccerway.com",
+            "sports.ndtv.com", "olympics.com",
+        )
+        preview_terms = ("preview", "prediction", "odds", "betting", "pre-match", "lineup prediction")
+        live_terms = ("live", "scorecard", "score board", "scoreboard", "scores", "innings", "overs", "wickets", "goals", "match centre", "match center")
+
+        def result_score(item: dict, index: int) -> tuple[float, int]:
+            title = str(item.get("title") or "").lower()
+            content = str(item.get("content") or "").lower()
+            url = str(item.get("url") or "").lower()
+            haystack = f"{title} {content}"
+            score = 0.0
+            if any(term in title for term in ("scorecard", "score board", "scoreboard", "live score", "match centre", "match center")):
+                score += 10.0
+            if any(term in haystack for term in live_terms):
+                score += 4.0
+            if any(host in url for host in preferred_hosts):
+                score += 5.0
+            for team in requested_teams:
+                if team in haystack:
+                    score += 4.0
+                else:
+                    score -= 1.5
+            if re.search(r"\b\d{1,3}\s*/\s*\d{1,2}\b", haystack):
+                score += 2.0
+            if any(term in title for term in preview_terms):
+                score -= 5.0
+            try:
+                score += max(-1.0, min(1.0, float(item.get("score") or 0.0)))
+            except (TypeError, ValueError):
+                pass
+            return (score, -index)
+
+        return [
+            item for _, item in sorted(
+                enumerate(results),
+                key=lambda pair: result_score(pair[1], pair[0]),
+                reverse=True,
+            )
+        ]
 
     @staticmethod
     def _safe_score(value: Any) -> float | None:
