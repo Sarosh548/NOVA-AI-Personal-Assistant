@@ -420,3 +420,20 @@ def test_create_task_result_uses_sanitized_title():
     assert result["result"]["task_id"] == 42
     assert result["result"]["title"] == "Nova Live Test task. 1021"
     assert result["result"]["due_at"] is None
+
+
+def test_tool_router_returns_safe_web_provider_failure_details():
+    class FailingWebSearchService:
+        def search(self, **kwargs):
+            raise RuntimeError("Google News RSS provider could not be reached.")
+
+    router = ToolRouter(web_search_service=FailingWebSearchService())
+
+    result = router._execute_web(
+        user_id="user-001",
+        data={"action": "search", "query": "latest AI news", "topic": "news"},
+    )
+
+    assert result["success"] is False
+    assert result["tool"] == "web"
+    assert result["error"] == "Google News RSS provider could not be reached."
