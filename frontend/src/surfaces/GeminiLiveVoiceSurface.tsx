@@ -723,6 +723,8 @@ export function GeminiLiveVoiceSurface({
           id: turn.id,
           userText: sourceUtterance,
           assistantText: message,
+          searchStatus: turn.searchStatus,
+          searchSources: turn.searchSources,
         },
       ].slice(-40))
     }
@@ -1345,6 +1347,30 @@ export function GeminiLiveVoiceSurface({
                     <p>{turn.assistantText}</p>
                   </div>
                 )}
+                {turn.searchStatus && (
+                  <div className={"gemini-live-search-status " + (turn.searchStatus.startsWith("Searching") ? "loading" : "complete")} role="status">
+                    <span className="gemini-live-search-indicator" aria-hidden="true" />
+                    <span>{turn.searchStatus}</span>
+                  </div>
+                )}
+                {turn.searchSources.length > 0 && (
+                  <div className="gemini-live-search-sources" aria-label="Live search sources">
+                    {turn.searchSources.map((source) => (
+                      <a
+                        className="gemini-live-search-source"
+                        key={source.url}
+                        href={source.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                      >
+                        <span className="gemini-live-search-host">{source.host}</span>
+                        <strong>{source.title}</strong>
+                        {source.snippet && <p>{source.snippet}</p>}
+                        {source.publishedDate && <small>Published {source.publishedDate}</small>}
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
 
@@ -1387,6 +1413,30 @@ export function GeminiLiveVoiceSurface({
                       </div>
                     )}
                     <p>{response}</p>
+                  </div>
+                )}
+                {activeSearchStatus && (
+                  <div className={"gemini-live-search-status " + (activeSearchStatus.startsWith("Searching") ? "loading" : "complete")} role="status">
+                    <span className="gemini-live-search-indicator" aria-hidden="true" />
+                    <span>{activeSearchStatus}</span>
+                  </div>
+                )}
+                {activeSearchSources.length > 0 && (
+                  <div className="gemini-live-search-sources" aria-label="Live search sources">
+                    {activeSearchSources.map((source) => (
+                      <a
+                        className="gemini-live-search-source"
+                        key={source.url}
+                        href={source.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                      >
+                        <span className="gemini-live-search-host">{source.host}</span>
+                        <strong>{source.title}</strong>
+                        {source.snippet && <p>{source.snippet}</p>}
+                        {source.publishedDate && <small>Published {source.publishedDate}</small>}
+                      </a>
+                    ))}
                   </div>
                 )}
               </>
