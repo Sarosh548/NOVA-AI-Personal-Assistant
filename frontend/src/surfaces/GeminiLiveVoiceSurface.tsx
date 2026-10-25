@@ -224,22 +224,22 @@ function shouldRouteToNova(message: string): boolean {
   const normalized = message.trim().toLowerCase()
   if (!normalized) return false
 
-  if (/\\b(?:https?:\\/\\/|www\\.)/u.test(normalized)) return true
-  if (/\\b(?:search|look up|research|google search|find out)\\b/u.test(normalized)) return true
-  if (/\\b(?:latest|recent|current|today(?:'s)?|news|headlines?|weather|forecast|exchange rates?|stock prices?)\\b/u.test(normalized)) {
-    if (/\\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|search|research|look up|latest|recent|current|news|weather|forecast|price|rate)\\b/u.test(normalized)) return true
+  if (/\b(?:https?:\/\/|www\.)/u.test(normalized)) return true
+  if (/\b(?:search|look up|research|google search|find out)\b/u.test(normalized)) return true
+  if (/\b(?:latest|recent|current|today(?:'s)?|news|headlines?|weather|forecast|exchange rates?|stock prices?)\b/u.test(normalized)) {
+    if (/\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|search|research|look up|latest|recent|current|news|weather|forecast|price|rate)\b/u.test(normalized)) return true
   }
 
-  const emailAction = /\\b(?:send|compose|draft|read|search|check|open|reply|forward|delete|list|find)\\b/u
-  const emailTarget = /\\b(?:email|e-mail|mail|gmail|inbox)\\b/u
+  const emailAction = /\b(?:send|compose|draft|read|search|check|open|reply|forward|delete|list|find)\b/u
+  const emailTarget = /\b(?:email|e-mail|mail|gmail|inbox)\b/u
   if (emailAction.test(normalized) && emailTarget.test(normalized)) return true
 
-  const personalAction = /\\b(?:create|add|make|show|list|check|complete|start|cancel|delete|update|schedule|book|move|reschedule|remind|set)\\b/u
-  const personalTarget = /\\b(?:task|reminder|calendar|meeting|appointment|event)\\b/u
+  const personalAction = /\b(?:create|add|make|show|list|check|complete|start|cancel|delete|update|schedule|book|move|reschedule|remind|set)\b/u
+  const personalTarget = /\b(?:task|reminder|calendar|meeting|appointment|event)\b/u
   if (personalAction.test(normalized) && personalTarget.test(normalized)) return true
 
-  const desktopAction = /\\b(?:open|launch|start|visit|go to|navigate to|show|find|inspect|check|click|tap|type|press|play|turn on|turn off|increase|decrease|raise|lower|mute|unmute|set)\\b/u
-  const desktopTarget = /\\b(?:notepad|calculator|file explorer|browser|website|web site|app|application|folder|file|desktop|screen|downloads|documents|youtube|google|chrome|edge|firefox|settings|volume|brightness|wifi|wi-fi|bluetooth|spotify|local disk|c drive|computer|pc)\\b/u
+  const desktopAction = /\b(?:open|launch|start|visit|go to|navigate to|show|find|inspect|check|click|tap|type|press|play|turn on|turn off|increase|decrease|raise|lower|mute|unmute|set)\b/u
+  const desktopTarget = /\b(?:notepad|calculator|file explorer|browser|website|web site|app|application|folder|file|desktop|screen|downloads|documents|youtube|google|chrome|edge|firefox|settings|volume|brightness|wifi|wi-fi|bluetooth|spotify|local disk|c drive|computer|pc)\b/u
   return desktopAction.test(normalized) && desktopTarget.test(normalized)
 }
 
@@ -524,7 +524,7 @@ export function GeminiLiveVoiceSurface({
         "The following JSON is the authoritative result. Do not execute the request again and do not call any function.",
         "Speak a natural concise answer in the user's language based only on this result. Be transparent about failure or required confirmation; never claim success unless the result says so.",
         "Backend result: " + resultSummary,
-      ].join("\\n")
+      ].join("\n")
 
       // This is a follow-up spoken turn, not a function response: no model
       // function call was received for the original request.
