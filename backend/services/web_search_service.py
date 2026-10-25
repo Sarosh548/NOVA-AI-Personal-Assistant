@@ -1684,6 +1684,16 @@ class WebSearchService:
                 score += 2.0
             if any(term in title for term in preview_terms):
                 score -= 5.0
+            # Live score pages must rank by explicit publication timestamps,
+            # not only topical keyword overlap. Old articles can remain relevant
+            # but must not outrank a newer score update solely due to title text.
+            published_at = WebSearchService._publication_datetime(item)
+            if published_at is not None:
+                age_minutes = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - published_at).total_seconds() / 60.0,
+                )
+                score += max(-12.0, 8.0 - age_minutes / 15.0)
             try:
                 score += max(-1.0, min(1.0, float(item.get("score") or 0.0)))
             except (TypeError, ValueError):
