@@ -1608,7 +1608,13 @@ class WebSearchService:
         normalized = normalize_results(
             raw_results,
             rss=used_rss,
-            resolve_rss_urls=not is_live_sports_query,
+            # Fresh/news and live-score turns prioritize response latency. RSS
+            # intermediary links remain clickable and are visibly labeled;
+            # avoid serial publisher-resolution HTTP calls before speaking.
+            resolve_rss_urls=(
+                not is_live_sports_query
+                and normalized_time_range != "day"
+            ),
         )
         if is_live_sports_query:
             normalized = self._rank_live_sports_results(normalized_query, normalized)
