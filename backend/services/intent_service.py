@@ -698,33 +698,30 @@ Return the full schema with null for absent values:
             "web_time_range"
         )
 
-        if any(
-            marker in normalized
-            for marker in (
-                "today",
-                "today's",
-                "aaj",
-                "abhi",
-                "filhal",
-                "right now",
-                "at the moment",
-                "now",
-                "live",
-                "realtime",
-                "real time",
-                "latest",
-                "recent",
-                "current",
-                "score",
-                "scores",
-                "scorecard",
-                "latest developments",
-                "latest development",
-                "recent developments",
-                "recent development",
-                "current developments",
-                "current development",
+        if (
+            any(
+                marker in normalized
+                for marker in (
+                    "today",
+                    "today's",
+                    "aaj",
+                    "abhi",
+                    "filhal",
+                    "right now",
+                    "at the moment",
+                    "now",
+                    "live",
+                    "realtime",
+                    "real time",
+                    "latest developments",
+                    "latest development",
+                    "recent developments",
+                    "recent development",
+                    "current developments",
+                    "current development",
+                )
             )
+            or has_live_sports_question
         ):
             time_range = "day"
         elif "this week" in normalized:
