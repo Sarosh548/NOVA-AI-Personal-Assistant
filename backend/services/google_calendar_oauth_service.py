@@ -465,14 +465,11 @@ class GoogleCalendarOAuthService:
                 refresh_token = None
 
             if refresh_token is not None:
-                try:
-                    self._revoke_token(
-                        refresh_token
-                    )
-                except ValueError:
-                    # A stale/expired Google token must never prevent NOVA
-                    # from removing its own local Calendar connection.
-                    pass
+                # _revoke_token treats Google's explicit invalid-token response
+                # as already revoked. Do not swallow other failures: if Google
+                # cannot revoke a still-valid token, keep local connection state
+                # so the user can retry instead of reporting a false disconnect.
+                self._revoke_token(refresh_token)
 
             session.delete(
                 connection

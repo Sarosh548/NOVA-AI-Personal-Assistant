@@ -1,3 +1,6 @@
+from datetime import datetime as RealDateTime
+
+from services import intent_service as intent_service_module
 from services.agent_planner_service import (
     AgentPlannerService,
 )
@@ -355,7 +358,20 @@ def test_agent_planner_prompt_contains_calendar_rules():
     assert "event_id" in llm.instructions
 
 
-def test_deterministic_fallback_routes_calendar_event_creation_before_llm():
+def test_deterministic_fallback_routes_calendar_event_creation_before_llm(
+    monkeypatch,
+):
+    class FrozenDateTime(RealDateTime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 10, 22, 12, 0, 0)
+            return value.replace(tzinfo=tz) if tz is not None else value
+
+    monkeypatch.setattr(
+        intent_service_module,
+        "datetime",
+        FrozenDateTime,
+    )
     service = make_intent_service()
 
     result = service._deterministic_fallback(

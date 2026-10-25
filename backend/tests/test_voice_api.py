@@ -1111,10 +1111,10 @@ def test_voice_websocket_handshake_and_turn_flow(
         assert committed["transcript"] == "hello world"
 
         assistant = websocket.receive_json()
-        assert assistant["type"] == "assistant.audio.started"
 
-        # Realtime audio events can legitimately arrive before the completed
-        # assistant text. Consume those events before asserting the response.
+        # Realtime audio can legitimately arrive before the completed text,
+        # but a fast text response can also win the race on the mock/no-chunk
+        # path. Consume leading audio events when present, then assert the text.
         while assistant["type"].startswith("assistant.audio."):
             assistant = websocket.receive_json()
 

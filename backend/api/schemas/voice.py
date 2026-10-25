@@ -30,6 +30,7 @@ class VoiceControlMessage(BaseModel):
         "turn.start",
         "turn.commit",
         "turn.cancel",
+        "assistant.interrupt",
         "session.ping",
         "session.close",
     ]
