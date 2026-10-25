@@ -21,10 +21,19 @@ type GeminiTokenResponse = {
 }
 type ConversationCreated = { id: number }
 type ToolResult = Record<string, unknown>
+type VoiceSearchSource = {
+  title: string
+  url: string
+  snippet: string
+  publishedDate: string | null
+  host: string
+}
 type VoiceTranscriptTurn = {
   id: number
   userText: string
   assistantText: string
+  searchStatus: string | null
+  searchSources: VoiceSearchSource[]
 }
 type ActiveTurn = VoiceTranscriptTurn & {
   responseDone: boolean
@@ -126,6 +135,8 @@ function newTurn(): ActiveTurn {
     id: ++voiceTurnSequence,
     userText: "",
     assistantText: "",
+    searchStatus: null,
+    searchSources: [],
     responseDone: false,
     toolUsed: false,
     saveStarted: false,
@@ -225,10 +236,19 @@ function shouldRouteToNova(message: string): boolean {
   if (!normalized) return false
 
   if (/\b(?:https?:\/\/|www\.)/u.test(normalized)) return true
-  if (/\b(?:search|look up|research|google search|find out)\b/u.test(normalized)) return true
-  if (/\b(?:latest|recent|current|today(?:'s)?|news|headlines?|weather|forecast|exchange rates?|stock prices?)\b/u.test(normalized)) {
-    if (/\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|search|research|look up|latest|recent|current|news|weather|forecast|price|rate)\b/u.test(normalized)) return true
-  }
+  if (/\b(?:search|look up|research|google search|find out|browse the web)\b/u.test(normalized)) return true
+
+  const freshness = /\b(?:latest|recent|current(?:ly)?|today(?:'s)?|live|right now|at the moment|real time|realtime|now|aaj|abhi|filhal)\b/u.test(normalized)
+  const liveSubject = /\b(?:news|headlines?|weather|forecast|exchange rates?|stock prices?|score|scores|scorecard|match|matches|cricket|football|soccer|sports?|fixtures?|standings|playing|wickets?|innings|goals?)\b/u.test(normalized)
+  const informationRequest = /\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|check|search|research|look up|score|scores|kya|batao|btao|kitna|kitne|kaun|dikhao|chal raha|ho raha)\b/u.test(normalized)
+  if (freshness && liveSubject && informationRequest) return true
+
+  // Current-score questions often imply freshness without saying "live".
+  if (
+    liveSubject
+    && /\b(?:pak|pakistan|eng|england|india|ind|australia|aus|new zealand|nz|cricket|football|soccer|team|match)\b/u.test(normalized)
+    && /\b(?:score|scores|scorecard|who(?:'s| is) playing|kya score|score chal|match ho raha)\b/u.test(normalized)
+  ) return true
 
   const emailAction = /\b(?:send|compose|draft|read|search|check|open|reply|forward|delete|list|find)\b/u
   const emailTarget = /\b(?:email|e-mail|mail|gmail|inbox)\b/u
@@ -241,6 +261,87 @@ function shouldRouteToNova(message: string): boolean {
   const desktopAction = /\b(?:open|launch|start|visit|go to|navigate to|show|find|inspect|check|click|tap|type|press|play|turn on|turn off|increase|decrease|raise|lower|mute|unmute|set)\b/u
   const desktopTarget = /\b(?:notepad|calculator|file explorer|browser|website|web site|app|application|folder|file|desktop|screen|downloads|documents|youtube|google|chrome|edge|firefox|settings|volume|brightness|wifi|wi-fi|bluetooth|spotify|local disk|c drive|computer|pc)\b/u
   return desktopAction.test(normalized) && desktopTarget.test(normalized)
+}
+
+function isLiveSearchRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase()
+  if (!normalized) return false
+
+  const emailTarget = /\b(?:email|e-mail|mail|gmail|inbox)\b/u.test(normalized)
+  const explicitWebSearch = /\b(?:search|look up|research|google search|find out|browse the web|web search)\b/u.test(normalized)
+  if (explicitWebSearch && !emailTarget) return true
+
+  const freshness = /\b(?:latest|recent|current(?:ly)?|today(?:'s)?|live|right now|at the moment|real time|realtime|now|aaj|abhi|filhal)\b/u.test(normalized)
+  const liveSubject = /\b(?:news|headlines?|weather|forecast|prices?|rates?|stocks?|score|scores|scorecard|match|matches|cricket|football|soccer|sports?|fixtures?|standings|playing|wickets?|innings|goals?)\b/u.test(normalized)
+  const informationRequest = /\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|check|kya|batao|btao|kitna|kitne|kaun|dikhao|chal raha|ho raha)\b/u.test(normalized)
+  return liveSubject && informationRequest && (freshness || /\b(?:score|scores|scorecard)\b/u.test(normalized))
+}
+
+function extractVoiceSearchSources(value: unknown): VoiceSearchSource[] {
+  if (!value || typeof value !== "object") return []
+  const root = value as Record<string, unknown>
+  let candidates: unknown[] = Array.isArray(root.web_sources) ? root.web_sources : []
+
+  if (candidates.length === 0) {
+    const toolResult = root.tool_result
+    if (toolResult && typeof toolResult === "object") {
+      const toolPayload = (toolResult as Record<string, unknown>).result
+      if (toolPayload && typeof toolPayload === "object") {
+        const results = (toolPayload as Record<string, unknown>).results
+        if (Array.isArray(results)) candidates = results
+      }
+    }
+  }
+
+  const sources: VoiceSearchSource[] = []
+  const seen = new Set<string>()
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue
+    const item = candidate as Record<string, unknown>
+    const title = String(item.title ?? "").trim().slice(0, 180)
+    const url = String(item.url ?? item.link ?? "").trim()
+    const snippet = String(item.content ?? item.snippet ?? item.description ?? "").trim().slice(0, 420)
+    const published = String(item.published_date ?? item.publishedDate ?? "").trim().slice(0, 60)
+    if (!title || !url || seen.has(url)) continue
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") continue
+      seen.add(url)
+      sources.push({
+        title,
+        url: parsed.href,
+        snippet,
+        publishedDate: published || null,
+        host: parsed.hostname.replace(/^www\./u, ""),
+      })
+      if (sources.length >= 5) break
+    } catch {
+      // Provider output is untrusted; only render navigable HTTP(S) links.
+    }
+  }
+  return sources
+}
+
+function liveSearchStatusFromResult(result: unknown, sources: VoiceSearchSource[], failure?: string): string {
+  if (failure) return "Live search failed: " + failure.slice(0, 180)
+  if (sources.length > 0) {
+    return "Found " + sources.length + " live source" + (sources.length === 1 ? "" : "s")
+  }
+  if (result && typeof result === "object") {
+    const root = result as Record<string, unknown>
+    const toolResult = root.tool_result
+    if (toolResult && typeof toolResult === "object") {
+      const tool = toolResult as Record<string, unknown>
+      if (tool.success === false && typeof tool.error === "string") {
+        return "Live search failed: " + tool.error.slice(0, 180)
+      }
+      const payload = tool.result
+      if (payload && typeof payload === "object" && Array.isArray((payload as Record<string, unknown>).results)) {
+        return "No verified live sources were returned; I won't guess the current score."
+      }
+    }
+  }
+  return "No verified live sources were returned; I won't guess the current score."
 }
 
 export function GeminiLiveVoiceSurface({
