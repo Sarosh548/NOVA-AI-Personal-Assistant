@@ -678,12 +678,21 @@ class ToolRouter:
                 "Live web search execution failed (exception_type=%s)",
                 type(exc).__name__,
             )
+            # WebSearchService raises bounded, credential-free RuntimeErrors
+            # for known provider failures. Return those safe diagnostics so the
+            # voice model can report the real blocker instead of inventing a
+            # generic "connection error". Unknown exceptions remain redacted.
+            safe_error = (
+                str(exc).strip()[:240]
+                if isinstance(exc, RuntimeError) and str(exc).strip()
+                else "Live web search failed."
+            )
             return {
                 "success": False,
                 "tool": "web",
                 "action": "search",
                 "result": None,
-                "error": "Live web search failed.",
+                "error": safe_error,
             }
 
         return {
