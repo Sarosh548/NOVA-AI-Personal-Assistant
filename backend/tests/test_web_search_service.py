@@ -82,6 +82,35 @@ def test_live_sports_result_ranking_prefers_scorecards_over_previews():
     assert ranked[-1]["title"] == "Pakistan vs England match preview and prediction"
 
 
+def test_live_sports_ranking_prefers_newer_score_update_over_stale_scorecard():
+    now = datetime.now(timezone.utc)
+    stale_date = (now - timedelta(hours=5)).isoformat()
+    fresh_date = (now - timedelta(minutes=10)).isoformat()
+    results = [
+        {
+            "title": "Pakistan vs England live scorecard and match updates",
+            "url": "https://www.cricbuzz.com/live-cricket-score/stale",
+            "content": "Pakistan vs England cricket scorecard with current runs and wickets.",
+            "score": 1.0,
+            "published_date": stale_date,
+        },
+        {
+            "title": "Pakistan vs England live scorecard and match updates",
+            "url": "https://www.espncricinfo.com/live-cricket-score/fresh",
+            "content": "Pakistan vs England cricket scorecard with current runs and wickets.",
+            "score": 0.0,
+            "published_date": fresh_date,
+        },
+    ]
+
+    ranked = WebSearchService._rank_live_sports_results(
+        "Pakistan vs England cricket live score today",
+        results,
+    )
+
+    assert ranked[0]["url"].endswith("/fresh")
+
+
 def test_live_sports_provider_timeouts_are_bounded(monkeypatch):
     service = WebSearchService(
         api_key="tvly-test",
