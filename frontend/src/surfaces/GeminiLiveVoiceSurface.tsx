@@ -820,6 +820,8 @@ export function GeminiLiveVoiceSurface({
           activeTurnRef.current = newTurn()
           setResponse("")
           setTranscript("")
+          setActiveSearchStatus(null)
+          setActiveSearchSources([])
         }
         const turn = activeTurnRef.current
         turn.userText = appendTranscript(turn.userText, inputChunk)
@@ -843,8 +845,19 @@ export function GeminiLiveVoiceSurface({
         })
         || serverContent.turnComplete === true
       const turn = activeTurnRef.current
-      if (
-        hasModelOutput
+      const interactionStatus = String(serverContent.interactionStatus ?? "").toUpperCase()
+      const intermediateThinkingTurn = (
+        serverContent.turnComplete === true
+        && interactionStatus === "IN_PROGRESS"
+      )
+
+      // Gemini Live can finish an interim spoken segment while still working
+      // on a tool call. This is not the final answer: keep the turn open and
+      // show immediate progress instead of archiving a filler as the response.
+      if (intermediateThinkingTurn && isLiveSearchRequest(turn.userText)) {
+        startSearchProgress(turn, turn.userText)
+      }
+      if (hasModelOutput && !intermediateThinkingTurn
         && !turn.toolUsed
         && !turn.cancelled
         && shouldRouteToNova(turn.userText)
@@ -900,18 +913,29 @@ export function GeminiLiveVoiceSurface({
         }
       }
 
-      if (serverContent.turnComplete === true) {
+      if (serverContent.turnComplete === true && interactionStatus === "IN_PROGRESS") {
+        // Keep the microphone/session active while Gemini performs the tool step.
+        // The next toolResponse and final IDLE turn belong to the same exchange.
+        if (playbackSourcesRef.current.size === 0) {
+          setAudioState("idle")
+          if (connectedRef.current) setState("thinking")
+        } else {
+          setState("speaking")
+        }
+      } else if (serverContent.turnComplete === true) {
         if (suppressPlaybackRef.current) suppressPlaybackRef.current = false
         const turn = activeTurnRef.current
         turn.responseDone = true
         persistTurn()
 
-        // Retain completed exchanges. The next voice-start creates a new active
-        // turn, while prior user/assistant messages remain visible above the orb.
+        // Only final turns are archived. Gemini Live can emit an interim
+        // turnComplete with IN_PROGRESS first.
         const archivedTurn = {
           id: turn.id,
           userText: turn.userText.trim(),
           assistantText: turn.assistantText.trim(),
+          searchStatus: turn.searchStatus,
+          searchSources: turn.searchSources,
         }
         if (
           !turn.cancelled
@@ -1065,6 +1089,8 @@ export function GeminiLiveVoiceSurface({
             activeTurnRef.current = newTurn()
             setResponse("")
             setTranscript("")
+            setActiveSearchStatus(null)
+            setActiveSearchSources([])
           }
           if (connectedRef.current && stateRef.current !== "speaking") setState("listening")
           return
