@@ -60,6 +60,14 @@ def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, t
     else:
         monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": []})
 
+    searx_calls = []
+
+    def empty_searxng(*, query, topic, time_range):
+        searx_calls.append((query, topic, time_range))
+        return {"results": []}
+
+    monkeypatch.setattr(service, "_request_searxng", empty_searxng)
+
     def rss_results(*, query, time_range):
         rss_calls.append((query, time_range))
         return {
@@ -91,6 +99,7 @@ def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, t
     assert results
     assert rss_calls[0] == ("Pakistan vs England cricket live score today", "day")
     assert results[0]["title"] == "Pakistan vs England live score and match updates"
+    assert searx_calls == [("Pakistan vs England cricket live score today", "general", "day")]
     # Fast live-score mode avoids one serial network request per Google News URL.
     assert "news.google.com" in results[0]["url"]
     assert "intermediary link" in results[0]["content"]
