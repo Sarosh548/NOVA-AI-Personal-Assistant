@@ -467,6 +467,7 @@ export function GeminiLiveVoiceSurface({
   const routeUndelegatedAction = useCallback(async (
     turn: ActiveTurn,
     socket: WebSocket,
+    pendingToolCalls: Array<{ id: string; name: string }> = [],
   ) => {
     const sourceUtterance = turn.userText.trim()
     if (
@@ -519,6 +520,22 @@ export function GeminiLiveVoiceSurface({
         return
       }
 
+      if (pendingToolCalls.length > 0) {
+        // When Gemini emitted an unsupported/malformed function name, satisfy
+        // that pending function call with the authoritative NOVA result. This
+        // lets Gemini continue speaking without a second user-content turn.
+        socket.send(JSON.stringify({
+          toolResponse: {
+            functionResponses: pendingToolCalls.map((call) => ({
+              id: call.id,
+              name: call.name,
+              response: boundedToolOutput(result),
+            })),
+          },
+        }))
+        return
+      }
+
       const instruction = [
         "NOVA has already processed the user's request through its authenticated backend.",
         "The following JSON is the authoritative result. Do not execute the request again and do not call any function.",
@@ -543,6 +560,18 @@ export function GeminiLiveVoiceSurface({
     } catch (routeError) {
       suppressPlaybackRef.current = false
       const message = readableError(routeError, "NOVA could not complete the request.")
+      if (pendingToolCalls.length > 0 && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          toolResponse: {
+            functionResponses: pendingToolCalls.map((call) => ({
+              id: call.id,
+              name: call.name,
+              response: { success: false, action_taken: false, error: message },
+            })),
+          },
+        }))
+        return
+      }
       turn.assistantText = message
       turn.responseDone = true
       setResponse(message)
@@ -583,6 +612,56 @@ export function GeminiLiveVoiceSurface({
     if (message.goAway) {
       setError("Gemini Live session is nearing its configured lifetime. Finish this turn and reconnect.")
       return
+    }
+
+    // Handle Gemini function calls before serverContent. A valid NOVA call
+    // claims this turn synchronously, preventing the generic fallback from
+    // racing it. Unknown/malformed call names on an actionable turn are routed
+    // through /chat and answered using the original function-call IDs.
+    if (message.toolCall && typeof message.toolCall === "object") {
+      const toolCall = message.toolCall as GeminiMessage
+      const calls = Array.isArray(toolCall.functionCalls) ? toolCall.functionCalls : []
+      const supportedCalls = calls.filter(
+        (call: GeminiMessage) => call?.name === "nova_execute_request",
+      )
+      if (supportedCalls.length > 0) {
+        void sendToolCall(toolCall)
+      } else {
+        const turn = activeTurnRef.current
+        const pendingCalls = calls.filter(
+          (call: GeminiMessage) =>
+            typeof call?.id === "string"
+            && call.id.length > 0
+            && typeof call?.name === "string"
+            && call.name.length > 0,
+        ).map((call: GeminiMessage) => ({
+          id: call.id as string,
+          name: call.name as string,
+        }))
+        if (
+          shouldRouteToNova(turn.userText)
+          && !turn.toolUsed
+          && !turn.cancelled
+        ) {
+          void routeUndelegatedAction(turn, socket, pendingCalls)
+          return
+        }
+        if (pendingCalls.length > 0 && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            toolResponse: {
+              functionResponses: pendingCalls.map((call) => ({
+                id: call.id,
+                name: call.name,
+                response: {
+                  success: false,
+                  action_taken: false,
+                  error: "Unsupported NOVA function. Submit user requests through nova_execute_request.",
+                },
+              })),
+            },
+          }))
+        }
+      }
     }
 
     const serverContent = message.serverContent
@@ -628,7 +707,6 @@ export function GeminiLiveVoiceSurface({
       const turn = activeTurnRef.current
       if (
         hasModelOutput
-        && !message.toolCall
         && !turn.toolUsed
         && !turn.cancelled
         && shouldRouteToNova(turn.userText)
@@ -713,10 +791,6 @@ export function GeminiLiveVoiceSurface({
           setState("speaking")
         }
       }
-    }
-
-    if (message.toolCall && typeof message.toolCall === "object") {
-      void sendToolCall(message.toolCall as GeminiMessage)
     }
 
     if (message.toolCallCancellation) {
