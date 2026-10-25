@@ -48,6 +48,54 @@ def test_production_does_not_default_to_container_loopback_searxng(monkeypatch):
     assert service.searxng_endpoint == ""
 
 
+@pytest.mark.parametrize("tavily_mode", ["unavailable", "empty"])
+def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, tavily_mode):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    rss_calls = []
+
+    if tavily_mode == "unavailable":
+        def tavily_failure(_payload):
+            raise RuntimeError("Tavily unavailable")
+        monkeypatch.setattr(service, "_request_tavily", tavily_failure)
+    else:
+        monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": []})
+
+    def rss_results(*, query, time_range):
+        rss_calls.append((query, time_range))
+        return {
+            "results": [
+                {
+                    "title": "Pakistan vs England live score and match updates",
+                    "url": "https://news.google.com/rss/articles/live-score",
+                    "content": "Live match score update and scorecard.",
+                    "published_date": "2026-10-25T16:00:00Z",
+                },
+                {
+                    "title": "Pakistan England scorecard",
+                    "url": "https://example.com/scorecard",
+                    "content": "Current cricket match scorecard with runs and wickets.",
+                    "published_date": "2026-10-25T15:59:00Z",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(service, "_request_google_news_rss", rss_results)
+
+    results = service.search(
+        query="Pakistan vs England cricket live score today",
+        topic="general",
+        time_range="day",
+        max_results=5,
+    )
+
+    assert results
+    assert rss_calls[0] == ("Pakistan vs England cricket live score today", "day")
+    assert results[0]["title"] == "Pakistan vs England live score and match updates"
+    # Fast live-score mode avoids one serial network request per Google News URL.
+    assert "news.google.com" in results[0]["url"]
+    assert "intermediary link" in results[0]["content"]
+
+
 def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
     monkeypatch,
 ):
