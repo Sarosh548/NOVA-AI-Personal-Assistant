@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,12 +12,20 @@ class SecuritySettings(BaseSettings):
     """
     API-facing security boundary configuration.
 
-    Origins and trusted hosts are intentionally explicit. The default
-    values are local-development safe and fail closed for deployment
-    until real production values are supplied through the environment.
+    Trusted hosts remain explicit and fail closed for deployment. CORS
+    always includes the canonical NOVA frontend origin, with additional
+    origins supplied through API_CORS_ALLOWED_ORIGINS.
     """
 
     api_cors_allowed_origins: str = ""
+
+    # Keep the canonical deployed frontend reachable even when the API's
+    # additional origins are configured separately in the hosting platform.
+    # This is overrideable with NOVA_FRONTEND_ORIGIN for other deployments.
+    nova_frontend_origin: str = Field(
+        default="https://sarosh548.github.io",
+        min_length=1,
+    )
 
     api_max_request_body_bytes: int = Field(
         default=10_485_760,
@@ -67,6 +76,31 @@ class SecuritySettings(BaseSettings):
 
         return str(value)
 
+    @field_validator("nova_frontend_origin")
+    @classmethod
+    def _validate_frontend_origin(cls, value: str) -> str:
+        origin = str(value).strip().rstrip("/")
+        parsed = urlsplit(origin)
+        is_local_http = (
+            parsed.scheme == "http"
+            and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        )
+        if (
+            not parsed.netloc
+            or (parsed.scheme != "https" and not is_local_http)
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+            or origin == "*"
+        ):
+            raise ValueError(
+                "NOVA_FRONTEND_ORIGIN must be an HTTPS origin "
+                "(HTTP is allowed only for localhost), without a path."
+            )
+        return origin
+
     @staticmethod
     def _parse_csv(
         value: str,
@@ -88,9 +122,17 @@ class SecuritySettings(BaseSettings):
     def cors_allowed_origins(
         self,
     ) -> tuple[str, ...]:
-        return self._parse_csv(
+        configured_origins = self._parse_csv(
             self.api_cors_allowed_origins,
             "api_cors_allowed_origins",
+        )
+        # Preserve explicitly configured origins and guarantee that the
+        # deployed NOVA frontend is in the allowlist. Exact origins only;
+        # wildcard matching remains prohibited.
+        return tuple(
+            dict.fromkeys(
+                (*configured_origins, self.nova_frontend_origin)
+            )
         )
 
     def trusted_hosts(
