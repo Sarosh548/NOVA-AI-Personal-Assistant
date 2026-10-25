@@ -7,6 +7,7 @@ from services.notification_destination_service import (
 from services.notification_delivery_service import (
     NotificationDeliveryService,
 )
+from services.google_mail_oauth_service import GoogleMailOAuthService
 from services.notification_service import (
     ConsoleNotificationChannel,
     EmailNotificationChannel,
@@ -180,4 +181,7 @@ def build_notification_service(
             else NotificationDestinationService()
         ),
         delivery_service=NotificationDeliveryService(),
+        google_mail_service=GoogleMailOAuthService(
+            settings=resolved_settings,
+        ),
     )

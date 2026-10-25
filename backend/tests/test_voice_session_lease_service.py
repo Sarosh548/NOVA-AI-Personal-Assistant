@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
+from models.user import User
 from models.voice_session_lease import VoiceSessionLease
 from services.voice_session_lease_service import (
     VoiceSessionLeaseService,
@@ -13,6 +14,7 @@ from services.voice_session_lease_service import (
 def build_runtime(
     *,
     lease_seconds=60,
+    heartbeat_grace_seconds=None,
 ):
     db_engine = create_engine(
         "sqlite://",
@@ -22,6 +24,7 @@ def build_runtime(
         poolclass=StaticPool,
     )
 
+    User.__table__.create(bind=db_engine)
     VoiceSessionLease.__table__.create(
         bind=db_engine
     )
@@ -31,6 +34,7 @@ def build_runtime(
         VoiceSessionLeaseService(
             db_engine=db_engine,
             lease_seconds=lease_seconds,
+            heartbeat_grace_seconds=heartbeat_grace_seconds,
         ),
     )
 
@@ -41,6 +45,7 @@ def teardown_runtime(
     VoiceSessionLease.__table__.drop(
         bind=db_engine
     )
+    User.__table__.drop(bind=db_engine)
     db_engine.dispose()
 
 
@@ -200,6 +205,7 @@ def test_voice_session_lease_rejects_invalid_duration(
         poolclass=StaticPool,
     )
 
+    User.__table__.create(bind=db_engine)
     VoiceSessionLease.__table__.create(
         bind=db_engine
     )
@@ -214,3 +220,55 @@ def test_voice_session_lease_rejects_invalid_duration(
         teardown_runtime(
             db_engine
         )
+
+
+def test_voice_session_lease_can_recover_after_heartbeat_goes_stale():
+    db_engine, service = build_runtime(
+        lease_seconds=360,
+        heartbeat_grace_seconds=30,
+    )
+
+    try:
+        start = datetime(
+            2026,
+            9,
+            23,
+            6,
+            0,
+            tzinfo=timezone.utc,
+        )
+        first = service.acquire(
+            user_id="user-stale",
+            session_id="session-stale",
+            now=start,
+        )
+        still_live = service.acquire(
+            user_id="user-stale",
+            session_id="session-contender",
+            now=start + timedelta(seconds=10),
+        )
+        reclaimed = service.acquire(
+            user_id="user-stale",
+            session_id="session-recovered",
+            now=start + timedelta(seconds=31),
+        )
+
+        assert first.acquired is True
+        assert still_live.acquired is False
+        assert reclaimed.acquired is True
+        assert service.heartbeat(
+            user_id="user-stale",
+            session_id="session-stale",
+            now=start + timedelta(seconds=32),
+        ) is False
+        assert service.release(
+            user_id="user-stale",
+            session_id="session-stale",
+        ) is False
+        assert service.heartbeat(
+            user_id="user-stale",
+            session_id="session-recovered",
+            now=start + timedelta(seconds=40),
+        ) is True
+    finally:
+        teardown_runtime(db_engine)

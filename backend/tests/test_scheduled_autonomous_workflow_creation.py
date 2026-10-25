@@ -172,6 +172,7 @@ class FakeConfirmationService:
     def parse_response(
         self,
         message,
+        **_kwargs,
     ):
         return "approve"
 

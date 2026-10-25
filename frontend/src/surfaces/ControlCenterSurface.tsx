@@ -7,6 +7,9 @@ import {
   createNotificationDestination,
   deleteNotificationDestination,
   deletePermission,
+  getGoogleMailConnectUrl,
+  getGoogleMailStatus,
+  disconnectGoogleMail,
   getNotificationDestinations,
   getNotificationPreferences,
   getPendingConfirmations,
@@ -17,6 +20,7 @@ import {
   setPermission,
   updateNotificationPreferences,
   type Confirmation,
+  type GoogleMailStatus,
   type NotificationDestination,
   type NotificationPreferences,
   type Permission,
@@ -64,6 +68,7 @@ export function ControlCenterSurface() {
 
   const [preferences, setPreferences] = useState<NotificationPreferences | null>(null)
   const [destinations, setDestinations] = useState<NotificationDestination[]>([])
+  const [googleMailStatus, setGoogleMailStatus] = useState<GoogleMailStatus | null>(null)
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [confirmations, setConfirmations] = useState<Confirmation[]>([])
   const [workflows, setWorkflows] = useState<Workflow[]>([])
@@ -87,12 +92,14 @@ export function ControlCenterSurface() {
         permissionsResult,
         confirmationsResult,
         workflowsResult,
+        googleMailResult,
       ] = await Promise.all([
         getNotificationPreferences(user.id),
         getNotificationDestinations(),
         getPermissions(),
         getPendingConfirmations(),
         getWorkflows(),
+        getGoogleMailStatus(),
       ])
 
       setPreferences(preferencesResult)
@@ -100,6 +107,7 @@ export function ControlCenterSurface() {
       setPermissions(permissionsResult)
       setConfirmations(confirmationsResult)
       setWorkflows(workflowsResult)
+      setGoogleMailStatus(googleMailResult)
     } catch (err) {
       setError(errorText(err, "NOVA could not load the control center."))
     } finally {
@@ -143,6 +151,53 @@ export function ControlCenterSurface() {
     } catch (err) {
       setPreferenceSaveState("idle")
       setError(errorText(err, "NOVA could not update that preference."))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const connectGoogleMail = async () => {
+    if (working) return
+    setError(null)
+    const popup = window.open("about:blank", "_blank")
+    if (popup) popup.opener = null
+    setWorking(true)
+
+    try {
+      if (!googleMailStatus?.configured) {
+        throw new Error("Google Mail is not configured on this NOVA backend yet.")
+      }
+      const { authorization_url } = await getGoogleMailConnectUrl()
+      if (popup) {
+        popup.location.href = authorization_url
+      } else {
+        window.location.assign(authorization_url)
+      }
+    } catch (err) {
+      popup?.close()
+      setError(errorText(err, "NOVA could not start Google Mail connection."))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const refreshGoogleMailStatus = async () => {
+    try {
+      setGoogleMailStatus(await getGoogleMailStatus())
+    } catch (err) {
+      setError(errorText(err, "NOVA could not refresh Google Mail status."))
+    }
+  }
+
+  const removeGoogleMailConnection = async () => {
+    if (working) return
+    setWorking(true)
+    setError(null)
+    try {
+      await disconnectGoogleMail()
+      setGoogleMailStatus(await getGoogleMailStatus())
+    } catch (err) {
+      setError(errorText(err, "NOVA could not disconnect Google Mail."))
     } finally {
       setWorking(false)
     }
@@ -486,6 +541,42 @@ export function ControlCenterSurface() {
                       ? "Notification preferences saved."
                       : "Changes save directly through NOVA’s authenticated notification-preferences API."}
                 </p>
+
+                <div className="resource-panel-head">
+                  <div>
+                    <div className="section-kicker">OUTBOUND EMAIL</div>
+                    <h2>Send from your own Gmail account.</h2>
+                    <p>Connect Google once. NOVA will use that mailbox for emails you approve, to any valid recipient.</p>
+                  </div>
+                  <span className={googleMailStatus?.connected ? "status-pill status-completed" : "status-pill"}>
+                    {googleMailStatus?.connected ? "Connected" : "Not connected"}
+                  </span>
+                </div>
+                {googleMailStatus?.connected ? (
+                  <p className="resource-hint" role="status">
+                    Sending as <strong>{googleMailStatus.email}</strong>. Access is stored encrypted and can be revoked here.
+                  </p>
+                ) : (
+                  <p className="resource-hint" role="status">
+                    {googleMailStatus?.configured
+                      ? "Your NOVA login does not grant mailbox access by itself; connect the Google account that should send messages."
+                      : "The backend still needs its Google OAuth and token-encryption settings before a mailbox can be connected."}
+                  </p>
+                )}
+                <div className="resource-actions">
+                  {googleMailStatus?.connected ? (
+                    <button className="danger-action compact" type="button" disabled={working} onClick={() => void removeGoogleMailConnection()}>
+                      Disconnect Gmail
+                    </button>
+                  ) : (
+                    <button className="primary-action compact" type="button" disabled={working || !googleMailStatus?.configured} onClick={() => void connectGoogleMail()}>
+                      Connect Gmail
+                    </button>
+                  )}
+                  <button className="secondary-action compact" type="button" disabled={working} onClick={() => void refreshGoogleMailStatus()}>
+                    Refresh status
+                  </button>
+                </div>
               </article>
 
               <NotificationDestinations

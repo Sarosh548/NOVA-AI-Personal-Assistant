@@ -46,6 +46,7 @@ class FakeConfirmationService:
 
         self.list_calls = []
         self.get_calls = []
+        self.update_recipient_calls = []
         self.approve_calls = []
         self.reject_calls = []
 
@@ -88,6 +89,34 @@ class FakeConfirmationService:
         return dict(
             self.confirmation
         )
+
+    def update_pending_email_recipient(
+        self,
+        *,
+        user_id,
+        confirmation_id,
+        recipient_email,
+    ):
+        self.update_recipient_calls.append({
+            "user_id": user_id,
+            "confirmation_id": confirmation_id,
+            "recipient_email": recipient_email,
+        })
+        if (
+            "@" not in recipient_email
+            or "." not in recipient_email.rsplit("@", 1)[-1]
+            or any(char.isspace() for char in recipient_email)
+        ):
+            raise ValueError("Enter a valid single email address.")
+        if self.confirmation is None or self.confirmation["id"] != confirmation_id:
+            return None
+        updated = dict(self.confirmation)
+        updated["data"] = dict(updated.get("data") or {})
+        if updated.get("status") == "pending" and updated.get("tool") == "email" and updated.get("action") == "send":
+            updated["data"]["to"] = recipient_email.strip()
+            updated["data"].pop("recipient_reference", None)
+            self.confirmation = updated
+        return updated
 
     def approve_confirmation(
         self,
@@ -369,6 +398,15 @@ def authenticated_api():
         )
 
 
+def test_confirmation_execution_dependency_returns_canonical_graph_executor():
+    from agent import graph
+
+    assert (
+        get_confirmation_execution_service()
+        is graph.confirmation_execution_service
+    )
+
+
 def test_confirmation_list_requires_authentication():
     main.app.dependency_overrides.pop(
         get_current_auth_context,
@@ -521,6 +559,64 @@ def test_get_confirmation_preserves_resolved_status(
     assert payload["resolved_at"] == (
         "2026-09-19T09:03:00"
     )
+
+
+def test_update_pending_email_recipient_uses_authenticated_identity(
+    authenticated_api,
+):
+    client, service, execution_service = authenticated_api
+
+    response = client.patch(
+        "/confirmations/101/recipient",
+        json={"recipient_email": "typed@example.com"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "pending"
+    assert payload["data"]["to"] == "typed@example.com"
+    assert service.update_recipient_calls == [
+        {
+            "user_id": "user-001",
+            "confirmation_id": 101,
+            "recipient_email": "typed@example.com",
+        }
+    ]
+    assert execution_service.approve_and_execute_calls == []
+
+
+def test_update_pending_email_recipient_rejects_invalid_address(
+    authenticated_api,
+):
+    client, service, execution_service = authenticated_api
+
+    response = client.patch(
+        "/confirmations/101/recipient",
+        json={"recipient_email": "not-an-email"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Enter a valid single email address."
+    assert execution_service.approve_and_execute_calls == []
+
+
+def test_update_recipient_rejects_resolved_confirmation(
+    authenticated_api,
+):
+    client, service, execution_service = authenticated_api
+    service.confirmation = _sample_confirmation(
+        confirmation_id=101,
+        status="consumed",
+    )
+
+    response = client.patch(
+        "/confirmations/101/recipient",
+        json={"recipient_email": "typed@example.com"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Only a pending email-send confirmation can be edited."
+    assert execution_service.approve_and_execute_calls == []
 
 
 def test_approve_confirmation_uses_authenticated_identity(

@@ -353,3 +353,42 @@ def test_agent_planner_prompt_contains_calendar_rules():
     assert "time_min/time_max" in llm.instructions
     assert "attendees" in llm.instructions
     assert "event_id" in llm.instructions
+
+
+def test_deterministic_fallback_routes_calendar_event_creation_before_llm():
+    service = make_intent_service()
+
+    result = service._deterministic_fallback(
+        message=(
+            "Create a calendar event Friday at 4:00 p.m. called "
+            "Nova calendar confirmation retest 1021."
+        ),
+        history=[],
+    )
+
+    assert result["intent"] == "calendar"
+    assert result["calendar_action"] == "create"
+    assert result["requires_tool"] is True
+    assert result["clarification_required"] is False
+    assert result["event"]["summary"] == "Nova calendar confirmation retest 1021"
+    assert result["event"]["start"]["dateTime"].startswith("2026-10-23T16:00:00")
+    assert result["event"]["end"]["dateTime"].startswith("2026-10-23T17:00:00")
+
+
+def test_deterministic_fallback_parses_day_first_calendar_event_and_duration():
+    service = make_intent_service()
+
+    result = service._deterministic_fallback(
+        message=(
+            "Nova 23 October 2026 ko 4 PM se 4:30 PM tak Google Calendar mein "
+            "event create karo exact title Nova Voice Calendar Test 1021"
+        ),
+        history=[],
+    )
+
+    assert result["intent"] == "calendar"
+    assert result["calendar_action"] == "create"
+    assert result["requires_tool"] is True
+    assert result["event"]["summary"] == "Nova Voice Calendar Test 1021"
+    assert result["event"]["start"]["dateTime"] == "2026-10-23T16:00:00+05:00"
+    assert result["event"]["end"]["dateTime"] == "2026-10-23T16:30:00+05:00"

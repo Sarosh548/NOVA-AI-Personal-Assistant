@@ -100,10 +100,22 @@ class GoogleCalendarOAuthService:
         self.encryption_service = (
             encryption_service
             if encryption_service is not None
-            else TokenEncryptionService(
-                self.settings.integration_token_encryption_key
+            else (
+                TokenEncryptionService(
+                    self.settings.integration_token_encryption_key
+                )
+                if self.settings.integration_token_encryption_key
+                else None
             )
         )
+
+    def _get_encryption_service(self) -> TokenEncryptionService:
+        if self.encryption_service is None:
+            raise ValueError(
+                "External token encryption is not configured."
+            )
+
+        return self.encryption_service
 
     # =====================================================
     # PUBLIC AUTHORIZATION FLOW
@@ -170,6 +182,7 @@ class GoogleCalendarOAuthService:
             "scope": self._get_scopes(),
             "access_type": "offline",
             "include_granted_scopes": "true",
+            "prompt": "consent",
             "state": raw_state,
         }
 
@@ -273,14 +286,14 @@ class GoogleCalendarOAuthService:
                 )
 
             encrypted_access_token = (
-                self.encryption_service.encrypt(
+                self._get_encryption_service().encrypt(
                     access_token
                 )
             )
 
             if refresh_token is not None:
                 encrypted_refresh_token = (
-                    self.encryption_service.encrypt(
+                    self._get_encryption_service().encrypt(
                         refresh_token
                     )
                 )
@@ -394,6 +407,20 @@ class GoogleCalendarOAuthService:
             if connection is None:
                 return None
 
+            try:
+                self._get_encryption_service().decrypt(
+                    connection.encrypted_access_token
+                )
+                self._get_encryption_service().decrypt(
+                    connection.encrypted_refresh_token
+                )
+            except ValueError:
+                # A connection whose encrypted credentials can no longer
+                # be decrypted with the active server key is not usable.
+                # Treat it as disconnected so UI and assistant routing do
+                # not claim that Calendar is connected.
+                return None
+
             return self._connection_to_dict(
                 connection
             )
@@ -426,15 +453,26 @@ class GoogleCalendarOAuthService:
             if connection is None:
                 return False
 
-            refresh_token = (
-                self.encryption_service.decrypt(
-                    connection.encrypted_refresh_token
+            try:
+                refresh_token = (
+                    self._get_encryption_service().decrypt(
+                        connection.encrypted_refresh_token
+                    )
                 )
-            )
+            except ValueError:
+                # A stale/corrupted encrypted token must never prevent NOVA
+                # from removing its own local Calendar connection.
+                refresh_token = None
 
-            self._revoke_token(
-                refresh_token
-            )
+            if refresh_token is not None:
+                try:
+                    self._revoke_token(
+                        refresh_token
+                    )
+                except ValueError:
+                    # A stale/expired Google token must never prevent NOVA
+                    # from removing its own local Calendar connection.
+                    pass
 
             session.delete(
                 connection
@@ -565,7 +603,7 @@ class GoogleCalendarOAuthService:
                         seconds=self.TOKEN_EXPIRY_SKEW_SECONDS
                     )
                 ):
-                    return self.encryption_service.decrypt(
+                    return self._get_encryption_service().decrypt(
                         connection.encrypted_access_token
                     )
 
@@ -742,7 +780,7 @@ class GoogleCalendarOAuthService:
             return {
                 "claim_token": claim_token,
                 "refresh_token": (
-                    self.encryption_service.decrypt(
+                    self._get_encryption_service().decrypt(
                         row[0]
                     )
                 ),
@@ -775,7 +813,7 @@ class GoogleCalendarOAuthService:
                 )
                 .values(
                     encrypted_access_token=(
-                        self.encryption_service.encrypt(
+                        self._get_encryption_service().encrypt(
                             access_token
                         )
                     ),

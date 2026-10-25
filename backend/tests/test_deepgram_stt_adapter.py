@@ -96,6 +96,7 @@ def _settings(
 
 def _request(
     encoding: str = "pcm_s16le",
+    language: str | None = None,
 ) -> STTStreamRequest:
     return STTStreamRequest(
         user_id="user-1",
@@ -106,6 +107,7 @@ def _request(
             sample_rate_hz=16_000,
             channels=1,
         ),
+        language=language,
     )
 
 
@@ -189,6 +191,29 @@ async def test_adapter_opens_authenticated_deepgram_connection(
     }
     assert captured["kwargs"]["compression"] is None
     assert captured["kwargs"]["max_size"] == 1_048_576
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_adapter_uses_per_turn_urdu_language(monkeypatch):
+    websocket = FakeDeepgramWebSocket()
+    captured = {}
+
+    async def fake_connect(uri, **kwargs):
+        captured["uri"] = uri
+        return websocket
+
+    import services.deepgram_stt_adapter as module
+
+    monkeypatch.setattr(module, "connect", fake_connect)
+    adapter = DeepgramSTTAdapter(_settings())
+
+    stream = await adapter.start_stream(_request(language="ur"))
+
+    assert "model=nova-3" in captured["uri"]
+    assert "language=ur" in captured["uri"]
+    assert "language=en-US" not in captured["uri"]
 
     await stream.close()
 

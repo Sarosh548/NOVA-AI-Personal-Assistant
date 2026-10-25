@@ -133,6 +133,92 @@ def build_service(
     )
 
 
+def test_get_connection_allows_disconnected_state_without_encryption_configuration():
+    engine = build_runtime()
+
+    try:
+        from config import Settings
+
+        settings = Settings(
+            auth_jwt_secret_key=(
+                "a" * 32
+            ),
+        )
+
+        service = GoogleCalendarOAuthService(
+            engine=engine,
+            settings=settings,
+        )
+
+        assert service.get_connection(
+            user_id="user-001"
+        ) is None
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
+def test_get_connection_treats_credentials_encrypted_with_another_key_as_disconnected():
+    engine = build_runtime()
+    service = build_service(
+        engine
+    )
+
+    try:
+        from sqlalchemy.orm import Session
+
+        other_encryption_service = TokenEncryptionService(
+            Fernet.generate_key().decode(
+                "utf-8"
+            )
+        )
+
+        with Session(
+            engine
+        ) as session:
+            session.add(
+                CalendarConnection(
+                    user_id="user-001",
+                    provider="google",
+                    calendar_id="primary",
+                    encrypted_access_token=(
+                        other_encryption_service.encrypt(
+                            "access-token"
+                        )
+                    ),
+                    encrypted_refresh_token=(
+                        other_encryption_service.encrypt(
+                            "refresh-token"
+                        )
+                    ),
+                    token_expires_at=(
+                        datetime(
+                            2026,
+                            10,
+                            8,
+                            0,
+                            0,
+                        )
+                    ),
+                    scopes=(
+                        "https://www.googleapis.com/auth/calendar.events"
+                    ),
+                )
+            )
+            session.commit()
+
+        assert service.get_connection(
+            user_id="user-001"
+        ) is None
+
+    finally:
+        teardown_runtime(
+            engine
+        )
+
+
 def create_state(
     service,
     *,
@@ -209,6 +295,10 @@ def test_build_authorization_url_creates_hashed_one_time_state():
         assert (
             parsed["include_granted_scopes"]
             == ["true"]
+        )
+        assert (
+            parsed["prompt"]
+            == ["consent"]
         )
         assert (
             parsed["scope"]

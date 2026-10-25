@@ -65,6 +65,7 @@ class VoiceTTSOrchestrator:
         turn_id: str,
         voice: str,
         audio_format: TTSAudioFormat,
+        language: str | None = None,
     ) -> str:
         if self._turn is not None:
             raise VoiceTTSOrchestratorError(
@@ -77,6 +78,7 @@ class VoiceTTSOrchestrator:
             turn_id=turn_id,
             voice=voice,
             audio_format=audio_format,
+            language=language,
         )
 
         try:

@@ -87,7 +87,57 @@ def test_delete_action_requires_confirmation():
 
     assert decision.allowed is False
     assert decision.requires_confirmation is True
-    assert decision.risk_level == "medium"
+    assert decision.risk_level == "high"
+    assert "high_risk_action" in decision.risk_flags
+
+
+def test_explicit_interactive_delete_still_requires_confirmation():
+    service = PermissionService()
+
+    decision = service.check(
+        user_id="user-001",
+        tool="task",
+        action="delete",
+        user_requested=True,
+        data={"task_reference": "Finish NOVA frontend QA"},
+    )
+
+    assert decision.allowed is False
+    assert decision.requires_confirmation is True
+    assert decision.risk_level == "high"
+    assert "high_risk_action" in decision.risk_flags
+
+
+def test_saved_allow_cannot_bypass_task_delete_confirmation():
+    service = PermissionService()
+    user_id = "risk-test-task-delete-allow"
+
+    try:
+        service.set_permission(
+            user_id=user_id,
+            tool="task",
+            action="delete",
+            mode="allow",
+        )
+
+        decision = service.check(
+            user_id=user_id,
+            tool="task",
+            action="delete",
+            user_requested=True,
+            data={"task_reference": "Finish NOVA frontend QA"},
+        )
+
+        assert decision.allowed is False
+        assert decision.requires_confirmation is True
+        assert decision.risk_level == "high"
+        assert "high_risk_action" in decision.risk_flags
+    finally:
+        service.delete_permission(
+            user_id=user_id,
+            tool="task",
+            action="delete",
+        )
 
 
 def test_truly_unknown_action_is_denied():

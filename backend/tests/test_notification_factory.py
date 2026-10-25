@@ -16,10 +16,24 @@ from services.notification_service import (
 def build_settings(
     **overrides,
 ):
+    # Settings is environment-driven. Pin notification settings in this
+    # fixture so developer machine/user environment variables cannot make
+    # "missing SMTP" cases pass or fail nondeterministically.
     values = {
         "auth_jwt_secret_key": (
             "a" * 32
         ),
+        "notification_default_channel": "console",
+        "notification_webhook_url": None,
+        "notification_webhook_secret": None,
+        "notification_smtp_host": None,
+        "notification_smtp_port": 587,
+        "notification_smtp_username": None,
+        "notification_smtp_password": None,
+        "notification_email_from_address": None,
+        "notification_smtp_starttls": True,
+        "notification_smtp_use_ssl": False,
+        "notification_smtp_timeout_seconds": 10,
     }
 
     values.update(

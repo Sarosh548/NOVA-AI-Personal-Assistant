@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -7,11 +8,14 @@ from services.activity_event_service import (
 from services.google_calendar_tool_service import (
     GoogleCalendarToolService,
 )
+from services.desktop_control_service import DesktopControlService
 from services.notification_service import NotificationService
 from services.reminder_service import ReminderService
-from services.task_service import TaskService
+from services.task_service import TaskService, _sanitize_task_title
 from services.tool_registry import ToolRegistry
 from services.web_search_service import WebSearchService
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRouter:
@@ -63,6 +67,7 @@ class ToolRouter:
             GoogleCalendarToolService | None
         ) = None,
         web_search_service: WebSearchService | None = None,
+        desktop_control_service: DesktopControlService | None = None,
     ):
         self.reminder_service = (
             reminder_service
@@ -88,6 +93,11 @@ class ToolRouter:
             web_search_service
             if web_search_service is not None
             else WebSearchService()
+        )
+        self.desktop_control_service = (
+            desktop_control_service
+            if desktop_control_service is not None
+            else DesktopControlService()
         )
 
         self._register_default_tools()
@@ -142,10 +152,10 @@ class ToolRouter:
             self.registry.register(
                 name="email",
                 description=(
-                    "Send outbound email messages to recipients "
-                    "using NOVA's configured email provider."
+                    "List and search a connected Gmail inbox, read a selected email, "
+                    "and send outbound email after NOVA's confirmation policy approves it."
                 ),
-                actions=("send",),
+                actions=("send", "list", "search", "get"),
                 handler=self._execute_email,
             )
 
@@ -177,6 +187,33 @@ class ToolRouter:
                     "search",
                 ),
                 handler=self._execute_web,
+            )
+
+        # Advertise the local capability to the planner only on development
+        # Windows. The executor still requires explicit opt-in and fails closed.
+        if (
+            self.desktop_control_service.platform_name == "nt"
+            and self.desktop_control_service.environment == "development"
+            and not self.registry.has("desktop")
+        ):
+            self.registry.register(
+                name="desktop",
+                description=(
+                    "Use the authenticated user's local Windows desktop safely: open an "
+                    "installed application or HTTP(S) website, launch a web search, open "
+                    "the allowlisted Local Disk C root or a standard user folder/safe file, "
+                    "search file names (CV/resume searches include the user's profile), "
+                    "inspect visible windows/accessibility labels, click one uniquely named "
+                    "safe UI control, type into one uniquely named non-sensitive field, press an "
+                    "allowlisted keyboard shortcut, or play a specifically named YouTube video "
+                    "only when the player exposes a verified playing state. Use exact visible control labels "
+                    "and a window hint when needed; never guess coordinates, execute shell "
+                    "commands/scripts, or use generic UI actions to send/delete/publish/pay/"
+                    "approve/submit an external change. Dedicated integrations and explicit "
+                    "confirmation are required for consequential actions."
+                ),
+                actions=("start", "search"),
+                handler=self._execute_desktop,
             )
 
     # =====================================================
@@ -253,6 +290,7 @@ class ToolRouter:
             "reminder",
             "email",
             "calendar",
+            "desktop",
         }:
             return
 
@@ -551,6 +589,30 @@ class ToolRouter:
         )
 
     # =====================================================
+    # LOCAL DESKTOP CONTROL
+    # =====================================================
+
+    def _execute_desktop(
+        self,
+        user_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        action = str(data.get("action") or "").strip().lower()
+        if action not in {"start", "search"}:
+            return {
+                "success": False,
+                "tool": "desktop",
+                "action": action or None,
+                "result": None,
+                "error": "Unsupported desktop action.",
+            }
+        return self.desktop_control_service.execute(
+            user_id=user_id,
+            action=action,
+            data=data,
+        )
+
+    # =====================================================
     # WEB SEARCH
     # =====================================================
 
@@ -611,7 +673,11 @@ class ToolRouter:
                 "result": None,
                 "error": str(exc),
             }
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "Live web search execution failed (exception_type=%s)",
+                type(exc).__name__,
+            )
             return {
                 "success": False,
                 "tool": "web",
@@ -680,9 +746,85 @@ class ToolRouter:
             }
 
         action = str(
-            data.get("action")
+            data.get("email_action")
+            or data.get("action")
             or "send"
         ).strip().lower()
+
+        if action in {"list", "search", "get"}:
+            mail_service = getattr(
+                self.notification_service,
+                "google_mail_service",
+                None,
+            )
+            if mail_service is None:
+                return {
+                    "success": False,
+                    "tool": "email",
+                    "action": action,
+                    "result": None,
+                    "error": "Gmail inbox access is not configured.",
+                }
+
+            try:
+                if action == "get":
+                    message_id = str(
+                        data.get("message_id")
+                        or data.get("email_message_id")
+                        or ""
+                    ).strip()
+                    if not message_id:
+                        raise ValueError(
+                            "A Gmail message ID is required to read a specific email."
+                        )
+                    read_result = mail_service.get_message(
+                        user_id=user_id,
+                        message_id=message_id,
+                    )
+                else:
+                    requested_limit = data.get("max_results", 5)
+                    if isinstance(requested_limit, bool):
+                        raise ValueError("max_results must be an integer.")
+                    try:
+                        requested_limit = int(requested_limit)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_results must be an integer.") from exc
+                    if not 1 <= requested_limit <= 10:
+                        raise ValueError("max_results must be between 1 and 10.")
+                    read_result = mail_service.list_messages(
+                        user_id=user_id,
+                        query=data.get("query"),
+                        max_results=requested_limit,
+                        include_body=data.get("include_body", False),
+                    )
+            except (ValueError, TypeError) as exc:
+                return {
+                    "success": False,
+                    "tool": "email",
+                    "action": action,
+                    "result": None,
+                    "error": str(exc),
+                }
+            except Exception:
+                logger.exception(
+                    "Gmail read tool failed (action=%s).",
+                    action,
+                )
+                return {
+                    "success": False,
+                    "tool": "email",
+                    "action": action,
+                    "result": None,
+                    "error": "Gmail could not complete the read request.",
+                }
+
+            return {
+                "success": True,
+                "tool": "email",
+                "action": action,
+                "result": read_result,
+                "error": None,
+            }
 
         if action != "send":
             return {
@@ -704,8 +846,16 @@ class ToolRouter:
         ).strip()
 
         to = data.get("to")
+        recipient_reference = str(
+            data.get("recipient_reference") or ""
+        ).strip().lower()
         cc = data.get("cc")
         bcc = data.get("bcc")
+
+        if recipient_reference == "self" and to is None:
+            to = self.notification_service.resolve_self_email_destination(
+                user_id=user_id,
+            )
 
         if not subject:
             return {
@@ -726,14 +876,40 @@ class ToolRouter:
             }
 
         try:
-            success = self.notification_service.send_email(
-                user_id=user_id,
-                to=to,
-                subject=subject,
-                body=body,
-                cc=cc,
-                bcc=bcc,
+            result_sender = getattr(
+                self.notification_service,
+                "send_email_result",
+                None,
             )
+            if callable(result_sender):
+                delivery_result = result_sender(
+                    user_id=user_id,
+                    to=to,
+                    subject=subject,
+                    body=body,
+                    cc=cc,
+                    bcc=bcc,
+                )
+                delivery_status = (
+                    str(delivery_result.get("status") or "").strip().lower()
+                    if isinstance(delivery_result, dict)
+                    else ""
+                )
+                # Only provider states emitted by NotificationService prove
+                # that delivery was accepted. Values like "failed", "rejected",
+                # or "pending" must never be reported as a successful send.
+                success = delivery_status in {"sent", "accepted_by_smtp"}
+            else:
+                # Backward-compatible path for existing injected test/fallback providers.
+                success = self.notification_service.send_email(
+                    user_id=user_id,
+                    to=to,
+                    subject=subject,
+                    body=body,
+                    cc=cc,
+                    bcc=bcc,
+                )
+                delivery_result = {"status": "accepted"} if success else None
         except (ValueError, TypeError) as exc:
             return {
                 "success": False,
@@ -757,20 +933,21 @@ class ToolRouter:
                 "tool": "email",
                 "action": "send",
                 "result": None,
-                "error": "Email delivery failed.",
+                "error": "Email delivery failed. No successful provider acceptance was confirmed.",
             }
+
+        result_data = dict(delivery_result or {})
+        result_data.setdefault("status", "accepted")
+        result_data.setdefault("to", to)
+        result_data.setdefault("cc", cc)
+        result_data.setdefault("bcc", bcc)
+        result_data.setdefault("subject", subject[:200])
 
         return {
             "success": True,
             "tool": "email",
             "action": "send",
-            "result": {
-                "status": "sent",
-                "to": to,
-                "cc": cc,
-                "bcc": bcc,
-                "subject": subject[:200],
-            },
+            "result": result_data,
             "error": None,
         }
 
@@ -1314,6 +1491,44 @@ class ToolRouter:
                 user_id=user_id,
             )
 
+        if task_action == "delete" and data.get("bulk_task_delete") is True:
+            task_ids = data.get("task_ids")
+            if not isinstance(task_ids, list) or not task_ids:
+                return {
+                    "success": False,
+                    "tool": "task",
+                    "action": "delete",
+                    "result": None,
+                    "error": "The confirmed bulk-delete task selection is missing.",
+                }
+
+            try:
+                deleted_tasks = self.task_service.delete_tasks(
+                    task_ids=task_ids,
+                    user_id=user_id,
+                    expected_status=data.get("task_status_filter"),
+                )
+            except ValueError as exc:
+                return {
+                    "success": False,
+                    "tool": "task",
+                    "action": "delete",
+                    "result": None,
+                    "error": str(exc),
+                }
+
+            return {
+                "success": True,
+                "tool": "task",
+                "action": "delete",
+                "result": {
+                    "deleted_count": len(deleted_tasks),
+                    "task_ids": [task["id"] for task in deleted_tasks],
+                    "tasks": deleted_tasks,
+                },
+                "error": None,
+            }
+
         if task_action == "update":
             return self._update_task(
                 user_id=user_id,
@@ -1636,7 +1851,7 @@ class ToolRouter:
             "action": "create",
             "result": {
                 "task_id": task_id,
-                "title": str(task_title),
+                "title": _sanitize_task_title(str(task_title)),
                 "priority": str(priority),
                 "due_at": (
                     str(scheduled_at)

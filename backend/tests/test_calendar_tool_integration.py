@@ -265,7 +265,7 @@ def test_calendar_create_without_attendees_is_medium_risk():
     assert result.flags == ()
 
 
-def test_calendar_delete_is_medium_risk():
+def test_calendar_delete_is_high_risk_and_requires_confirmation():
     service = RiskPolicyService()
 
     result = service.assess(
@@ -276,8 +276,8 @@ def test_calendar_delete_is_medium_risk():
         },
     )
 
-    assert result.level == RiskLevel.MEDIUM.value
-    assert result.flags == ()
+    assert result.level == RiskLevel.HIGH.value
+    assert result.flags == ("high_risk_action",)
 
 
 def test_calendar_create_with_attendees_is_high_risk():

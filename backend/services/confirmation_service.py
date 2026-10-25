@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -46,6 +47,17 @@ class ConfirmationService:
         "jee",
         "ji",
         "ji haan",
+        "यस",
+        "हाँ",
+        "हां",
+        "जी",
+        "यस कर दो",
+        "हाँ कर दो",
+        "हां कर दो",
+        "जी कर दो",
+        "कर दो",
+        "जोड़ दो",
+        "कर दीजिए",
     }
 
     REJECTION_RESPONSES = {
@@ -131,6 +143,9 @@ class ConfirmationService:
     def parse_response(
         self,
         message: str,
+        *,
+        tool: str | None = None,
+        action: str | None = None,
     ) -> str | None:
         """
         Detect a clear confirmation response.
@@ -141,8 +156,10 @@ class ConfirmationService:
             "reject"
             None
 
-        Only clear, intentionally short confirmation phrases
-        are recognized.
+        Clear short approvals/rejections and natural affirmative
+        phrases are recognized only when a pending confirmation exists.
+        The saved confirmation payload, never this message, determines
+        what will be executed.
         """
 
         normalized = " ".join(
@@ -150,16 +167,50 @@ class ConfirmationService:
             .strip()
             .lower()
             .split()
-        )
+        ).strip(" .,!?;:।。！？")
 
         if not normalized:
             return None
+
+        # A bare "send" is an approval only when the saved pending action
+        # is specifically email/send. It must not approve a task deletion
+        # or any unrelated high-risk action.
+        if (
+            normalized in {"send", "send it", "send email", "send the email"}
+            and str(tool or "").strip().lower() == "email"
+            and str(action or "").strip().lower() == "send"
+        ):
+            return "approve"
 
         if normalized in self.APPROVAL_RESPONSES:
             return "approve"
 
         if normalized in self.REJECTION_RESPONSES:
             return "reject"
+
+        if re.match(
+            r"^(?:no|nope|nah|nahin|nahi|cancel|reject|rejected|deny|denied|stop|"
+            r"do not|don't|dont)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        ):
+            return "reject"
+
+        approval_prefix = re.match(
+            r"^(?:please\s+)?(?:yes|yeah|yep|yup|sure|okay|ok|haan|han|jee|ji|"
+            r"confirm(?:ed)?|approve(?:d)?|go ahead|do it|proceed|"
+            r"यस|हाँ|हां|जी|कर\s+दो|जोड़\s+दो|कर\s+दीजिए)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if approval_prefix:
+            explicit_reversal = re.search(
+                r"\b(?:don't|dont|do not|not|cancel|stop|nahin|nahi)\s+"
+                r"(?:delete|remove|execute|proceed|send|approve|confirm)\b",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+            return "reject" if explicit_reversal else "approve"
 
         return None
 
@@ -312,6 +363,64 @@ class ConfirmationService:
             return self._to_dict(
                 confirmation
             )
+
+    def update_pending_email_recipient(
+        self,
+        *,
+        user_id: str,
+        confirmation_id: int,
+        recipient_email: str,
+    ) -> dict | None:
+        """Update the recipient on a pending email confirmation before approval."""
+        cleaned_recipient = str(recipient_email or "").strip()
+        if not re.fullmatch(
+            r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+            cleaned_recipient,
+        ):
+            raise ValueError("Enter a valid single email address.")
+
+        with Session(engine) as session:
+            confirmation = session.scalar(
+                select(Confirmation)
+                .where(
+                    Confirmation.id == confirmation_id,
+                    Confirmation.user_id == user_id,
+                )
+                .with_for_update()
+            )
+            if confirmation is None:
+                return None
+
+            now = self._utc_now_naive()
+            if self._expire_if_needed(confirmation, now=now):
+                session.commit()
+                return self._to_dict(confirmation)
+
+            if (
+                confirmation.status != "pending"
+                or confirmation.tool.strip().lower() != "email"
+                or confirmation.action.strip().lower() != "send"
+            ):
+                return self._to_dict(confirmation)
+
+            # This is an explicit user edit to the still-pending approval. Save
+            # the corrected destination into the canonical execution payload so
+            # the Send button can only execute the address currently shown.
+            updated_data = dict(confirmation.data or {})
+            updated_data["to"] = cleaned_recipient
+            updated_data.pop("recipient_reference", None)
+            confirmation.data = updated_data
+            session.commit()
+            session.refresh(confirmation)
+            updated = self._to_dict(confirmation)
+
+        self._record_audit(
+            user_id=user_id,
+            action="update_recipient",
+            status="success",
+            confirmation=updated,
+        )
+        return updated
 
     def get_latest_pending_confirmation(
         self,

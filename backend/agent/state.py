@@ -1,5 +1,4 @@
-from collections.abc import Callable
-from typing import Any, NotRequired, TypedDict
+from typing import Any, Callable, NotRequired, TypedDict
 
 from services.execution_context import ExecutionContext
 
@@ -24,3 +23,4 @@ class NOVAState(TypedDict):
     response: str
     response_delta_callback: NotRequired[Callable[[str], None]]
     activity_report: NotRequired[dict[str, Any]]
+    tomorrow_agenda: NotRequired[dict[str, Any]]

@@ -420,6 +420,21 @@ class PermissionService:
         # bypass this confirmation requirement.
         # -------------------------------------------------
 
+        if (
+            normalized_tool == "calendar"
+            and normalized_action in {"create", "update"}
+        ):
+            return PermissionDecision(
+                allowed=False,
+                requires_confirmation=True,
+                reason=(
+                    f"Calendar action '{normalized_action}' requires "
+                    "explicit user confirmation before changing the calendar."
+                ),
+                risk_level=risk.level,
+                risk_flags=risk.flags,
+            )
+
         if risk.level == "high":
             return PermissionDecision(
                 allowed=False,

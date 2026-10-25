@@ -743,8 +743,10 @@ class MemoryService:
                         profile_categories
                     ),
                 )
+                # Prefer the most recently corrected profile facts when
+                # multiple memories were created for the same identity field.
                 .order_by(
-                    Memory.created_at.asc()
+                    Memory.updated_at.desc()
                 )
                 .limit(limit)
             )

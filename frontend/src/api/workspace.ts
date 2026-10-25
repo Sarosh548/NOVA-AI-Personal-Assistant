@@ -34,6 +34,14 @@ export type CalendarStatus = {
   connection: CalendarConnection | null
 }
 
+export type GoogleMailStatus = {
+  configured: boolean
+  connected: boolean
+  provider: "google"
+  email: string | null
+  scopes: string | null
+}
+
 export type CalendarEvent = {
   id?: string
   summary?: string
@@ -299,6 +307,20 @@ export function deleteReminder(reminderId: number): Promise<void> {
   })
 }
 
+export function getGoogleMailStatus(): Promise<GoogleMailStatus> {
+  return apiRequestWithRefresh<GoogleMailStatus>("/integrations/google/mail/status")
+}
+
+export function getGoogleMailConnectUrl(): Promise<{ authorization_url: string }> {
+  return apiRequestWithRefresh<{ authorization_url: string }>("/integrations/google/mail/connect")
+}
+
+export function disconnectGoogleMail(): Promise<{ disconnected: boolean }> {
+  return apiRequestWithRefresh<{ disconnected: boolean }>("/integrations/google/mail", {
+    method: "DELETE",
+  })
+}
+
 export function getCalendarStatus(): Promise<CalendarStatus> {
   return apiRequestWithRefresh<CalendarStatus>("/integrations/google/calendar/status")
 }
@@ -515,6 +537,20 @@ export function approveAndExecuteConfirmation(
   return apiRequestWithRefresh<ConfirmationExecution>(
     `/confirmations/${confirmationId}/approve-and-execute`,
     { method: "POST" },
+  )
+}
+
+export function updateEmailConfirmationRecipient(
+  confirmationId: number,
+  recipientEmail: string,
+): Promise<Confirmation> {
+  return apiRequestWithRefresh<Confirmation>(
+    `/confirmations/${confirmationId}/recipient`,
+    {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ recipient_email: recipientEmail }),
+    },
   )
 }
 

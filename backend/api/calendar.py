@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import (
     APIRouter,
@@ -14,6 +14,7 @@ from fastapi import (
 )
 
 from api.dependencies import CurrentUserId
+from api.google_mail import get_google_mail_oauth_service
 from api.schemas.calendar import (
     CalendarAuthorizationUrlResponse,
     CalendarConnectionResponse,
@@ -31,6 +32,7 @@ from services.google_calendar_service import (
     GoogleCalendarAPIError,
     GoogleCalendarService,
 )
+from services.google_mail_oauth_service import GoogleMailOAuthService
 from services.idempotency_service import IdempotencyService
 
 
@@ -208,7 +210,7 @@ def connect_google_calendar(
 
 @router.get(
     "/callback",
-    response_model=CalendarConnectionResponse,
+    response_model=None,
 )
 def google_calendar_callback(
     state: str,
@@ -221,7 +223,41 @@ def google_calendar_callback(
             get_google_calendar_oauth_service
         ),
     ] = None,
-) -> CalendarConnectionResponse:
+    mail_service: Annotated[
+        GoogleMailOAuthService,
+        Depends(
+            get_google_mail_oauth_service
+        ),
+    ] = None,
+) -> Any:
+    # Google Mail intentionally reuses the already-registered OAuth callback
+    # URI. A one-time state record identifies which per-user integration owns it.
+    if mail_service is not None and mail_service.is_authorization_state(state):
+        if error is not None:
+            try:
+                mail_service.cancel_authorization(state=state)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Google Mail authorization was not completed.",
+            )
+        if code is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Google Mail authorization code is required.",
+            )
+        try:
+            return mail_service.complete_authorization(state=state, code=code)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
     if error is not None:
         try:
             service.cancel_authorization(

@@ -92,6 +92,19 @@ def test_external_communication_is_high_risk():
     assert "external_communication" in result.flags
 
 
+def test_single_task_delete_is_high_risk_without_broad_scope():
+    service = RiskPolicyService()
+
+    result = service.assess(
+        tool="task",
+        action="delete",
+        data={"task_reference": "Finish NOVA frontend QA"},
+    )
+
+    assert result.level == RiskLevel.HIGH.value
+    assert "high_risk_action" in result.flags
+
+
 def test_broad_destructive_scope_is_high_risk():
     service = RiskPolicyService()
 
@@ -137,3 +150,21 @@ def test_high_risk_action_is_detected():
 
     assert result.level == RiskLevel.HIGH.value
     assert "high_risk_action" in result.flags
+
+def test_read_only_email_list_with_empty_target_fields_is_low_risk():
+    service = RiskPolicyService()
+
+    result = service.assess(
+        tool="email",
+        action="list",
+        data={
+            "email_action": "list",
+            "to": None,
+            "cc": None,
+            "bcc": None,
+            "recipient_reference": None,
+        },
+    )
+
+    assert result.level == RiskLevel.LOW.value
+    assert result.flags == ()

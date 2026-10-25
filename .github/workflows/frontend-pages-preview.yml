@@ -43,6 +43,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_NOVA_API_BASE_URL: https://nova-backend.hostless.app
+          VITE_NOVA_VOICE_TRANSPORT: gemini
         run: npm run build -- --mode github-pages
 
       - name: Setup GitHub Pages

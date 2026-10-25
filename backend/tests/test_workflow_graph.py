@@ -79,6 +79,7 @@ class FakeConfirmationService:
     def parse_response(
         self,
         message,
+        **_kwargs,
     ):
         return self.response_type
 

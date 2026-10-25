@@ -69,6 +69,7 @@ class STTStreamRequest:
     session_id: str
     turn_id: str
     audio_format: STTAudioFormat
+    language: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -99,6 +100,18 @@ class STTStreamRequest:
                 self,
                 field_name,
                 normalized,
+            )
+
+        if self.language is not None:
+            normalized_language = self.language.strip()
+            if normalized_language not in {"en-US", "ur", "hi", "multi"}:
+                raise ValueError(
+                    "language must be one of: en-US, ur, hi, multi."
+                )
+            object.__setattr__(
+                self,
+                "language",
+                normalized_language,
             )
 
 

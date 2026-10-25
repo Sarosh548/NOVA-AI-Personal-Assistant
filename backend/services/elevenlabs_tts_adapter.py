@@ -56,6 +56,7 @@ class ElevenLabsTTSStream(TTSStream):
         self._websocket = websocket
         self._request = request
         self._settings = settings
+        self._dialogue_mode = request.language == "ur"
         self._events: asyncio.Queue[
             TTSAudioEvent | Exception | None
         ] = asyncio.Queue(
@@ -116,13 +117,27 @@ class ElevenLabsTTSStream(TTSStream):
 
         async with self._send_lock:
             try:
-                if self._pending_text is not None:
+                if self._dialogue_mode:
+                    # Text-to-Dialogue accepts incremental text chunks; let the
+                    # provider buffer conversational context while NOVA's LLM
+                    # is still streaming instead of holding one chunk locally.
                     await self._websocket.send(
                         json.dumps(
                             {
-                                "text": self._pending_text,
+                                "inputs": [
+                                    {
+                                        "text": payload["text"],
+                                        "voice_id": self._request.voice,
+                                    }
+                                ]
                             }
                         )
+                    )
+                    return
+
+                if self._pending_text is not None:
+                    await self._websocket.send(
+                        json.dumps({"text": self._pending_text})
                     )
 
                 self._pending_text = payload["text"]
@@ -173,21 +188,31 @@ class ElevenLabsTTSStream(TTSStream):
         async with self._send_lock:
             try:
                 if self._pending_text is not None:
+                    final_text_payload = (
+                        {
+                            "inputs": [
+                                {
+                                    "text": self._pending_text,
+                                    "voice_id": self._request.voice,
+                                }
+                            ]
+                        }
+                        if self._dialogue_mode
+                        else {
+                            "text": self._pending_text,
+                            "flush": True,
+                        }
+                    )
                     await self._websocket.send(
-                        json.dumps(
-                            {
-                                "text": self._pending_text,
-                                "flush": True,
-                            }
-                        )
+                        json.dumps(final_text_payload)
                     )
                     self._pending_text = None
 
                 await self._websocket.send(
                     json.dumps(
-                        {
-                            "text": "",
-                        }
+                        {"flush": True}
+                        if self._dialogue_mode
+                        else {"text": ""}
                     )
                 )
             except ConnectionClosed as exc:
@@ -348,6 +373,7 @@ class ElevenLabsTTSStream(TTSStream):
                 if (
                     payload.get("is_final") is True
                     or payload.get("isFinal") is True
+                    or payload.get("is_final_audio_for_turn") is True
                 ):
                     self._provider_final = True
                     self._sequence += 1
@@ -514,7 +540,7 @@ class ElevenLabsTTSAdapter(TTSAdapter):
 
                 await websocket.send(
                     json.dumps(
-                        self._initial_payload()
+                        self._initial_payload(request)
                     )
                 )
 
@@ -575,11 +601,25 @@ class ElevenLabsTTSAdapter(TTSAdapter):
         request: TTSStreamRequest,
         output_format: str,
     ) -> str:
+        if request.language == "ur":
+            # Eleven Flash v2.5 does not support Urdu, and Eleven v3 models
+            # use the Text-to-Dialogue WebSocket rather than TTS stream-input.
+            origin = self.settings.elevenlabs_ws_url.split("/v1/", 1)[0]
+            params = {
+                "model_id": "eleven_v3_conversational",
+                "output_format": output_format,
+                "language_code": "ur",
+            }
+            return (
+                origin
+                + "/v1/text-to-dialogue/stream-input?"
+                + urlencode(params)
+            )
+
         voice_id = quote(
             request.voice,
             safe="",
         )
-
         params = {
             "model_id": self.settings.elevenlabs_model,
             "output_format": output_format,
@@ -587,7 +627,6 @@ class ElevenLabsTTSAdapter(TTSAdapter):
                 self.settings.elevenlabs_inactivity_timeout_seconds
             ),
         }
-
         if request.language is not None:
             params["language_code"] = request.language
 
@@ -599,27 +638,33 @@ class ElevenLabsTTSAdapter(TTSAdapter):
             + urlencode(params)
         )
 
-    def _initial_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
+    def _initial_payload(
+        self,
+        request: TTSStreamRequest,
+    ) -> dict[str, Any]:
+        voice_settings = {
+            "stability": self.settings.elevenlabs_stability,
+            "similarity_boost": self.settings.elevenlabs_similarity_boost,
+            "speed": self.settings.elevenlabs_speed,
+            "use_speaker_boost": self.settings.elevenlabs_use_speaker_boost,
+        }
+        if request.language == "ur":
+            # Text-to-Dialogue requires voice IDs in the first frame and does
+            # not accept the TTS WebSocket's initial text/generation_config.
+            return {
+                "voices": [request.voice],
+                "voice_settings": voice_settings,
+            }
+
+        return {
             "text": " ",
-            "voice_settings": {
-                "stability": self.settings.elevenlabs_stability,
-                "similarity_boost": (
-                    self.settings.elevenlabs_similarity_boost
-                ),
-                "speed": self.settings.elevenlabs_speed,
-                "use_speaker_boost": (
-                    self.settings.elevenlabs_use_speaker_boost
-                ),
-            },
+            "voice_settings": voice_settings,
             "generation_config": {
                 "chunk_length_schedule": (
                     self.settings.chunk_length_schedule()
                 ),
             },
         }
-
-        return payload
 
     @staticmethod
     def _output_format(

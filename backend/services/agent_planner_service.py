@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from services.llm_service import LLMService
@@ -81,12 +82,64 @@ class AgentPlannerService:
                 "No user message was provided."
             )
 
+        # A planning request is advisory by default. It must not become
+        # an executable workflow unless the user explicitly asks NOVA
+        # to perform an action (create/schedule/send/delete/etc.).
+        if (
+            str(understanding.get("intent") or "").strip().lower()
+            == "planning"
+            and not self._has_explicit_action_request(
+                cleaned_message
+            )
+        ):
+            return self._empty_plan(
+                "The user requested planning only; no executable action was requested."
+            )
+
         if not isinstance(
             available_tools,
             list,
         ):
             return self._empty_plan(
                 "Available tool metadata is invalid."
+            )
+
+        # Local desktop operations are parsed into a small allowlisted schema
+        # by IntentService. Preserve those exact fields instead of allowing an
+        # LLM planner to rewrite an application name, URL, or filename.
+        if (
+            str(understanding.get("intent") or "").strip().lower()
+            == "desktop"
+        ):
+            return self.planner_service.create_plan(
+                understanding=understanding,
+                available_tools=available_tools,
+            )
+
+        # An explicit outbound email payload is already resolved by intent
+        # understanding. Preserve its recipient, subject, and body through the
+        # deterministic validator rather than asking the LLM to reconstruct a
+        # high-impact action's fields.
+        if (
+            str(understanding.get("intent") or "").strip().lower()
+            == "email"
+            and str(
+                understanding.get("email_action")
+                or understanding.get("action")
+                or ""
+            ).strip().lower()
+            == "send"
+            and (
+                str(
+                    understanding.get("recipient_reference") or ""
+                ).strip().lower()
+                == "self"
+                or bool(str(understanding.get("to") or "").strip())
+            )
+        ):
+            return self.planner_service.create_plan(
+                understanding=understanding,
+                available_tools=available_tools,
             )
 
         recent_history = (
@@ -192,11 +245,23 @@ For reminder:
 
 For email:
 - send:
-    data must contain action="send", subject, and body.
+    data must contain email_action="send", subject, and body.
     Include "to" when the user explicitly provides recipients.
     Include "cc" and "bcc" only when explicitly requested.
-    When no recipient is provided, leave "to" empty so the
-    email tool can resolve the user's enabled default destination.
+    When no recipient is provided, preserve recipient_reference="self"
+    only if the user explicitly asked to email themself.
+- list:
+    data must contain email_action="list"; preserve query only when a
+    mailbox filter such as unread/sent was explicitly requested.
+    Preserve include_body=true only when the user asked to read or
+    summarize message contents; otherwise use false.
+- search:
+    data must contain email_action="search" and the user's concise
+    mailbox query; preserve max_results when requested.
+- get:
+    data must contain email_action="get" and a message_id obtained
+    from an actual prior email result or explicitly supplied by the user.
+    Never invent Gmail message IDs.
 
 For calendar:
 - list:
@@ -220,7 +285,7 @@ For calendar:
 For web:
 - search:
     data must contain action="search" and a concise non-empty query.
-    Use topic as one of general, news, or finance.
+    Use topic as one of general, news, finance, or weather.
     Use time_range as one of day, week, month, or year when requested.
     Use max_results only when requested and keep it between 1 and 10.
     The planner may use web_topic/web_time_range from the
@@ -422,6 +487,58 @@ For no executable action:
             )
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _has_explicit_action_request(
+        message: str,
+    ) -> bool:
+        """
+        Return True only when a planning request explicitly asks NOVA
+        to perform a concrete side effect.
+
+        Merely mentioning future work (for example, "I need to work on
+        NOVA tomorrow") is not an execution request.
+        """
+
+        normalized = " ".join(
+            str(message).strip().lower().split()
+        )
+
+        action_markers = (
+            "create a task",
+            "create tasks",
+            "add a task",
+            "make a task",
+            "set a reminder",
+            "set reminders",
+            "remind me",
+            "schedule",
+            "book",
+            "add it to my calendar",
+            "put it on my calendar",
+            "create an event",
+            "send an email",
+            "send email",
+            "delete the task",
+            "delete my task",
+            "delete a task",
+            "complete the task",
+            "mark the task",
+            "cancel the task",
+            "cancel the reminder",
+            "delete the reminder",
+            "update the task",
+            "update the reminder",
+        )
+
+        explicit_email_send = re.search(
+            r"\bsend\s+(?:(?:a|an|the)\s+)?(?:[\w-]+\s+){0,2}emails?\b",
+            normalized,
+        )
+        return explicit_email_send is not None or any(
+            marker in normalized
+            for marker in action_markers
+        )
 
     def _empty_plan(
         self,

@@ -145,7 +145,15 @@ export function AppShell({
   )
 
   return (
-    <div className="nova-app">
+    <div
+      className={
+        activeSurface === "Voice"
+          ? "nova-app voice-app"
+          : activeSurface === "Conversation"
+            ? "nova-app conversation-app"
+            : "nova-app"
+      }
+    >
       <aside className="nova-sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -238,6 +246,7 @@ export function AppShell({
             <AccountMenu
               displayName={displayName}
               onOpenSettings={() => onNavigate("Settings")}
+              onOpenControlCenter={() => onNavigate("Control Center")}
               onSignOut={onSignOut}
             />
           </div>
