@@ -325,7 +325,7 @@ function extractVoiceSearchSources(value: unknown): VoiceSearchSource[] {
 function liveSearchStatusFromResult(result: unknown, sources: VoiceSearchSource[], failure?: string): string {
   if (failure) return "Live search failed: " + failure.slice(0, 180)
   if (sources.length > 0) {
-    return "Found " + sources.length + " live source" + (sources.length === 1 ? "" : "s")
+    return "Found " + sources.length + " search source" + (sources.length === 1 ? "" : "s")
   }
   if (result && typeof result === "object") {
     const root = result as Record<string, unknown>
