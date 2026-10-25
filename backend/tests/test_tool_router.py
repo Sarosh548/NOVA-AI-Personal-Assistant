@@ -437,3 +437,32 @@ def test_tool_router_returns_safe_web_provider_failure_details():
     assert result["success"] is False
     assert result["tool"] == "web"
     assert result["error"] == "Google News RSS provider could not be reached."
+
+
+def test_tool_router_marks_unverified_live_score_as_failure():
+    class EmptyLiveScoreService:
+        @staticmethod
+        def _is_live_sports_query(query):
+            return "cricket" in query.lower() and "score" in query.lower()
+
+        def search(self, **kwargs):
+            return []
+
+    router = ToolRouter(web_search_service=EmptyLiveScoreService())
+
+    result = router._execute_web(
+        user_id="user-001",
+        data={
+            "action": "search",
+            "query": "Pakistan vs England cricket live score today",
+            "topic": "general",
+            "time_range": "day",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["tool"] == "web"
+    assert result["action"] == "search"
+    assert result["result"]["results"] == []
+    assert "within the last 45 minutes" in result["error"]
+    assert "Do not guess" in result["error"]

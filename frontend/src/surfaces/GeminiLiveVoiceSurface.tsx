@@ -333,7 +333,9 @@ function liveSearchStatusFromResult(result: unknown, sources: VoiceSearchSource[
     if (toolResult && typeof toolResult === "object") {
       const tool = toolResult as Record<string, unknown>
       if (tool.success === false && typeof tool.error === "string") {
-        return "Live search failed: " + tool.error.slice(0, 180)
+        const safeError = tool.error.slice(0, 180)
+        if (/^No verified live-score source/i.test(safeError)) return safeError
+        return "Live search failed: " + safeError
       }
       const payload = tool.result
       if (payload && typeof payload === "object" && Array.isArray((payload as Record<string, unknown>).results)) {
