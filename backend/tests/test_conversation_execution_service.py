@@ -1128,6 +1128,32 @@ def test_voice_fast_path_keeps_fresh_information_on_safe_graph():
     assert execution.calls[0]["execution_context"].is_voice is True
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Tell me like today in cricket which man is live right now?",
+        "Who is playing in cricket right now?",
+        "Are there any cricket matches happening today?",
+    ],
+)
+def test_voice_live_sports_questions_bypass_companion_fast_path(message):
+    service, _conversation, execution, llm, _memory = _service()
+
+    assert ConversationExecutionService._is_fast_conversation(message) is False
+
+    result = service.execute_voice_message(
+        user_id="user-1",
+        message=message,
+    )
+
+    assert result["response"] == "NOVA response"
+    assert len(execution.calls) == 1
+    assert execution.calls[0]["user_message"] == message
+    assert execution.calls[0]["execution_context"].is_voice is True
+    assert llm.voice_calls == []
+    assert llm.companion_calls == []
+
+
 def test_execute_message_returns_safe_fallback_when_fast_provider_is_unavailable(
     monkeypatch,
 ):
