@@ -1618,6 +1618,7 @@ class WebSearchService:
         )
         if is_live_sports_query:
             normalized = self._rank_live_sports_results(normalized_query, normalized)
+            normalized = self._filter_fresh_live_sports_results(normalized)
         if normalized_topic == "news" and is_ai_news:
             relevant = [item for item in normalized if self._matches_ai_news_query(item)]
             if not relevant and normalized_time_range is not None and not used_rss:
@@ -1636,6 +1637,48 @@ class WebSearchService:
         if normalized_topic == "news":
             normalized = self._rank_news_results(normalized_query, normalized)
         return normalized[:normalized_max_results]
+
+    @staticmethod
+    def _filter_fresh_live_sports_results(
+        results: list[dict],
+        *,
+        now: datetime | None = None,
+        max_age_minutes: int = 45,
+    ) -> list[dict]:
+        """Drop live-score results whose publication/update time cannot verify freshness.
+
+        A date-only/undated result is not enough evidence for a *current* score.
+        This intentionally prefers a transparent no-score answer over repeating
+        an old match snapshot as if it were live.
+        """
+        reference_time = now or datetime.now(timezone.utc)
+        if reference_time.tzinfo is None:
+            reference_time = reference_time.replace(tzinfo=timezone.utc)
+        reference_time = reference_time.astimezone(timezone.utc)
+        freshness_limit = timedelta(minutes=max(1, max_age_minutes))
+        future_tolerance = timedelta(minutes=5)
+        fresh: list[dict] = []
+        rejected = 0
+
+        for item in results:
+            published_at = WebSearchService._publication_datetime(item)
+            if published_at is None:
+                rejected += 1
+                continue
+            age = reference_time - published_at
+            if age < -future_tolerance or age > freshness_limit:
+                rejected += 1
+                continue
+            fresh.append(item)
+
+        if rejected and not fresh:
+            logger.warning(
+                "Live-score search withheld %s stale or undated results; "
+                "no source timestamp met the %s-minute freshness window.",
+                rejected,
+                max_age_minutes,
+            )
+        return fresh
 
     @staticmethod
     def _rank_live_sports_results(query: str, results: list[dict]) -> list[dict]:
