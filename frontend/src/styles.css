@@ -5497,3 +5497,171 @@ button:disabled {
     transform: translateX(-50%) !important;
   }
 }
+
+
+/* Gemini Live: ChatGPT-style transcript thread above a compact bottom orb. */
+.nova-app.voice-app .gemini-live-main {
+  position: relative;
+  height: calc(100dvh - 76px);
+  min-height: 0;
+  overflow: hidden;
+}
+.nova-app.voice-app .gemini-live-stage {
+  display: block !important;
+  position: relative;
+  width: 100%;
+  height: calc(100dvh - 76px);
+  min-height: 0;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+.nova-app.voice-app .gemini-live-stage::before {
+  top: 43%;
+  width: min(58vw, 640px);
+  filter: blur(90px);
+  opacity: .48;
+}
+.nova-app.voice-app .gemini-live-orb {
+  position: fixed !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: 18px !important;
+  left: 50vw !important;
+  width: clamp(112px, 14vw, 154px) !important;
+  height: auto !important;
+  max-width: calc(100vw - 48px) !important;
+  margin: 0 !important;
+  transform: translateX(-50%) translateZ(0) !important;
+  animation: nova-orb-float 7s ease-in-out infinite;
+}
+.nova-app.voice-app .gemini-live-transcript {
+  position: fixed !important;
+  top: 88px !important;
+  right: auto !important;
+  bottom: 178px !important;
+  left: 50vw !important;
+  z-index: 12 !important;
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 24px;
+  width: min(930px, calc(100vw - 64px)) !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 18px 8px 24px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  transform: translateX(-50%);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(115,197,255,.28) transparent;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-turn-group {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 24px;
+  width: 100%;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-turn-card {
+  flex: 0 0 auto;
+  width: fit-content !important;
+  max-width: min(88%, 790px);
+  margin: 0 !important;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-turn-card.user {
+  align-self: flex-end;
+  max-width: min(82%, 760px);
+  padding: 12px 19px !important;
+  border: 1px solid rgba(112, 190, 255, .14) !important;
+  border-radius: 26px;
+  background: #e7f3ff !important;
+  box-shadow: none !important;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-turn-card.user p {
+  margin: 0;
+  color: #17385a;
+  font-size: 17px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-turn-card.assistant {
+  align-self: flex-start;
+  max-width: min(92%, 820px);
+  padding: 0 !important;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-turn-card.assistant p {
+  margin: 0;
+  color: #f0f6ff;
+  font-size: clamp(17px, 1.45vw, 21px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-turn-label {
+  margin: 0 0 6px;
+  color: rgba(170, 207, 255, .65);
+  font-size: 10px;
+  letter-spacing: .12em;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-audio-status {
+  margin: 0 0 7px;
+  color: rgba(157, 239, 226, .78);
+  font-size: 11px;
+}
+.nova-app.voice-app .gemini-live-transcript .voice-transcript-placeholder {
+  align-self: center;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(205, 226, 245, .62);
+  text-align: center;
+}
+@media (max-width: 700px) {
+  .nova-app.voice-app .gemini-live-transcript {
+    top: 82px !important;
+    bottom: 148px !important;
+    width: calc(100vw - 28px) !important;
+    gap: 20px;
+    padding: 14px 2px 18px !important;
+  }
+  .nova-app.voice-app .gemini-live-transcript .voice-turn-group { gap: 20px; }
+  .nova-app.voice-app .gemini-live-transcript .voice-turn-card.user {
+    max-width: 87%;
+    padding: 11px 15px !important;
+  }
+  .nova-app.voice-app .gemini-live-transcript .voice-turn-card.user p { font-size: 15px; }
+  .nova-app.voice-app .gemini-live-transcript .voice-turn-card.assistant p { font-size: 17px; }
+  .nova-app.voice-app .gemini-live-orb {
+    bottom: 12px !important;
+    width: clamp(98px, 25vw, 124px) !important;
+  }
+}
+@media (max-height: 620px) and (min-width: 701px) {
+  .nova-app.voice-app .gemini-live-transcript {
+    top: 78px !important;
+    bottom: 142px !important;
+  }
+  .nova-app.voice-app .gemini-live-orb {
+    bottom: 10px !important;
+    width: 116px !important;
+  }
+}
