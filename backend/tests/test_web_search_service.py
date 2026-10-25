@@ -82,6 +82,45 @@ def test_live_sports_result_ranking_prefers_scorecards_over_previews():
     assert ranked[-1]["title"] == "Pakistan vs England match preview and prediction"
 
 
+def test_live_sports_provider_timeouts_are_bounded(monkeypatch):
+    service = WebSearchService(
+        api_key="tvly-test",
+        searxng_endpoint="https://searx.example/search",
+        timeout_seconds=10,
+    )
+    observed = []
+
+    class FakeRSSResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"<rss><channel></channel></rss>"
+
+    def fake_urlopen(request, timeout):
+        observed.append((request.full_url, timeout))
+        if "news.google.com" in request.full_url:
+            return FakeRSSResponse()
+        return FakeResponse({"results": []})
+
+    monkeypatch.setattr("services.web_search_service.urlopen", fake_urlopen)
+
+    query = "Pakistan vs England cricket live score today"
+    service._request_tavily({
+        "query": query,
+        "search_depth": "basic",
+        "topic": "general",
+        "max_results": 5,
+    })
+    service._request_searxng(query=query, topic="general", time_range="day")
+    service._request_google_news_rss(query=query, time_range="day")
+
+    assert [timeout for _url, timeout in observed] == [5, 4, 4]
+
+
 @pytest.mark.parametrize("tavily_mode", ["unavailable", "empty"])
 def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, tavily_mode):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
@@ -122,6 +161,11 @@ def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, t
         }
 
     monkeypatch.setattr(service, "_request_google_news_rss", rss_results)
+
+    def unexpected_article_resolution(_url):
+        raise AssertionError("Live-score search must not serially resolve RSS intermediary URLs")
+
+    monkeypatch.setattr(service, "_resolve_google_news_article_url", unexpected_article_resolution)
 
     results = service.search(
         query="Pakistan vs England cricket live score today",
