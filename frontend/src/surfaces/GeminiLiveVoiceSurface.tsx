@@ -220,6 +220,29 @@ function toolCallIdempotencyKey(id: string): string {
   return "nova-gemini-" + (safe || crypto.randomUUID())
 }
 
+function shouldRouteToNova(message: string): boolean {
+  const normalized = message.trim().toLowerCase()
+  if (!normalized) return false
+
+  if (/\\b(?:https?:\\/\\/|www\\.)/u.test(normalized)) return true
+  if (/\\b(?:search|look up|research|google search|find out)\\b/u.test(normalized)) return true
+  if (/\\b(?:latest|recent|current|today(?:'s)?|news|headlines?|weather|forecast|exchange rates?|stock prices?)\\b/u.test(normalized)) {
+    if (/\\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|search|research|look up|latest|recent|current|news|weather|forecast|price|rate)\\b/u.test(normalized)) return true
+  }
+
+  const emailAction = /\\b(?:send|compose|draft|read|search|check|open|reply|forward|delete|list|find)\\b/u
+  const emailTarget = /\\b(?:email|e-mail|mail|gmail|inbox)\\b/u
+  if (emailAction.test(normalized) && emailTarget.test(normalized)) return true
+
+  const personalAction = /\\b(?:create|add|make|show|list|check|complete|start|cancel|delete|update|schedule|book|move|reschedule|remind|set)\\b/u
+  const personalTarget = /\\b(?:task|reminder|calendar|meeting|appointment|event)\\b/u
+  if (personalAction.test(normalized) && personalTarget.test(normalized)) return true
+
+  const desktopAction = /\\b(?:open|launch|start|visit|go to|navigate to|show|find|inspect|check|click|tap|type|press|play|turn on|turn off|increase|decrease|raise|lower|mute|unmute|set)\\b/u
+  const desktopTarget = /\\b(?:notepad|calculator|file explorer|browser|website|web site|app|application|folder|file|desktop|screen|downloads|documents|youtube|google|chrome|edge|firefox|settings|volume|brightness|wifi|wi-fi|bluetooth|spotify|local disk|c drive|computer|pc)\\b/u
+  return desktopAction.test(normalized) && desktopTarget.test(normalized)
+}
+
 export function GeminiLiveVoiceSurface({
   onOpenConversation,
   voiceTransport = "gemini",
@@ -441,6 +464,103 @@ export function GeminiLiveVoiceSurface({
     }
   }, [])
 
+  const routeUndelegatedAction = useCallback(async (
+    turn: ActiveTurn,
+    socket: WebSocket,
+  ) => {
+    const sourceUtterance = turn.userText.trim()
+    if (
+      !sourceUtterance
+      || turn.toolUsed
+      || turn.cancelled
+      || socket.readyState !== WebSocket.OPEN
+    ) return
+
+    // The model started answering an action request without calling NOVA's
+    // declared function. Route the finalized utterance through /chat exactly
+    // once, then ask Gemini to speak the authoritative backend result.
+    turn.toolUsed = true
+    turn.responseDone = false
+    turn.assistantText = ""
+    suppressPlaybackRef.current = true
+    stopPlayback()
+    setResponse("Working on that through NOVA…")
+    setAudioState("preparing")
+    setState("thinking")
+    console.info("[NOVA Gemini Live] routing an undelegated action through NOVA", {
+      turnId: turn.id,
+    })
+
+    try {
+      const conversationId = conversationIdRef.current
+      if (!conversationId) throw new Error("The NOVA conversation is not ready.")
+
+      const result = await apiRequestWithRefresh<ToolResult>("/chat", {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": toolCallIdempotencyKey(
+            "fallback-" + turn.id + "-" + crypto.randomUUID(),
+          ),
+        },
+        body: JSON.stringify({
+          message: sourceUtterance,
+          conversation_id: conversationId,
+        }),
+      })
+
+      const resultSummary = JSON.stringify(boundedToolOutput(result))
+      if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN) {
+        const answer = typeof result.response === "string" ? result.response : ""
+        turn.assistantText = answer || "NOVA processed the request, but the voice connection closed before it could speak the result."
+        turn.responseDone = true
+        setResponse(turn.assistantText)
+        setAudioState("idle")
+        if (connectedRef.current) setState("ready")
+        return
+      }
+
+      const instruction = [
+        "NOVA has already processed the user's request through its authenticated backend.",
+        "The following JSON is the authoritative result. Do not execute the request again and do not call any function.",
+        "Speak a natural concise answer in the user's language based only on this result. Be transparent about failure or required confirmation; never claim success unless the result says so.",
+        "Backend result: " + resultSummary,
+      ].join("\\n")
+
+      // This is a follow-up spoken turn, not a function response: no model
+      // function call was received for the original request.
+      suppressPlaybackRef.current = false
+      setResponse("")
+      setAudioState("preparing")
+      socket.send(JSON.stringify({
+        clientContent: {
+          turns: [{
+            role: "user",
+            parts: [{ text: instruction }],
+          }],
+          turnComplete: true,
+        },
+      }))
+    } catch (routeError) {
+      suppressPlaybackRef.current = false
+      const message = readableError(routeError, "NOVA could not complete the request.")
+      turn.assistantText = message
+      turn.responseDone = true
+      setResponse(message)
+      setAudioState("idle")
+      if (connectedRef.current) setState("ready")
+      setError(message)
+      completedTurnIdsRef.current.add(turn.id)
+      setTurnHistory((current) => [
+        ...current,
+        {
+          id: turn.id,
+          userText: sourceUtterance,
+          assistantText: message,
+        },
+      ].slice(-40))
+    }
+  }, [stopPlayback])
+
   const handleServerMessage = useCallback((message: GeminiMessage) => {
     const socket = socketRef.current
     if (!socket) return
@@ -463,6 +583,13 @@ export function GeminiLiveVoiceSurface({
     if (message.goAway) {
       setError("Gemini Live session is nearing its configured lifetime. Finish this turn and reconnect.")
       return
+    }
+
+    // Process an explicit Gemini toolCall before looking for a missed-action
+    // fallback; a valid function call always wins and keeps single-execution
+    // protection in sendToolCall authoritative.
+    if (message.toolCall && typeof message.toolCall === "object") {
+      void sendToolCall(message.toolCall as GeminiMessage)
     }
 
     const serverContent = message.serverContent
@@ -493,6 +620,29 @@ export function GeminiLiveVoiceSurface({
       const outputChunk = typeof serverContent.outputTranscription?.text === "string"
         ? serverContent.outputTranscription.text
         : ""
+      const parts = Array.isArray(serverContent.modelTurn?.parts)
+        ? serverContent.modelTurn.parts
+        : []
+      const hasModelOutput = Boolean(outputChunk.trim())
+        || parts.some((part: GeminiMessage) => {
+          const inlineData = part?.inlineData ?? part?.inline_data
+          return (
+            (typeof inlineData?.data === "string" && inlineData.data.length > 0)
+            || (typeof part?.text === "string" && part.text.trim().length > 0)
+          )
+        })
+        || serverContent.turnComplete === true
+      const turn = activeTurnRef.current
+      if (
+        hasModelOutput
+        && !turn.toolUsed
+        && !turn.cancelled
+        && shouldRouteToNova(turn.userText)
+      ) {
+        void routeUndelegatedAction(turn, socket)
+        return
+      }
+
       if (outputChunk) {
         const turn = activeTurnRef.current
         turn.assistantText = appendTranscript(turn.assistantText, outputChunk)
@@ -501,9 +651,6 @@ export function GeminiLiveVoiceSurface({
         setState("speaking")
       }
 
-      const parts = Array.isArray(serverContent.modelTurn?.parts)
-        ? serverContent.modelTurn.parts
-        : []
       for (const part of parts) {
         const inlineData = part?.inlineData ?? part?.inline_data
         const encoded = typeof inlineData?.data === "string" ? inlineData.data : ""
@@ -574,10 +721,6 @@ export function GeminiLiveVoiceSurface({
       }
     }
 
-    if (message.toolCall && typeof message.toolCall === "object") {
-      void sendToolCall(message.toolCall as GeminiMessage)
-    }
-
     if (message.toolCallCancellation) {
       activeTurnRef.current.cancelled = true
       setAudioState("idle")
@@ -609,7 +752,7 @@ export function GeminiLiveVoiceSurface({
       intentionalCloseRef.current = true
       releaseConnection()
     }
-  }, [persistTurn, releaseConnection, sendToolCall, stopPlayback])
+  }, [persistTurn, releaseConnection, routeUndelegatedAction, sendToolCall, stopPlayback])
 
   const connect = useCallback(async () => {
     if (connectingRef.current || connectedRef.current) return
