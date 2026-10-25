@@ -362,6 +362,8 @@ export function GeminiLiveVoiceSurface({
   const [transcript, setTranscript] = useState("")
   const [response, setResponse] = useState("")
   const [turnHistory, setTurnHistory] = useState<VoiceTranscriptTurn[]>([])
+  const [activeSearchStatus, setActiveSearchStatus] = useState<string | null>(null)
+  const [activeSearchSources, setActiveSearchSources] = useState<VoiceSearchSource[]>([])
   const [error, setError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
   const [microphonePermission, setMicrophonePermission] = useState<"unknown" | "granted" | "denied">("unknown")
@@ -393,7 +395,7 @@ export function GeminiLiveVoiceSurface({
   useEffect(() => {
     const panel = transcriptPanelRef.current
     if (panel) panel.scrollTop = panel.scrollHeight
-  }, [transcript, response, turnHistory])
+  }, [transcript, response, turnHistory, activeSearchStatus, activeSearchSources])
 
   const errorRef = useRef<string | null>(null)
   errorRef.current = error
@@ -409,6 +411,33 @@ export function GeminiLiveVoiceSurface({
     playbackSourcesRef.current.clear()
     playbackEndTimeRef.current = 0
     setAudioState("idle")
+  }, [])
+
+  const startSearchProgress = useCallback((turn: ActiveTurn, query: string) => {
+    if (!isLiveSearchRequest(query)) return
+    turn.searchStatus = "Searching live sources…"
+    turn.searchSources = []
+    if (activeTurnRef.current.id === turn.id) {
+      setActiveSearchStatus(turn.searchStatus)
+      setActiveSearchSources([])
+    }
+  }, [])
+
+  const finishSearchProgress = useCallback((
+    turn: ActiveTurn,
+    query: string,
+    result: unknown,
+    failure?: string,
+  ) => {
+    if (!isLiveSearchRequest(query)) return
+    const sources = extractVoiceSearchSources(result)
+    const status = liveSearchStatusFromResult(result, sources, failure)
+    turn.searchStatus = status
+    turn.searchSources = sources
+    if (activeTurnRef.current.id === turn.id) {
+      setActiveSearchStatus(status)
+      setActiveSearchSources(sources)
+    }
   }, [])
 
   const releaseConnection = useCallback(() => {
@@ -532,15 +561,17 @@ export function GeminiLiveVoiceSurface({
       setAudioState("preparing")
 
       let output: Record<string, unknown>
+      let requestText = sourceUtterance
       try {
         const args = call.args && typeof call.args === "object"
           ? call.args as Record<string, unknown>
           : {}
         const modelRequest = typeof args.request === "string" ? args.request.trim() : ""
-        const requestText = sourceUtterance || modelRequest
+        requestText = sourceUtterance || modelRequest
         if (!requestText) {
           output = { error: "The NOVA request was empty. Ask the user to repeat it.", action_taken: false }
         } else {
+          startSearchProgress(turn, requestText)
           const conversationId = conversationIdRef.current
           if (!conversationId) throw new Error("The NOVA conversation is not ready.")
           const result = await apiRequestWithRefresh<ToolResult>("/chat", {
@@ -548,11 +579,14 @@ export function GeminiLiveVoiceSurface({
             headers: { "Idempotency-Key": toolCallIdempotencyKey(callId) },
             body: JSON.stringify({ message: requestText, conversation_id: conversationId }),
           })
+          finishSearchProgress(turn, requestText, result)
           output = boundedToolOutput(result)
         }
       } catch (toolError) {
+        const messageText = readableError(toolError, "NOVA could not complete the request.")
+        finishSearchProgress(turn, requestText, null, messageText)
         output = {
-          error: readableError(toolError, "NOVA could not complete the request."),
+          error: messageText,
           action_taken: false,
         }
       }
@@ -563,7 +597,7 @@ export function GeminiLiveVoiceSurface({
     if (functionResponses.length && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ toolResponse: { functionResponses } }))
     }
-  }, [])
+  }, [finishSearchProgress, startSearchProgress])
 
   const routeUndelegatedAction = useCallback(async (
     turn: ActiveTurn,
@@ -586,7 +620,8 @@ export function GeminiLiveVoiceSurface({
     turn.assistantText = ""
     suppressPlaybackRef.current = true
     stopPlayback()
-    setResponse("Working on that through NOVA…")
+    startSearchProgress(turn, sourceUtterance)
+    setResponse(isLiveSearchRequest(sourceUtterance) ? "Searching live sources…" : "Working on that through NOVA…")
     setAudioState("preparing")
     setState("thinking")
     console.info("[NOVA Gemini Live] routing an undelegated action through NOVA", {
@@ -610,6 +645,7 @@ export function GeminiLiveVoiceSurface({
         }),
       })
 
+      finishSearchProgress(turn, sourceUtterance, result)
       const resultSummary = JSON.stringify(boundedToolOutput(result))
       if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN) {
         const answer = typeof result.response === "string" ? result.response : ""
@@ -661,6 +697,7 @@ export function GeminiLiveVoiceSurface({
     } catch (routeError) {
       suppressPlaybackRef.current = false
       const message = readableError(routeError, "NOVA could not complete the request.")
+      finishSearchProgress(turn, sourceUtterance, null, message)
       if (pendingToolCalls.length > 0 && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
           toolResponse: {
@@ -689,7 +726,7 @@ export function GeminiLiveVoiceSurface({
         },
       ].slice(-40))
     }
-  }, [stopPlayback])
+  }, [finishSearchProgress, startSearchProgress, stopPlayback])
 
   const handleServerMessage = useCallback((message: GeminiMessage) => {
     const socket = socketRef.current
