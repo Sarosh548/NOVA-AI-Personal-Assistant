@@ -12,6 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from api.voice import (
     VoiceWebSocketSendError,
+    _resolve_tts_language,
     router,
 )
 from services.stt_adapter import (
@@ -38,6 +39,16 @@ from services.voice_tts_orchestrator import (
     VoiceTTSOrchestrator,
     VoiceTTSOrchestratorError,
 )
+
+
+def test_tts_language_routing_handles_separate_urdu_and_hindi_modes():
+    assert _resolve_tts_language("ur", "Hello, how can I help?") == "ur"
+    assert _resolve_tts_language("hi", "Hello, how can I help?") == "hi"
+    assert _resolve_tts_language("en-US", "Acha yr, kya haal hai?") == "en"
+    assert _resolve_tts_language("multi", "Acha yr isko theek kro") == "ur"
+    assert _resolve_tts_language("multi", "What should we do next?") == "en"
+    assert _resolve_tts_language(None, "اسلام علیکم آپ کیسے ہیں") == "ur"
+    assert _resolve_tts_language("multi", "नमस्ते, आप कैसे हैं?") == "hi"
 
 
 class BlockingVoiceWebSocket:
@@ -127,6 +138,35 @@ class FakeVoiceConversationExecutionService:
                 pass
 
         return dict(self.response_payload)
+
+    def execute_voice_message(
+        self,
+        *,
+        user_id,
+        message,
+        conversation_id,
+        on_response_delta=None,
+        is_execution_current=None,
+    ):
+        return self.execute_message(
+            user_id=user_id,
+            message=message,
+            conversation_id=conversation_id,
+            execution_context=SimpleNamespace(
+                is_voice=True,
+                user_requested=True,
+            ),
+            on_response_delta=on_response_delta,
+            is_execution_current=is_execution_current,
+        )
+
+    def extract_and_save_memory(
+        self,
+        *,
+        user_id,
+        user_message,
+    ):
+        return None
 
 
 class RecordingVoiceMetrics:
@@ -457,12 +497,14 @@ class FakeVoiceSTTOrchestrator:
         session_id,
         turn_id,
         audio_format,
+        language=None,
     ):
         self.active = True
         self.turn_id = turn_id
         self.user_id = user_id
         self.session_id = session_id
         self.audio_format = audio_format
+        self.language = language
         return "fake-stt-stream-1"
 
     async def send_audio(
@@ -634,12 +676,14 @@ class FakeVoiceTTSOrchestrator:
         turn_id,
         voice,
         audio_format,
+        language=None,
     ):
         self.user_id = user_id
         self.session_id = session_id
         self.turn_id = turn_id
         self.voice = voice
         self.audio_format = audio_format
+        self.language = language
         return self.stream_id
 
     async def send_text(
@@ -1014,6 +1058,7 @@ def test_voice_websocket_handshake_and_turn_flow(
             {
                 "type": "turn.start",
                 "turn_id": "turn-1",
+                "language": "ur",
                 "audio_format": {
                     "encoding": "pcm_s16le",
                     "sample_rate_hz": 16_000,
@@ -1067,6 +1112,12 @@ def test_voice_websocket_handshake_and_turn_flow(
 
         assistant = websocket.receive_json()
 
+        # Realtime audio can legitimately arrive before the completed text,
+        # but a fast text response can also win the race on the mock/no-chunk
+        # path. Consume leading audio events when present, then assert the text.
+        while assistant["type"].startswith("assistant.audio."):
+            assistant = websocket.receive_json()
+
         assert assistant["type"] == "assistant.response"
         assert assistant["turn_id"] == "turn-1"
         assert assistant["conversation_id"] == 42
@@ -1086,6 +1137,7 @@ def test_voice_websocket_handshake_and_turn_flow(
     assert FakeVoiceSTTOrchestrator.instances[0].audio_frames == [
         b"12345678"
     ]
+    assert FakeVoiceSTTOrchestrator.instances[0].language == "ur"
 
 
 def test_voice_websocket_emits_structured_lifecycle_logs(
@@ -1616,10 +1668,12 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
         assert armed["turn_id"] == "turn-2"
 
         fake_stt = FakeVoiceSTTOrchestrator.instances[0]
+        fake_stt.emit_speech_started = True
 
-        # The fake always emits transcript.partial; that event alone must
-        # trigger hands-free interruption without requiring speech.started.
-        websocket.send_bytes(b"interrupting")
+        # speech.started alone is only an early VAD hint. Two consecutive
+        # non-trivial transcript partials are required to interrupt safely.
+        websocket.send_bytes(b"interrupting-1")
+        websocket.send_bytes(b"interrupting-2")
 
         cancelled_response = None
         cancelled_audio = None
@@ -1659,6 +1713,136 @@ def test_voice_websocket_hands_free_barge_in_cancels_response(
                 "turn_id": "turn-2",
             }
         )
+
+
+def test_voice_websocket_explicit_interrupt_preserves_active_user_turn(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+
+    client = TestClient(
+        _build_app()
+    )
+
+    core_service = client.app.state.conversation_execution_service
+    core_service.block_first_execution = True
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-1",
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_bytes(b"first")
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-1",
+            }
+        )
+
+        assert websocket.receive_json()["type"] == "transcript.final"
+        assert websocket.receive_json()["type"] == "turn.committed"
+        assert websocket.receive_json()["type"] == "assistant.audio.started"
+        assert core_service.first_execution_started.wait(
+            timeout=2
+        )
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-2",
+                "interrupt_response": False,
+            }
+        )
+
+        armed = websocket.receive_json()
+        assert armed["type"] == "turn.started"
+        assert armed["turn_id"] == "turn-2"
+
+        websocket.send_json(
+            {
+                "type": "assistant.interrupt",
+                "turn_id": "turn-1",
+            }
+        )
+
+        cancelled = {}
+        while (
+            "assistant.response.cancelled" not in cancelled
+            or "assistant.audio.cancelled" not in cancelled
+        ):
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            cancelled[payload["type"]] = payload
+
+            if payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert cancelled["assistant.response.cancelled"] == {
+            "type": "assistant.response.cancelled",
+            "turn_id": "turn-1",
+        }
+        assert cancelled["assistant.audio.cancelled"] == {
+            "type": "assistant.audio.cancelled",
+        }
+
+        websocket.send_bytes(b"interrupting")
+
+        partial = None
+        while partial is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            if payload["type"] == "transcript.partial":
+                partial = payload
+
+        assert partial["turn_id"] == "turn-2"
+
+        websocket.send_json(
+            {
+                "type": "turn.commit",
+                "turn_id": "turn-2",
+            }
+        )
+
+        committed = None
+        while committed is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            if payload["type"] == "turn.committed":
+                committed = payload
+
+        assert committed["turn_id"] == "turn-2"
+
+        core_service.release_first_execution.set()
 
 
 def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_together(
@@ -1718,13 +1902,15 @@ def test_voice_websocket_preserves_commit_when_barge_in_and_control_arrive_toget
 
         assert websocket.receive_json()["type"] == "turn.started"
 
-        websocket.send_bytes(b"interrupting")
-        partial = websocket.receive_json()
-        assert partial["type"] == "transcript.partial"
+        fake_stt = FakeVoiceSTTOrchestrator.instances[0]
+        fake_stt.emit_speech_started = True
 
-        # Commit immediately after the interruption transcript. The server
-        # may have the barge-in signal and the control message ready in the
-        # same event-loop cycle; the commit must not be dropped.
+        websocket.send_bytes(b"interrupting-1")
+        websocket.send_bytes(b"interrupting-2")
+
+        # Commit immediately after two meaningful partials. The server may have
+        # the barge-in signal and the control message ready in the same
+        # event-loop cycle; the commit must not be dropped.
         websocket.send_json(
             {
                 "type": "turn.commit",
@@ -2254,6 +2440,68 @@ def test_voice_websocket_auto_commits_on_utterance_end(
         assert assistant["response"] == "Sure, done."
 
 
+def test_voice_websocket_auto_commits_on_speech_final(
+    monkeypatch,
+):
+    _patch_auth(monkeypatch)
+    _patch_fake_stt(monkeypatch)
+    _patch_fake_tts(monkeypatch)
+    _patch_auto_turn_commit_grace(
+        monkeypatch,
+        0.01,
+    )
+
+    client = TestClient(
+        _build_app()
+    )
+
+    with client.websocket_connect(
+        "/voice/ws",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    ) as websocket:
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "turn.start",
+                "turn_id": "turn-speech-final",
+            }
+        )
+        websocket.receive_json()
+
+        fake_stt = FakeVoiceSTTOrchestrator.instances[0]
+        fake_stt.emit_end_of_speech = True
+
+        websocket.send_bytes(b"input-audio")
+
+        assistant = None
+        seen_types = []
+
+        while assistant is None:
+            message = websocket.receive()
+
+            if message.get("bytes") is not None:
+                continue
+
+            payload = json.loads(message["text"])
+            seen_types.append(payload["type"])
+
+            if payload["type"] == "assistant.response":
+                assistant = payload
+            elif payload["type"] == "error":
+                raise AssertionError(
+                    f"Unexpected voice error: {payload!r}"
+                )
+
+        assert "transcript.final" in seen_types
+        assert "turn.committed" in seen_types
+        assert "transcript.utterance_end" not in seen_types
+        assert assistant["turn_id"] == "turn-speech-final"
+        assert assistant["response"] == "Sure, done."
+
+
 def test_voice_websocket_commits_when_final_arrives_after_utterance_end(
     monkeypatch,
 ):
@@ -2622,6 +2870,7 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
         fake_tts = FakeVoiceTTSOrchestrator.instances[0]
 
         error_message = None
+        assistant_response = None
         while error_message is None:
             message = websocket.receive()
 
@@ -2639,11 +2888,16 @@ def test_voice_websocket_recovers_after_midstream_tts_provider_failure(
                 continue
 
             if payload["type"] == "assistant.response":
+                assistant_response = payload
                 continue
+
+        assert assistant_response is not None
+        assert assistant_response["turn_id"] == "turn-tts-failure"
+        assert assistant_response["response"]
 
         assert error_message["code"] == "assistant_audio_failed"
         assert error_message["recoverable"] is True
-        assert error_message["recovery_action"] == "start_new_turn"
+        assert error_message["recovery_action"] == "fallback_to_local_audio"
 
         websocket.send_json(
             {
@@ -3417,3 +3671,58 @@ def test_voice_websocket_preserves_web_sources(
                 "score": 0.98,
             }
         ]
+
+
+
+def test_dictation_websocket_streams_audio_and_returns_transcript(
+    monkeypatch,
+):
+    voice_module = _patch_auth(monkeypatch)
+    monkeypatch.setattr(
+        voice_module,
+        "RateLimitService",
+        FakeVoiceRateLimitService,
+    )
+    _patch_fake_stt(monkeypatch)
+    app = _build_app()
+    client = TestClient(app)
+
+    with client.websocket_connect(
+        "/voice/dictation/ws",
+        headers={"Authorization": "Bearer test-token"},
+    ) as websocket:
+        ready = websocket.receive_json()
+        assert ready["type"] == "dictation.ready"
+
+        websocket.send_bytes(b"test-pcm-audio")
+        websocket.send_json({"type": "dictation.stop"})
+
+        received = []
+        while not any(
+            message.get("type") == "dictation.final"
+            for message in received
+        ):
+            received.append(websocket.receive_json())
+
+    transcript_messages = [
+        message
+        for message in received
+        if message.get("type") == "dictation.transcript"
+    ]
+    assert any(
+        message["event"].get("text") == "hello"
+        for message in transcript_messages
+    )
+    final_message = next(
+        message
+        for message in received
+        if message.get("type") == "dictation.final"
+    )
+    assert final_message["text"] == "hello world"
+
+    stt = FakeVoiceSTTOrchestrator.instances[-1]
+    assert stt.user_id == _fake_context().user.id
+    assert stt.audio_format.encoding == "pcm_s16le"
+    assert stt.audio_format.sample_rate_hz == 16_000
+    assert stt.audio_format.channels == 1
+    assert stt.audio_frames == [b"test-pcm-audio"]

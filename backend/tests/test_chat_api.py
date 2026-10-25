@@ -121,14 +121,54 @@ def test_chat_uses_canonical_authenticated_identity(
                 }
             )
 
+    class FakeMemoryService:
+        def find_similar_memories(
+            self,
+            *,
+            user_id,
+            new_memory,
+            threshold,
+            limit,
+        ):
+            assert user_id == "user-001"
+            assert new_memory == "Hello NOVA"
+            assert threshold == 0.65
+            assert limit == 4
+
+            return []
+
+        def get_profile_memories(
+            self,
+            *,
+            user_id,
+            limit,
+        ):
+            assert user_id == "user-001"
+            assert limit == 6
+
+            return []
+
     class FakeLLMService:
+        def generate_companion_response(
+            self,
+            *,
+            message,
+            history,
+            memory_context,
+        ):
+            assert message == "Hello NOVA"
+            assert history == []
+            assert memory_context == ""
+
+            return "Hello from NOVA."
+
         def generate_conversation_title(
             self,
             user_message,
         ):
-            assert user_message == "Hello NOVA"
-
-            return "Hello NOVA"
+            raise AssertionError(
+                "Fast conversation should not use an LLM title."
+            )
 
         def extract_memory(
             self,
@@ -196,6 +236,12 @@ def test_chat_uses_canonical_authenticated_identity(
 
     monkeypatch.setattr(
         main,
+        "memory_service",
+        FakeMemoryService(),
+    )
+
+    monkeypatch.setattr(
+        main,
         "execution_service",
         FakeExecutionService(),
     )
@@ -229,37 +275,7 @@ def test_chat_uses_canonical_authenticated_identity(
             == "Hello from NOVA."
         )
 
-        assert (
-            captured_execution["user_id"]
-            == "user-001"
-        )
-        assert (
-            captured_execution["conversation_id"]
-            == 101
-        )
-        assert (
-            captured_execution["user_message"]
-            == "Hello NOVA"
-        )
-        assert (
-            captured_execution["history"]
-            == []
-        )
-
-        execution_context = (
-            captured_execution[
-                "execution_context"
-            ]
-        )
-
-        assert (
-            execution_context.mode
-            == ExecutionMode.INTERACTIVE
-        )
-        assert (
-            execution_context.user_requested
-            is True
-        )
+        assert captured_execution == {}
 
         assert saved_messages == [
             {

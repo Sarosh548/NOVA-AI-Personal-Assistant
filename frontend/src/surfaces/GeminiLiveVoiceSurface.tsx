@@ -1,0 +1,1042 @@
+import { useCallback, useEffect, useRef, useState } from "react"
+
+import {
+  ApiRequestError,
+  apiRequestWithRefresh,
+} from "../api/client"
+import { Icon } from "../components/Icon"
+import {
+  getVoiceLanguagePreference,
+  setVoiceLanguagePreference,
+  type VoiceLanguage,
+} from "../app/voiceLanguage"
+import { VoiceTransportControl, type VoiceTransport } from "./VoiceTransportControl"
+
+type VoiceState = "connecting" | "ready" | "listening" | "thinking" | "speaking" | "disconnected"
+type GeminiTokenResponse = {
+  token: string
+  model: string
+  config: Record<string, unknown>
+  expires_at: string
+}
+type ConversationCreated = { id: number }
+type ToolResult = Record<string, unknown>
+type ActiveTurn = {
+  userText: string
+  assistantText: string
+  responseDone: boolean
+  toolUsed: boolean
+  saveStarted: boolean
+  cancelled: boolean
+}
+type GeminiMessage = Record<string, any>
+
+const INPUT_RATE = 16000
+const OUTPUT_RATE = 24000
+
+const PCM_WORKLET_SOURCE = [
+  "class NovaGeminiPcmProcessor extends AudioWorkletProcessor {",
+  "  constructor() {",
+  "    super()",
+  "    this.active = true",
+  "    this.buffer = new Float32Array(0)",
+  "    this.position = 0",
+  "    this.targetRate = 16000",
+  "    this.chunkSize = 1600",
+  "    this.noiseFloor = 0.003",
+  "    this.activationSamples = 0",
+  "    this.speechSamples = 0",
+  "    this.silenceSamples = 0",
+  "    this.vadTriggered = false",
+  "    this.port.onmessage = (event) => {",
+  "      if (event.data && event.data.type === 'set-active') {",
+  "        this.active = Boolean(event.data.active)",
+  "        if (!this.active) {",
+  "          this.buffer = new Float32Array(0)",
+  "          this.position = 0",
+  "          this.activationSamples = 0",
+  "          this.speechSamples = 0",
+  "          this.silenceSamples = 0",
+  "          this.vadTriggered = false",
+  "        }",
+  "      }",
+  "    }",
+  "  }",
+  "  process(inputs) {",
+  "    const channel = inputs[0] && inputs[0][0]",
+  "    if (!channel || !this.active) return true",
+  "    let energy = 0",
+  "    for (let i = 0; i < channel.length; i += 1) energy += channel[i] * channel[i]",
+  "    const rms = Math.sqrt(energy / Math.max(1, channel.length))",
+  "    this.noiseFloor = this.noiseFloor * 0.995 + rms * 0.005",
+  "    const threshold = Math.max(0.012, this.noiseFloor * 2.5)",
+  "    this.activationSamples += channel.length",
+  "    if (this.activationSamples >= sampleRate * 0.1 && rms >= threshold) {",
+  "      this.speechSamples += channel.length",
+  "      this.silenceSamples = 0",
+  "      if (!this.vadTriggered && this.speechSamples >= sampleRate * 0.12) {",
+  "        this.vadTriggered = true",
+  "        this.port.postMessage({ type: 'voice-start' })",
+  "      }",
+  "    } else {",
+  "      this.speechSamples = Math.max(0, this.speechSamples - channel.length)",
+  "      this.silenceSamples += channel.length",
+  "      if (this.silenceSamples >= sampleRate * 0.45) {",
+  "        this.vadTriggered = false",
+  "        this.speechSamples = 0",
+  "      }",
+  "    }",
+  "    const merged = new Float32Array(this.buffer.length + channel.length)",
+  "    merged.set(this.buffer)",
+  "    merged.set(channel, this.buffer.length)",
+  "    this.buffer = merged",
+  "    const step = sampleRate / this.targetRate",
+  "    while (this.position + (this.chunkSize - 1) * step < this.buffer.length) {",
+  "      const pcm = new Int16Array(this.chunkSize)",
+  "      for (let i = 0; i < this.chunkSize; i += 1) {",
+  "        const pos = this.position + i * step",
+  "        const leftIndex = Math.floor(pos)",
+  "        const fraction = pos - leftIndex",
+  "        const left = this.buffer[leftIndex] || 0",
+  "        const right = this.buffer[leftIndex + 1] ?? left",
+  "        const sample = Math.max(-1, Math.min(1, left + (right - left) * fraction))",
+  "        pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff",
+  "      }",
+  "      this.position += this.chunkSize * step",
+  "      const consumed = Math.floor(this.position)",
+  "      if (consumed > 0) {",
+  "        this.buffer = this.buffer.slice(consumed)",
+  "        this.position -= consumed",
+  "      }",
+  "      this.port.postMessage(pcm.buffer, [pcm.buffer])",
+  "    }",
+  "    return true",
+  "  }",
+  "}",
+  "registerProcessor('nova-gemini-pcm-processor', NovaGeminiPcmProcessor)",
+].join("\n")
+
+function newTurn(): ActiveTurn {
+  return {
+    userText: "",
+    assistantText: "",
+    responseDone: false,
+    toolUsed: false,
+    saveStarted: false,
+    cancelled: false,
+  }
+}
+
+function readableError(error: unknown, fallback: string): string {
+  if (error instanceof ApiRequestError) return error.detail
+  if (error instanceof Error && error.message) return error.message
+  return fallback
+}
+
+function appendTranscript(current: string, incoming: string): string {
+  const next = incoming.trim()
+  const previous = current.trim()
+  if (!next) return previous
+  if (!previous) return next
+  if (next === previous || previous.endsWith(next)) return previous
+  if (next.startsWith(previous)) return next
+
+  const overlapLimit = Math.min(previous.length, next.length, 120)
+  for (let length = overlapLimit; length >= 8; length -= 1) {
+    if (previous.slice(-length).toLowerCase() === next.slice(0, length).toLowerCase()) {
+      return (previous + next.slice(length)).trim()
+    }
+  }
+  return (previous + " " + next).trim()
+}
+
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let binary = ""
+  const chunkSize = 0x8000
+  for (let start = 0; start < bytes.length; start += chunkSize) {
+    const slice = bytes.subarray(start, Math.min(bytes.length, start + chunkSize))
+    binary += String.fromCharCode(...slice)
+  }
+  return window.btoa(binary)
+}
+
+function base64PcmToAudioBuffer(
+  audioContext: AudioContext,
+  encoded: string,
+): AudioBuffer | null {
+  let binary: string
+  try {
+    binary = window.atob(encoded)
+  } catch {
+    return null
+  }
+
+  const sampleCount = Math.floor(binary.length / 2)
+  if (sampleCount < 1) return null
+
+  const samples = new Float32Array(sampleCount)
+  for (let index = 0; index < sampleCount; index += 1) {
+    const value = (binary.charCodeAt(index * 2) & 0xff)
+      | ((binary.charCodeAt(index * 2 + 1) & 0xff) << 8)
+    const signed = value >= 0x8000 ? value - 0x10000 : value
+    samples[index] = signed < 0 ? signed / 0x8000 : signed / 0x7fff
+  }
+
+  const buffer = audioContext.createBuffer(1, sampleCount, OUTPUT_RATE)
+  buffer.copyToChannel(samples, 0)
+  return buffer
+}
+
+function boundedToolOutput(result: ToolResult): Record<string, unknown> {
+  const summary: Record<string, unknown> = {}
+  for (const field of [
+    "response",
+    "error",
+    "understanding",
+    "plan",
+    "permission",
+    "confirmation",
+    "tool_result",
+    "workflow_result",
+    "web_sources",
+    "knowledge_sources",
+  ]) {
+    if (field in result) summary[field] = result[field]
+  }
+  const serialized = JSON.stringify(summary)
+  if (serialized.length <= 14000) return summary
+  return { response: serialized.slice(0, 14000) }
+}
+
+function toolCallIdempotencyKey(id: string): string {
+  const safe = id.replace(/[^A-Za-z0-9_-]/gu, "").slice(0, 90)
+  return "nova-gemini-" + (safe || crypto.randomUUID())
+}
+
+export function GeminiLiveVoiceSurface({
+  onOpenConversation,
+  voiceTransport = "gemini",
+  onVoiceTransportChange = () => undefined,
+  cloudMode = false,
+}: {
+  onOpenConversation: () => void
+  voiceTransport?: VoiceTransport
+  onVoiceTransportChange?: (value: VoiceTransport) => void
+  cloudMode?: boolean
+}) {
+  const [state, setState] = useState<VoiceState>("ready")
+  const stateRef = useRef(state)
+  stateRef.current = state
+  const [connected, setConnected] = useState(false)
+  const [transcript, setTranscript] = useState("")
+  const [response, setResponse] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
+  const [microphonePermission, setMicrophonePermission] = useState<"unknown" | "granted" | "denied">("unknown")
+  const [voiceLanguage, setVoiceLanguage] = useState<VoiceLanguage>(() => getVoiceLanguagePreference())
+  const [languageSettingsOpen, setLanguageSettingsOpen] = useState(false)
+
+  const socketRef = useRef<WebSocket | null>(null)
+  const setupTimeoutRef = useRef<number | null>(null)
+  const transcriptPanelRef = useRef<HTMLDivElement | null>(null)
+  const microphoneRef = useRef<MediaStream | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const workletRef = useRef<AudioWorkletNode | null>(null)
+  const muteGainRef = useRef<GainNode | null>(null)
+  const playbackGainRef = useRef<GainNode | null>(null)
+  const playbackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
+  const playbackEndTimeRef = useRef(0)
+  const workletUrlRef = useRef<string | null>(null)
+  const conversationIdRef = useRef<number | null>(null)
+  const activeTurnRef = useRef<ActiveTurn>(newTurn())
+  const handledToolCallsRef = useRef<Set<string>>(new Set())
+  const connectedRef = useRef(false)
+  const connectingRef = useRef(false)
+  const intentionalCloseRef = useRef(false)
+  const suppressPlaybackRef = useRef(false)
+  const voiceLanguageRef = useRef(voiceLanguage)
+  voiceLanguageRef.current = voiceLanguage
+  useEffect(() => {
+    const panel = transcriptPanelRef.current
+    if (panel) panel.scrollTop = panel.scrollHeight
+  }, [transcript, response])
+
+  const errorRef = useRef<string | null>(null)
+  errorRef.current = error
+
+  const stopPlayback = useCallback(() => {
+    for (const source of playbackSourcesRef.current) {
+      try {
+        source.stop()
+      } catch {
+        // The source may already have ended.
+      }
+    }
+    playbackSourcesRef.current.clear()
+    playbackEndTimeRef.current = 0
+    setAudioState("idle")
+  }, [])
+
+  const releaseConnection = useCallback(() => {
+    if (setupTimeoutRef.current !== null) {
+      window.clearTimeout(setupTimeoutRef.current)
+      setupTimeoutRef.current = null
+    }
+
+    const socket = socketRef.current
+    socketRef.current = null
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      try {
+        socket.close(1000, "NOVA voice stopped")
+      } catch {
+        // Continue releasing local audio devices.
+      }
+    }
+
+    stopPlayback()
+    workletRef.current?.disconnect()
+    workletRef.current = null
+    audioSourceRef.current?.disconnect()
+    audioSourceRef.current = null
+    muteGainRef.current?.disconnect()
+    muteGainRef.current = null
+    playbackGainRef.current?.disconnect()
+    playbackGainRef.current = null
+    microphoneRef.current?.getTracks().forEach((track) => track.stop())
+    microphoneRef.current = null
+
+    if (audioContextRef.current) {
+      void audioContextRef.current.close().catch(() => undefined)
+      audioContextRef.current = null
+    }
+    if (workletUrlRef.current) {
+      URL.revokeObjectURL(workletUrlRef.current)
+      workletUrlRef.current = null
+    }
+
+    connectedRef.current = false
+    connectingRef.current = false
+    setConnected(false)
+    setAudioState("idle")
+  }, [stopPlayback])
+
+  const persistTurn = useCallback(() => {
+    const turn = activeTurnRef.current
+    if (
+      !turn.responseDone
+      || turn.cancelled
+      || turn.toolUsed
+      || turn.saveStarted
+      || !turn.userText.trim()
+      || !turn.assistantText.trim()
+    ) return
+
+    const conversationId = conversationIdRef.current
+    if (!conversationId) return
+
+    turn.saveStarted = true
+    void apiRequestWithRefresh<{ saved: boolean; conversation_id: number }>(
+      "/voice/realtime/turns",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          user_text: turn.userText,
+          assistant_text: turn.assistantText,
+        }),
+      },
+    ).then((saved) => {
+      conversationIdRef.current = saved.conversation_id
+    }).catch(() => {
+      turn.saveStarted = false
+      setError("This voice turn could not be saved to NOVA conversation history.")
+    })
+  }, [])
+
+  const sendToolCall = useCallback(async (message: GeminiMessage) => {
+    const socket = socketRef.current
+    const calls = Array.isArray(message.functionCalls) ? message.functionCalls : []
+    if (!socket || socket.readyState !== WebSocket.OPEN || calls.length === 0) return
+
+    const functionResponses: Array<Record<string, unknown>> = []
+    // Freeze the source utterance for this batch. The user's finalized transcript
+    // is authoritative for exact task titles, names, dates, and recipients; the
+    // realtime model's function arguments can paraphrase or omit those details.
+    const turn = activeTurnRef.current
+    const sourceUtterance = turn.userText.trim()
+    let executionClaimed = turn.toolUsed || turn.cancelled
+
+    for (const call of calls) {
+      const callId = typeof call.id === "string" ? call.id : ""
+      const callName = typeof call.name === "string" ? call.name : ""
+      if (!callId || callName !== "nova_execute_request" || handledToolCallsRef.current.has(callId)) {
+        continue
+      }
+
+      handledToolCallsRef.current.add(callId)
+
+      // One user turn may cross the authenticated NOVA execution boundary only
+      // once. Multiple function calls in a provider response must never create
+      // duplicate tasks/events or repeat external communication.
+      if (executionClaimed) {
+        functionResponses.push({
+          id: callId,
+          name: callName,
+          response: {
+            error: turn.cancelled
+              ? "This user turn was interrupted and was not executed. Wait for the user's next request."
+              : "A NOVA execution request was already submitted for this user turn. Use its result; do not repeat the action.",
+            action_taken: false,
+          },
+        })
+        continue
+      }
+
+      executionClaimed = true
+      turn.toolUsed = true
+      setState("thinking")
+      setAudioState("preparing")
+
+      let output: Record<string, unknown>
+      try {
+        const args = call.args && typeof call.args === "object"
+          ? call.args as Record<string, unknown>
+          : {}
+        const modelRequest = typeof args.request === "string" ? args.request.trim() : ""
+        const requestText = sourceUtterance || modelRequest
+        if (!requestText) {
+          output = { error: "The NOVA request was empty. Ask the user to repeat it.", action_taken: false }
+        } else {
+          const conversationId = conversationIdRef.current
+          if (!conversationId) throw new Error("The NOVA conversation is not ready.")
+          const result = await apiRequestWithRefresh<ToolResult>("/chat", {
+            method: "POST",
+            headers: { "Idempotency-Key": toolCallIdempotencyKey(callId) },
+            body: JSON.stringify({ message: requestText, conversation_id: conversationId }),
+          })
+          output = boundedToolOutput(result)
+        }
+      } catch (toolError) {
+        output = {
+          error: readableError(toolError, "NOVA could not complete the request."),
+          action_taken: false,
+        }
+      }
+
+      functionResponses.push({ id: callId, name: callName, response: output })
+    }
+
+    if (functionResponses.length && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ toolResponse: { functionResponses } }))
+    }
+  }, [])
+
+  const handleServerMessage = useCallback((message: GeminiMessage) => {
+    const socket = socketRef.current
+    if (!socket) return
+
+    if (message.setupComplete) {
+      if (setupTimeoutRef.current !== null) {
+        window.clearTimeout(setupTimeoutRef.current)
+        setupTimeoutRef.current = null
+      }
+      console.info("[NOVA Gemini Live] session setup completed")
+      connectedRef.current = true
+      connectingRef.current = false
+      setConnected(true)
+      setState("ready")
+      setAudioState("idle")
+      setError(null)
+      return
+    }
+
+    if (message.goAway) {
+      setError("Gemini Live session is nearing its configured lifetime. Finish this turn and reconnect.")
+      return
+    }
+
+    const serverContent = message.serverContent
+    if (serverContent && typeof serverContent === "object") {
+      if (serverContent.interrupted === true) {
+        activeTurnRef.current.cancelled = true
+        suppressPlaybackRef.current = false
+        stopPlayback()
+        setState("listening")
+      }
+
+      const inputChunk = typeof serverContent.inputTranscription?.text === "string"
+        ? serverContent.inputTranscription.text
+        : ""
+      if (inputChunk) {
+        const current = activeTurnRef.current
+        if (current.responseDone || current.saveStarted || current.toolUsed || current.cancelled) {
+          activeTurnRef.current = newTurn()
+          setResponse("")
+          setTranscript("")
+        }
+        const turn = activeTurnRef.current
+        turn.userText = appendTranscript(turn.userText, inputChunk)
+        setTranscript(turn.userText)
+        if (stateRef.current !== "speaking" && stateRef.current !== "thinking") setState("listening")
+      }
+
+      const outputChunk = typeof serverContent.outputTranscription?.text === "string"
+        ? serverContent.outputTranscription.text
+        : ""
+      if (outputChunk) {
+        const turn = activeTurnRef.current
+        turn.assistantText = appendTranscript(turn.assistantText, outputChunk)
+        setResponse(turn.assistantText)
+        setAudioState((current) => current === "idle" ? "preparing" : current)
+        setState("speaking")
+      }
+
+      const parts = Array.isArray(serverContent.modelTurn?.parts)
+        ? serverContent.modelTurn.parts
+        : []
+      for (const part of parts) {
+        const inlineData = part?.inlineData ?? part?.inline_data
+        const encoded = typeof inlineData?.data === "string" ? inlineData.data : ""
+        const mimeType = typeof inlineData?.mimeType === "string"
+          ? inlineData.mimeType
+          : typeof inlineData?.mime_type === "string"
+            ? inlineData.mime_type
+            : ""
+        if (encoded && mimeType.toLowerCase().startsWith("audio/pcm")) {
+          if (suppressPlaybackRef.current) continue
+          const context = audioContextRef.current
+          if (!context || context.state === "closed") continue
+          const buffer = base64PcmToAudioBuffer(context, encoded)
+          if (!buffer || !playbackGainRef.current) continue
+
+          const source = context.createBufferSource()
+          source.buffer = buffer
+          source.connect(playbackGainRef.current)
+          source.onended = () => {
+            playbackSourcesRef.current.delete(source)
+            if (playbackSourcesRef.current.size === 0 && activeTurnRef.current.responseDone) {
+              playbackEndTimeRef.current = context.currentTime
+              setAudioState("idle")
+              if (connectedRef.current && !activeTurnRef.current.cancelled) setState("ready")
+            }
+          }
+          const startAt = Math.max(context.currentTime + 0.02, playbackEndTimeRef.current)
+          source.start(startAt)
+          playbackEndTimeRef.current = startAt + buffer.duration
+          playbackSourcesRef.current.add(source)
+          setAudioState("playing")
+          setState("speaking")
+        } else if (typeof part?.text === "string" && part.text.trim()) {
+          const turn = activeTurnRef.current
+          turn.assistantText = appendTranscript(turn.assistantText, part.text)
+          setResponse(turn.assistantText)
+        }
+      }
+
+      if (serverContent.turnComplete === true) {
+        if (suppressPlaybackRef.current) suppressPlaybackRef.current = false
+        const turn = activeTurnRef.current
+        turn.responseDone = true
+        persistTurn()
+        if (playbackSourcesRef.current.size === 0) {
+          setAudioState("idle")
+          if (connectedRef.current) setState("ready")
+        } else {
+          setState("speaking")
+        }
+      }
+    }
+
+    if (message.toolCall && typeof message.toolCall === "object") {
+      void sendToolCall(message.toolCall as GeminiMessage)
+    }
+
+    if (message.toolCallCancellation) {
+      activeTurnRef.current.cancelled = true
+      setAudioState("idle")
+    }
+
+    if (message.error && typeof message.error === "object") {
+      const providerError = message.error as Record<string, unknown>
+      const code = String(providerError.status ?? providerError.code ?? providerError.type ?? "UNKNOWN")
+      const providerMessage = typeof providerError.message === "string"
+        ? providerError.message.trim().replace(/\s+/gu, " ").slice(0, 180)
+        : ""
+      console.error("[NOVA Gemini Live] server rejected the session", {
+        code,
+        message: providerMessage,
+      })
+      if (code === "RESOURCE_EXHAUSTED" || code === "429") {
+        setError("Gemini Live free-tier quota or rate limit was reached. Check AI Studio usage and wait for quota reset; paid billing is not automatically required.")
+      } else if (code === "UNAUTHENTICATED" || code === "PERMISSION_DENIED") {
+        setError("Gemini Live rejected the API project or ephemeral token. Check the API key and Live model access in Google AI Studio.")
+      } else {
+        setError(
+          "Google rejected NOVA's Live session setup ("
+          + code
+          + "). "
+          + (providerMessage || "See the browser console for the provider error."),
+        )
+      }
+      setState("disconnected")
+      intentionalCloseRef.current = true
+      releaseConnection()
+    }
+  }, [persistTurn, releaseConnection, sendToolCall, stopPlayback])
+
+  const connect = useCallback(async () => {
+    if (connectingRef.current || connectedRef.current) return
+    if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === "undefined") {
+      setState("disconnected")
+      setError("This browser does not support the realtime microphone audio required by Gemini Live.")
+      return
+    }
+
+    connectingRef.current = true
+    intentionalCloseRef.current = false
+    setState("connecting")
+    setError(null)
+    setAudioState("preparing")
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          // Prefer suppressing all speaker playback, including Web Audio output.
+          echoCancellation: { ideal: "all" },
+          noiseSuppression: true,
+          autoGainControl: false,
+        },
+      })
+      microphoneRef.current = stream
+      setMicrophonePermission("granted")
+
+      if (!conversationIdRef.current) {
+        const conversation = await apiRequestWithRefresh<ConversationCreated>(
+          "/conversations",
+          { method: "POST", body: JSON.stringify({ title: "NOVA Voice Conversation" }) },
+        )
+        conversationIdRef.current = conversation.id
+      }
+
+      const tokenPath = "/voice/gemini/token?conversation_id="
+        + encodeURIComponent(String(conversationIdRef.current))
+        + "&language=" + encodeURIComponent(voiceLanguageRef.current)
+      const tokenData = await apiRequestWithRefresh<GeminiTokenResponse>(tokenPath, { method: "POST" })
+      if (!tokenData.token || !tokenData.model || !tokenData.config) {
+        throw new Error("NOVA received an incomplete Gemini Live session token.")
+      }
+
+      const context = new AudioContext()
+      audioContextRef.current = context
+      await context.resume()
+      const playbackGain = context.createGain()
+      playbackGain.gain.value = 1
+      playbackGain.connect(context.destination)
+      playbackGainRef.current = playbackGain
+
+      const workletUrl = URL.createObjectURL(
+        new Blob([PCM_WORKLET_SOURCE], { type: "text/javascript" }),
+      )
+      workletUrlRef.current = workletUrl
+      await context.audioWorklet.addModule(workletUrl)
+
+      const worklet = new AudioWorkletNode(context, "nova-gemini-pcm-processor")
+      workletRef.current = worklet
+      const source = context.createMediaStreamSource(stream)
+      audioSourceRef.current = source
+      const muteGain = context.createGain()
+      muteGain.gain.value = 0
+      muteGainRef.current = muteGain
+      source.connect(worklet)
+      worklet.connect(muteGain)
+      muteGain.connect(context.destination)
+
+      const socketUrl = "wss://generativelanguage.googleapis.com/ws/"
+        + "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained"
+        + "?access_token=" + encodeURIComponent(tokenData.token)
+      const socket = new WebSocket(socketUrl)
+      socketRef.current = socket
+      setupTimeoutRef.current = window.setTimeout(() => {
+        if (socketRef.current !== socket || connectedRef.current) return
+        console.error("[NOVA Gemini Live] setup handshake timed out", {
+          readyState: socket.readyState,
+        })
+        const stageMessage = socket.readyState === WebSocket.CONNECTING
+          ? "The secure WebSocket never opened."
+          : socket.readyState === WebSocket.OPEN
+            ? "The WebSocket opened, but Google did not acknowledge the setup frame."
+            : "The WebSocket closed before setup finished."
+        setError(
+          "Gemini Live received a token, but setup failed after 12 seconds. "
+          + stageMessage
+          + " (WebSocket state "
+          + socket.readyState
+          + "). The session was stopped instead of staying on CONNECTING.",
+        )
+        intentionalCloseRef.current = true
+        releaseConnection()
+        setState("disconnected")
+      }, 12000)
+
+      worklet.port.onmessage = (event: MessageEvent) => {
+        if (event.data?.type === "voice-start") {
+          const turn = activeTurnRef.current
+          if (turn.responseDone || turn.saveStarted || turn.toolUsed || turn.cancelled) {
+            activeTurnRef.current = newTurn()
+            setResponse("")
+            setTranscript("")
+          }
+          if (connectedRef.current && stateRef.current !== "speaking") setState("listening")
+          return
+        }
+        if (!(event.data instanceof ArrayBuffer)) return
+        if (socket.readyState !== WebSocket.OPEN || !connectedRef.current) return
+        socket.send(JSON.stringify({
+          realtimeInput: {
+            audio: {
+              data: bytesToBase64(event.data),
+              mimeType: "audio/pcm;rate=" + INPUT_RATE,
+            },
+          },
+        }))
+      }
+
+      socket.onopen = () => {
+        if (socketRef.current !== socket) return
+        console.info("[NOVA Gemini Live] WebSocket opened; sending constrained-token setup")
+        // The raw WebSocket protocol requires the first setup frame to carry
+        // a complete BidiGenerateContentSetup. The ephemeral token constrains the
+        // effective session config server-side, but the client still sends the
+        // same documented setup shape so the server can complete the handshake.
+        socket.send(JSON.stringify({
+          setup: {
+            model: tokenData.model,
+            ...tokenData.config,
+          },
+        }))
+      }
+
+      socket.onmessage = (event) => {
+        if (socketRef.current !== socket || typeof event.data !== "string") return
+        try {
+          const message = JSON.parse(event.data) as GeminiMessage
+          console.debug("[NOVA Gemini Live] server event", Object.keys(message))
+          handleServerMessage(message)
+        } catch (messageError) {
+          console.error("[NOVA Gemini Live] failed to process a server event", messageError)
+          setError("NOVA received an unreadable Gemini Live event. Check the browser console for the event stage.")
+          intentionalCloseRef.current = true
+          releaseConnection()
+          setState("disconnected")
+        }
+      }
+
+      socket.onerror = () => {
+        if (socketRef.current !== socket) return
+        console.error("[NOVA Gemini Live] WebSocket transport error", {
+          readyState: socket.readyState,
+        })
+        setError("Gemini Live WebSocket transport failed before the session finished setting up.")
+        intentionalCloseRef.current = true
+        releaseConnection()
+        setState("disconnected")
+      }
+
+      socket.onclose = (event) => {
+        if (intentionalCloseRef.current || socketRef.current !== socket) return
+        if (setupTimeoutRef.current !== null) {
+          window.clearTimeout(setupTimeoutRef.current)
+          setupTimeoutRef.current = null
+        }
+        console.warn("[NOVA Gemini Live] WebSocket closed", {
+          code: event.code,
+          reason: event.reason.slice(0, 160),
+          hadCompletedSetup: connectedRef.current,
+        })
+        connectedRef.current = false
+        connectingRef.current = false
+        setConnected(false)
+        if (!errorRef.current) {
+          setError(
+            "Gemini Live WebSocket closed before NOVA finished connecting (code "
+            + event.code
+            + (event.reason ? ": " + event.reason.slice(0, 120) : "")
+            + ").",
+          )
+        }
+        releaseConnection()
+        setState("disconnected")
+      }
+    } catch (connectError) {
+      const mediaError = connectError instanceof DOMException
+        && (connectError.name === "NotAllowedError" || connectError.name === "PermissionDeniedError")
+      if (mediaError) setMicrophonePermission("denied")
+      setError(readableError(connectError, "NOVA could not start Gemini Live voice. Check microphone permission and try again."))
+      intentionalCloseRef.current = true
+      releaseConnection()
+      setState("disconnected")
+    } finally {
+      connectingRef.current = false
+    }
+  }, [handleServerMessage, releaseConnection])
+
+  const stopSession = useCallback(() => {
+    intentionalCloseRef.current = true
+    releaseConnection()
+    setError(null)
+    setState("ready")
+  }, [releaseConnection])
+
+  const interruptResponse = useCallback(() => {
+    activeTurnRef.current.cancelled = true
+    suppressPlaybackRef.current = true
+    stopPlayback()
+    // Keep the microphone stream open. Gemini's server-side VAD interrupts the
+    // generation when the user starts speaking, without ending the input stream.
+    setState(connectedRef.current ? "listening" : "disconnected")
+  }, [stopPlayback])
+
+  useEffect(() => {
+    const onOnline = () => setError(null)
+    const onOffline = () => setError("Internet connection is unavailable.")
+    window.addEventListener("online", onOnline)
+    window.addEventListener("offline", onOffline)
+    return () => {
+      window.removeEventListener("online", onOnline)
+      window.removeEventListener("offline", onOffline)
+      intentionalCloseRef.current = true
+      releaseConnection()
+    }
+  }, [releaseConnection])
+
+  const changeLanguage = (value: VoiceLanguage) => {
+    setVoiceLanguage(value)
+    setVoiceLanguagePreference(value)
+    if (connectedRef.current) {
+      setError("Language preference applies to the next session. Pause voice and reconnect to apply it.")
+    }
+  }
+
+  const handleVoiceButton = () => {
+    if (state === "thinking" || state === "speaking") {
+      interruptResponse()
+      return
+    }
+    if (connectedRef.current) {
+      stopSession()
+      return
+    }
+    void connect()
+  }
+
+  const buttonLabel = state === "connecting"
+    ? "Connecting…"
+    : state === "disconnected"
+      ? "Reconnect voice"
+      : state === "thinking" || state === "speaking"
+        ? "Interrupt & talk"
+        : connected
+          ? state === "listening" ? "Pause listening" : "Pause voice"
+          : "Talk to NOVA"
+  const statusLabel = state === "ready" && !connected
+    ? "VOICE STANDBY"
+    : state === "ready" && connected
+      ? "READY TO LISTEN"
+      : state.toUpperCase()
+
+  return (
+    <div className="voice-shell">
+      <header className="voice-header">
+        <button
+          className="voice-icon-action voice-exit-action"
+          type="button"
+          onClick={() => {
+            stopSession()
+            onOpenConversation()
+          }}
+          aria-label="Back to conversation"
+          title="Back to conversation"
+        >
+          <Icon name="close" size={18} />
+        </button>
+
+        <div className="voice-brand-state" aria-live="polite">
+          <div className="voice-brand-label">NOVA · AI VOICE ASSISTANT</div>
+          <div className={"voice-live-state " + state}>{statusLabel}</div>
+        </div>
+
+        {!cloudMode && (
+          <button
+            className={languageSettingsOpen
+              ? "voice-icon-action voice-settings-action active"
+              : "voice-icon-action voice-settings-action"}
+            type="button"
+            onClick={() => setLanguageSettingsOpen((open) => !open)}
+            aria-label="Voice language settings"
+            aria-expanded={languageSettingsOpen}
+            title="Voice language"
+          >
+            <Icon name="sliders" size={18} />
+          </button>
+        )}
+      </header>
+
+      <main className="voice-main">
+        <section className="voice-stage" aria-label="NOVA Gemini Live voice session">
+          <button
+            className={"voice-orb voice-orb-" + state}
+            type="button"
+            onClick={handleVoiceButton}
+            disabled={state === "connecting"}
+            aria-label={buttonLabel}
+            aria-pressed={connected}
+            title={buttonLabel}
+          >
+            <span className="voice-orb-aura" aria-hidden="true" />
+            <span className="voice-orb-gradient-ring" aria-hidden="true" />
+            <span className="voice-orb-sphere" aria-hidden="true">
+              <span className="voice-orb-sheen" />
+              <span className="voice-orb-wave wave-one" />
+              <span className="voice-orb-wave wave-two" />
+              <span className="voice-orb-wave wave-three" />
+              <span className="voice-orb-wave wave-four" />
+            </span>
+            <span className="voice-orb-sr-label">{buttonLabel}</span>
+          </button>
+
+          <div
+            ref={transcriptPanelRef}
+            className="voice-live-transcript"
+            aria-label="Live voice conversation"
+            aria-live="polite"
+            aria-relevant="additions text"
+          >
+            {!transcript && !response && (
+              <p className="voice-transcript-placeholder">
+                {connected
+                  ? state === "listening"
+                    ? "I'm listening. Your words will appear here."
+                    : "Speak naturally — your conversation will appear here."
+                  : state === "connecting"
+                    ? "Connecting to NOVA voice…"
+                    : state === "disconnected"
+                      ? "Voice is disconnected. Reconnect to continue."
+                      : "Tap the orb to start a voice conversation."}
+              </p>
+            )}
+            {transcript && (
+              <div className="voice-turn-card user">
+                <div className="voice-turn-label">YOU</div>
+                <p>{transcript}</p>
+              </div>
+            )}
+            {response && (
+              <div className="voice-turn-card assistant">
+                <div className="voice-turn-label">
+                  <span>NOVA</span>
+                  {audioState !== "idle" && (
+                    <span className={"voice-audio-label " + audioState}>
+                      {audioState === "playing" ? "AUDIO LIVE" : "PREPARING AUDIO"}
+                    </span>
+                  )}
+                </div>
+                {audioState !== "idle" && (
+                  <div className={"voice-audio-status " + audioState} role="status">
+                    <span className="voice-audio-bars" aria-hidden="true">
+                      <i /><i /><i /><i /><i />
+                    </span>
+                    <span>{audioState === "playing" ? "NOVA is speaking" : "Preparing realtime response"}</span>
+                  </div>
+                )}
+                <p>{response}</p>
+              </div>
+            )}
+          </div>
+
+          {error && (
+            <div className="voice-error" role="alert">
+              <span>{error}</span>
+              {(state === "disconnected" || connected) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (connected) stopSession()
+                    else void connect()
+                  }}
+                >
+                  {connected ? "Pause" : "Reconnect"}
+                </button>
+              )}
+              {!cloudMode && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const classicUrl = new URL(window.location.href)
+                      classicUrl.searchParams.set("voice_transport", "legacy")
+                      window.location.assign(classicUrl.toString())
+                    }}
+                  >
+                    Use classic voice
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const openaiUrl = new URL(window.location.href)
+                      openaiUrl.searchParams.set("voice_transport", "openai")
+                      window.location.assign(openaiUrl.toString())
+                    }}
+                  >
+                    Try OpenAI Realtime
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {microphonePermission === "denied" && (
+            <small className="voice-microphone-state voice-microphone-warning" role="status">
+              Microphone access is blocked in browser settings.
+            </small>
+          )}
+
+          {!cloudMode && languageSettingsOpen && (
+            <div className="voice-language-control voice-language-popover">
+              <VoiceTransportControl
+                value={voiceTransport}
+                onChange={onVoiceTransportChange}
+              />
+              <label htmlFor="nova-voice-language">Speech language</label>
+              <select
+                id="nova-voice-language"
+                value={voiceLanguage}
+                onChange={(event) => changeLanguage(event.target.value as VoiceLanguage)}
+              >
+                <option value="multi">Automatic (mirror speaker)</option>
+                <option value="en-US">English</option>
+                <option value="ur">Urdu (Pakistan)</option>
+                <option value="hi">Hindi</option>
+              </select>
+              <p>Automatic mode mirrors English, Urdu, Roman Urdu/Hinglish, or Hindi.</p>
+              <button
+                type="button"
+                className="voice-language-close"
+                onClick={() => setLanguageSettingsOpen(false)}
+              >
+                Done
+              </button>
+            </div>
+          )}
+        </section>
+
+        <footer className="voice-footer">
+          <span>{connected ? "Gemini Live · hands-free turn taking" : "Start voice to enable your microphone"}</span>
+          <span className="voice-footer-divider" aria-hidden="true">·</span>
+          <span>{connected ? "Speak naturally; interrupt any time" : "Native speech-to-speech · free tier"}</span>
+        </footer>
+      </main>
+    </div>
+  )
+}

@@ -20,6 +20,7 @@ class FakeConfirmationService:
     def parse_response(
         self,
         message,
+        **_kwargs,
     ):
         return self.response_type
 
@@ -590,7 +591,7 @@ def test_ambiguous_message_does_not_approve_pending_action(
         graph.route_after_confirmation(
             result
         )
-        == "memory"
+        == "agent"
     )
 
     assert fake_confirmation.approved_ids == []

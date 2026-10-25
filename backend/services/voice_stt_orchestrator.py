@@ -74,6 +74,7 @@ class VoiceSTTOrchestrator:
         session_id: str,
         turn_id: str,
         audio_format: STTAudioFormat,
+        language: str | None = None,
     ) -> str:
         if self._turn is not None:
             raise VoiceSTTOrchestratorError(
@@ -85,6 +86,7 @@ class VoiceSTTOrchestrator:
             session_id=session_id,
             turn_id=turn_id,
             audio_format=audio_format,
+            language=language,
         )
 
         try:

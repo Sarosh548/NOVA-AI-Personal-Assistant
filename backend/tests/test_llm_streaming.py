@@ -194,3 +194,30 @@ def test_generate_response_stream_is_lazy():
 
     assert next(stream) == "first"
     assert len(client.chat.completions.calls) == 1
+
+
+def test_generate_voice_response_stream_uses_realtime_settings():
+    client = FakeClient(
+        [
+            _chunk("Hi"),
+            _chunk(" there"),
+        ]
+    )
+    service = LLMService(
+        client=client
+    )
+
+    assert list(service.generate_voice_response_stream(
+        message="Hello NOVA",
+        history=[],
+        memory_context="",
+    )) == ["Hi", " there"]
+
+    call = client.chat.completions.calls[0]
+    assert call["stream"] is True
+    assert call["max_completion_tokens"] == 512
+    assert call["reasoning_effort"] == "low"
+    instructions = call["messages"][0]["content"]
+    assert "transcribed from live microphone speech" in instructions
+    assert "Do not claim you cannot hear or receive the user's voice" in instructions
+    assert "include_reasoning" not in call

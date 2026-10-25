@@ -849,6 +849,7 @@ class NotificationService:
             NotificationDestinationResolver | None
         ) = None,
         delivery_service: NotificationDeliveryService | None = None,
+        google_mail_service: Any | None = None,
     ):
         self.channel_registry = (
             channel_registry
@@ -894,6 +895,84 @@ class NotificationService:
         )
 
         self.delivery_service = delivery_service
+        # Direct outbound mail must use the authenticated user's own mailbox;
+        # it must not silently fall back to a shared global SMTP sender.
+        self.google_mail_service = google_mail_service
+
+    def resolve_self_email_destination(
+        self,
+        *,
+        user_id: str,
+    ) -> str | None:
+        """
+        Resolve the authenticated user's own email destination.
+
+        Prefer an explicitly configured default email destination.
+        When none exists, fall back to the user's local password
+        identity only when its identifier is a valid email address.
+        """
+        if self.google_mail_service is not None:
+            try:
+                connected_mailbox = self.google_mail_service.get_connection(
+                    user_id=user_id,
+                )
+                if connected_mailbox is not None:
+                    address = str(connected_mailbox.get("email") or "").strip()
+                    if address:
+                        return address
+            except Exception:
+                logger.exception(
+                    "Could not resolve connected mailbox for user=%s.",
+                    user_id,
+                )
+
+        if self.destination_service is not None:
+            try:
+                destination_record = (
+                    self.destination_service.get_default_destination(
+                        user_id=user_id,
+                        channel="email",
+                    )
+                )
+            except Exception:
+                destination_record = None
+
+            if destination_record is not None:
+                destination = str(
+                    destination_record.get("destination") or ""
+                ).strip()
+
+                if destination:
+                    return destination
+
+        try:
+            from sqlalchemy import select
+            from sqlalchemy.orm import Session
+
+            from database.connection import engine
+            from models.auth_identity import AuthIdentity
+
+            with Session(engine) as session:
+                identity = session.scalar(
+                    select(AuthIdentity).where(
+                        AuthIdentity.user_id == user_id,
+                        AuthIdentity.provider == "password",
+                    )
+                )
+
+            candidate = str(
+                identity.provider_subject
+            ).strip() if identity is not None else ""
+
+            if candidate:
+                return EmailNotificationChannel._validate_email(
+                    candidate,
+                    "Self email",
+                )
+        except Exception:
+            pass
+
+        return None
 
     def send_email(
         self,
@@ -905,7 +984,27 @@ class NotificationService:
         cc: str | list[str] | tuple[str, ...] | None = None,
         bcc: str | list[str] | tuple[str, ...] | None = None,
     ) -> bool:
-        """Send an outbound email through the registered email channel."""
+        """Send an outbound email and preserve the existing bool contract."""
+        return self.send_email_result(
+            user_id=user_id,
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+        ) is not None
+
+    def send_email_result(
+        self,
+        *,
+        user_id: str,
+        to: str | list[str] | tuple[str, ...] | None = None,
+        subject: str,
+        body: str,
+        cc: str | list[str] | tuple[str, ...] | None = None,
+        bcc: str | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any] | None:
+        """Send email and return provider acceptance metadata for honest reporting."""
         resolved_to = to
 
         if resolved_to is None and self.destination_service is not None:
@@ -913,32 +1012,38 @@ class NotificationService:
                 user_id=user_id,
                 channel="email",
             )
-
             if destination_record is not None:
                 resolved_to = destination_record.get("destination")
 
         if resolved_to is None:
-            logger.warning(
-                "No email destination is configured for user=%s.",
-                user_id,
+            logger.warning("No email destination is configured for user=%s.", user_id)
+            return None
+
+        if self.google_mail_service is not None:
+            result = self.google_mail_service.send_email(
+                user_id=user_id,
+                to=resolved_to,
+                subject=subject,
+                body=body,
+                cc=cc,
+                bcc=bcc,
             )
-            return False
+            if not isinstance(result, dict) or result.get("status") != "sent":
+                logger.warning("Gmail did not confirm a sent message for user=%s.", user_id)
+                return None
+            return dict(result)
 
         delivery_channel = self.channel_registry.get("email")
-
         if delivery_channel is None:
             logger.warning("Email notification channel is not configured.")
-            return False
+            return None
 
         sender = getattr(delivery_channel, "send_email", None)
-
         if not callable(sender):
-            logger.error(
-                "Registered email channel does not support direct email delivery."
-            )
-            return False
+            logger.error("Registered email channel does not support direct email delivery.")
+            return None
 
-        return bool(sender(
+        sent = bool(sender(
             user_id=user_id,
             to=resolved_to,
             subject=subject,
@@ -946,6 +1051,13 @@ class NotificationService:
             cc=cc,
             bcc=bcc,
         ))
+        if not sent:
+            return None
+        return {
+            "status": "accepted_by_smtp",
+            "to": resolved_to,
+            "subject": str(subject).strip()[:200],
+        }
 
     def notify(
         self,

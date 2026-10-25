@@ -609,6 +609,35 @@ def test_planner_rejects_web_search_without_query():
     assert "requires a non-empty query" in plan.reason
 
 
+def test_planner_accepts_weather_web_topic():
+    planner = PlannerService()
+
+    plan = planner.create_plan(
+        understanding={
+            "intent": "web",
+            "requires_tool": True,
+            "web_action": "search",
+            "web_topic": "weather",
+            "web_time_range": None,
+            "query": "What's the current weather in Lahore?",
+        },
+        available_tools=[
+            {
+                "name": "web",
+                "description": "Search live web information.",
+                "actions": ["search"],
+            }
+        ],
+    )
+
+    assert plan.requires_tool is True
+    assert plan.tool == "web"
+    assert plan.action == "search"
+    assert plan.data["topic"] == "weather"
+    assert plan.data["web_topic"] == "weather"
+    assert plan.data["query"] == "What's the current weather in Lahore?"
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -651,3 +680,75 @@ def test_planner_rejects_invalid_web_search_payload(field, value):
     assert plan.requires_tool is False
     assert plan.steps == ()
     assert "invalid" in plan.reason
+
+
+def _desktop_tool_metadata():
+    return [{
+        "name": "desktop",
+        "description": "Allowlisted local desktop actions.",
+        "actions": ["start", "search"],
+    }]
+
+
+def test_planner_accepts_bounded_verified_youtube_play_operation():
+    planner = PlannerService()
+    plan = planner.create_multi_step_plan(
+        steps=[{
+            "step_id": "step-1",
+            "tool": "desktop",
+            "action": "start",
+            "data": {
+                "desktop_operation": "play_youtube",
+                "desktop_target": "Interstellar soundtrack",
+            },
+            "depends_on": [],
+        }],
+        available_tools=_desktop_tool_metadata(),
+    )
+
+    assert plan.requires_tool is True
+    assert len(plan.steps) == 1
+    assert plan.steps[0].data["desktop_operation"] == "play_youtube"
+    assert plan.steps[0].data["desktop_target"] == "Interstellar soundtrack"
+
+
+def test_planner_rejects_unallowlisted_desktop_operation():
+    planner = PlannerService()
+    plan = planner.create_multi_step_plan(
+        steps=[{
+            "step_id": "step-1",
+            "tool": "desktop",
+            "action": "start",
+            "data": {
+                "desktop_operation": "run_shell",
+                "desktop_target": "whoami",
+            },
+            "depends_on": [],
+        }],
+        available_tools=_desktop_tool_metadata(),
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "unsupported" in plan.reason.lower()
+
+
+def test_planner_rejects_vague_youtube_play_request():
+    planner = PlannerService()
+    plan = planner.create_multi_step_plan(
+        steps=[{
+            "step_id": "step-1",
+            "tool": "desktop",
+            "action": "start",
+            "data": {
+                "desktop_operation": "play_youtube",
+                "desktop_target": "song",
+            },
+            "depends_on": [],
+        }],
+        available_tools=_desktop_tool_metadata(),
+    )
+
+    assert plan.requires_tool is False
+    assert plan.steps == ()
+    assert "specific youtube title" in plan.reason.lower()

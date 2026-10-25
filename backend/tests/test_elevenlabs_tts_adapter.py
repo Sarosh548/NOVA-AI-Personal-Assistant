@@ -164,6 +164,75 @@ async def test_start_stream_builds_secure_uri_and_initializes_socket(
 
 
 @pytest.mark.asyncio
+async def test_urdu_uses_text_to_dialogue_websocket_and_streams_final_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = FakeWebSocket([
+        json.dumps({"audio": "AAE="}),
+        json.dumps({"is_final_audio_for_turn": True}),
+    ])
+    captured: dict[str, object] = {}
+
+    async def fake_connect(
+        uri: str,
+        **kwargs: object,
+    ) -> FakeWebSocket:
+        captured["uri"] = uri
+        captured["kwargs"] = kwargs
+        return websocket
+
+    monkeypatch.setattr(provider_module, "connect", fake_connect)
+    adapter = ElevenLabsTTSAdapter(make_settings())
+
+    stream = await adapter.start_stream(make_request(language="ur"))
+
+    assert captured["uri"] == (
+        "wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input?"
+        "model_id=eleven_v3_conversational&"
+        "output_format=pcm_16000&language_code=ur"
+    )
+    initial_payload = json.loads(websocket.sent[0])
+    assert initial_payload["voices"] == ["voice/example"]
+    assert "text" not in initial_payload
+    assert "generation_config" not in initial_payload
+
+    await stream.send_text("Aap kaise hain?")
+    assert len(websocket.sent) == 2
+    assert json.loads(websocket.sent[1]) == {
+        "inputs": [{
+            "text": "Aap kaise hain? ",
+            "voice_id": "voice/example",
+        }]
+    }
+
+    await stream.send_text("Main aapki madad kar sakta hoon.")
+    assert len(websocket.sent) == 3
+    await stream.finish()
+
+    sent_payloads = [json.loads(item) for item in websocket.sent[1:]]
+    assert sent_payloads[0] == {
+        "inputs": [{
+            "text": "Aap kaise hain? ",
+            "voice_id": "voice/example",
+        }]
+    }
+    assert sent_payloads[1] == {
+        "inputs": [{
+            "text": "Main aapki madad kar sakta hoon. ",
+            "voice_id": "voice/example",
+        }]
+    }
+    assert sent_payloads[2] == {"flush": True}
+
+    received = [event async for event in stream.events()]
+    assert [event.type for event in received] == ["audio", "final"]
+    assert received[0].audio == b"\x00\x01"
+    assert received[-1].audio == b""
+
+    await stream.close()
+
+
+@pytest.mark.asyncio
 async def test_start_stream_retries_transient_connection_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

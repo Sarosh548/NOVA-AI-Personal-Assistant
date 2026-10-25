@@ -34,6 +34,7 @@ from models.notification_destination import (
 from models.calendar_connection import (
     CalendarConnection,
 )
+from models.email_connection import EmailConnection
 from models.oauth_state import OAuthState
 from models.knowledge_document import KnowledgeDocument
 from models.knowledge_chunk import KnowledgeChunk

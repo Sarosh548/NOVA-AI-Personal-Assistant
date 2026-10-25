@@ -497,6 +497,7 @@ class DeepgramSTTAdapter(STTAdapter):
         uri = self._build_uri(
             request.audio_format,
             provider_encoding,
+            language=request.language,
         )
 
         last_error: Exception | None = None
@@ -562,6 +563,8 @@ class DeepgramSTTAdapter(STTAdapter):
         self,
         audio_format: STTAudioFormat,
         provider_encoding: str,
+        *,
+        language: str | None = None,
     ) -> str:
         params = [
             (
@@ -570,7 +573,7 @@ class DeepgramSTTAdapter(STTAdapter):
             ),
             (
                 "language",
-                self.settings.deepgram_language,
+                language or self.settings.deepgram_language,
             ),
             (
                 "encoding",

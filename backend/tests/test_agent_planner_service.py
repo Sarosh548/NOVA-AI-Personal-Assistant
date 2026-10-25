@@ -68,6 +68,48 @@ def available_tools():
     ]
 
 
+def test_agent_planner_preserves_deterministic_self_email_without_llm():
+    llm = FakeLLMService(
+        response='{"requires_tool": false, "steps": []}',
+    )
+    service = AgentPlannerService(
+        llm_service=llm,
+    )
+    tools = available_tools() + [
+        {
+            "name": "email",
+            "description": "Send email.",
+            "actions": ["send"],
+        }
+    ]
+    understanding = {
+        "intent": "email",
+        "requires_tool": True,
+        "email_action": "send",
+        "action": "send",
+        "recipient_reference": "self",
+        "to": None,
+        "subject": "NOVA message",
+        "body": "NOVA test successful.",
+    }
+
+    result = service.create_plan(
+        user_message='Send an email to myself saying "NOVA test successful."',
+        understanding=understanding,
+        history=[],
+        available_tools=tools,
+    )
+
+    assert result.requires_tool is True
+    assert result.tool == "email"
+    assert result.action == "send"
+    assert result.data["recipient_reference"] == "self"
+    assert result.data["subject"] == "NOVA message"
+    assert result.data["body"] == "NOVA test successful."
+    assert result.steps[0].data["recipient_reference"] == "self"
+    assert llm.received_user_input is None
+
+
 def test_agent_planner_creates_valid_multi_step_plan():
     llm = FakeLLMService(
         response="""
@@ -422,3 +464,165 @@ def test_agent_planner_creates_valid_web_research_step():
     assert web_step.data["web_time_range"] == "day"
     assert web_step.data["max_results"] == 5
     assert web_step.data["web_action"] == "search"
+
+
+def test_agent_planner_treats_plain_planning_as_non_executable():
+    llm = FakeLLMService(
+        response="""
+{
+  "requires_tool": true,
+  "steps": [
+    {
+      "step_id": "step-1",
+      "tool": "task",
+      "action": "create",
+      "data": {"task": "Work on NOVA"},
+      "depends_on": []
+    }
+  ]
+}
+""",
+    )
+
+    service = AgentPlannerService(llm_service=llm)
+
+    result = service.create_plan(
+        user_message=(
+            "Help me plan tomorrow. I have to work on NOVA, "
+            "study AI, apply for jobs, and get some rest."
+        ),
+        understanding={
+            "intent": "planning",
+            "requires_tool": True,
+        },
+        history=[],
+        available_tools=available_tools(),
+    )
+
+    assert result.requires_tool is False
+    assert result.tool is None
+    assert result.action is None
+    assert result.steps == ()
+    assert llm.received_instructions is None
+
+
+def test_agent_planner_allows_explicit_actions_inside_planning_request():
+    llm = FakeLLMService(
+        response="""
+{
+  "requires_tool": true,
+  "steps": [
+    {
+      "step_id": "step-1",
+      "tool": "task",
+      "action": "create",
+      "data": {"task": "Review NOVA"},
+      "depends_on": []
+    }
+  ]
+}
+""",
+    )
+
+    service = AgentPlannerService(llm_service=llm)
+
+    result = service.create_plan(
+        user_message=(
+            "Plan tomorrow and create a task called Review NOVA."
+        ),
+        understanding={
+            "intent": "planning",
+            "requires_tool": True,
+        },
+        history=[],
+        available_tools=available_tools(),
+    )
+
+    assert result.requires_tool is True
+    assert result.tool == "task"
+    assert result.action == "create"
+    assert len(result.steps) == 1
+
+
+
+def test_agent_planner_preserves_deterministic_desktop_operation_without_llm():
+    llm = FakeLLMService(
+        response='{"requires_tool": false, "steps": []}',
+    )
+    service = AgentPlannerService(llm_service=llm)
+    tools = available_tools() + [
+        {
+            "name": "desktop",
+            "description": "Bounded local desktop controls.",
+            "actions": ["start", "search"],
+        }
+    ]
+    understanding = {
+        "intent": "desktop",
+        "requires_tool": True,
+        "action": "start",
+        "desktop_operation": "open_app",
+        "desktop_target": "notepad",
+    }
+
+    result = service.create_plan(
+        user_message="Open Notepad",
+        understanding=understanding,
+        history=[],
+        available_tools=tools,
+    )
+
+    assert result.requires_tool is True
+    assert result.tool == "desktop"
+    assert result.action == "start"
+    assert result.data["desktop_operation"] == "open_app"
+    assert result.data["desktop_target"] == "notepad"
+    assert llm.received_user_input is None
+
+
+def test_agent_planner_preserves_explicit_recipient_email_without_llm():
+    llm = FakeLLMService(
+        response='{"requires_tool": false, "steps": []}',
+    )
+    service = AgentPlannerService(llm_service=llm)
+    tools = available_tools() + [
+        {
+            "name": "email",
+            "description": "Send email.",
+            "actions": ["send"],
+        }
+    ]
+    user_message = (
+        "Send a test email to sarosh548548@gmail.com.\n\n"
+        "Subject: NOVA Live Email Test 2026-10-21\n\n"
+        "Body: This is a test email from NOVA to verify Gmail integration and delivery."
+    )
+    understanding = {
+        "intent": "email",
+        "requires_tool": True,
+        "email_action": "send",
+        "action": "send",
+        "recipient_reference": None,
+        "to": "sarosh548548@gmail.com",
+        "subject": "NOVA Live Email Test 2026-10-21",
+        "body": "This is a test email from NOVA to verify Gmail integration and delivery.",
+    }
+
+    assert service._has_explicit_action_request(user_message) is True
+
+    result = service.create_plan(
+        user_message=user_message,
+        understanding=understanding,
+        history=[],
+        available_tools=tools,
+    )
+
+    assert result.requires_tool is True
+    assert result.tool == "email"
+    assert result.action == "send"
+    assert result.data["to"] == "sarosh548548@gmail.com"
+    assert result.data["subject"] == "NOVA Live Email Test 2026-10-21"
+    assert result.data["body"] == (
+        "This is a test email from NOVA to verify Gmail integration and delivery."
+    )
+    assert llm.received_user_input is None

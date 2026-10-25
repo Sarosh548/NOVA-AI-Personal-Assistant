@@ -19,6 +19,10 @@ class ConfirmationResponse(BaseModel):
     resolved_at: datetime | None
 
 
+class EmailRecipientUpdateRequest(BaseModel):
+    recipient_email: str
+
+
 class ConfirmationExecutionResponse(BaseModel):
     confirmation: ConfirmationResponse
     success: bool

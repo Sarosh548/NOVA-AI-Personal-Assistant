@@ -686,3 +686,47 @@ def test_approve_and_claim_expired_confirmation_marks_it_expired(
 
     finally:
         test_engine.dispose()
+
+
+def test_send_is_confirmation_only_for_pending_email_send():
+    from services.confirmation_service import ConfirmationService
+
+    service = ConfirmationService()
+    assert service.parse_response("send") is None
+    assert service.parse_response("send", tool="task", action="delete") is None
+    assert service.parse_response("send", tool="email", action="send") == "approve"
+    assert service.parse_response("send it", tool="email", action="send") == "approve"
+
+
+def test_confirmation_parser_accepts_natural_affirmations_and_rejects_reversals():
+    from services.confirmation_service import ConfirmationService
+
+    service = ConfirmationService()
+    for message in (
+        "Confirm",
+        "Confirm.",
+        "Yes.",
+        "Yes, confirm.",
+        "Yes, confirm. I want to delete every task.",
+        "Confirm delete task 219; delete task 218",
+        "Haan, confirm kar do",
+        "Ji haan, kar dein",
+    ):
+        assert service.parse_response(
+            message,
+            tool="task",
+            action="delete",
+        ) == "approve", message
+
+    for message in (
+        "No.",
+        "No, don't delete them.",
+        "Cancel",
+        "No, cancel the deletion.",
+        "Yes, do not delete them.",
+    ):
+        assert service.parse_response(
+            message,
+            tool="task",
+            action="delete",
+        ) == "reject", message

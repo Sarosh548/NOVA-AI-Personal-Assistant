@@ -14,6 +14,7 @@ from api.dependencies import CurrentUserId
 from api.schemas.confirmation import (
     ConfirmationExecutionResponse,
     ConfirmationResponse,
+    EmailRecipientUpdateRequest,
 )
 from services.confirmation_execution_service import (
     ConfirmationExecutionService,
@@ -36,7 +37,10 @@ def get_confirmation_service() -> ConfirmationService:
 def get_confirmation_execution_service() -> (
     ConfirmationExecutionService
 ):
-    return ConfirmationExecutionService()
+    return __import__(
+        "agent.graph",
+        fromlist=["confirmation_execution_service"],
+    ).confirmation_execution_service
 
 
 def _confirmation_response(
@@ -75,6 +79,50 @@ def get_pending_confirmations(
         )
         for confirmation in confirmations
     ]
+
+
+@router.patch(
+    "/{confirmation_id}/recipient",
+    response_model=ConfirmationResponse,
+)
+def update_email_confirmation_recipient(
+    confirmation_id: int,
+    payload: EmailRecipientUpdateRequest,
+    current_user_id: CurrentUserId,
+    confirmation_service: Annotated[
+        ConfirmationService,
+        Depends(get_confirmation_service),
+    ],
+) -> ConfirmationResponse:
+    try:
+        updated = confirmation_service.update_pending_email_recipient(
+            user_id=current_user_id,
+            confirmation_id=confirmation_id,
+            recipient_email=payload.recipient_email,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Confirmation not found.",
+        )
+
+    if (
+        updated.get("status") != "pending"
+        or str(updated.get("tool") or "").strip().lower() != "email"
+        or str(updated.get("action") or "").strip().lower() != "send"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a pending email-send confirmation can be edited.",
+        )
+
+    return _confirmation_response(updated)
 
 
 @router.post(

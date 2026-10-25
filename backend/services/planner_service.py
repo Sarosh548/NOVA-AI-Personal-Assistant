@@ -551,6 +551,64 @@ class PlannerService:
 
         normalized = dict(data)
 
+        if tool == "desktop":
+            operation = str(normalized.get("desktop_operation") or "").strip().lower()
+            target_value = normalized.get("desktop_target")
+            target = str(target_value).strip() if target_value is not None else ""
+            query_value = normalized.get("desktop_query")
+            query = str(query_value).strip() if query_value is not None else ""
+            supported_operations = {
+                "open_app", "open_url", "search_web", "open_folder", "open_file",
+                "find_files", "inspect_screen", "click_ui", "type_ui", "press_key",
+                "play_youtube",
+            }
+            if operation not in supported_operations:
+                return normalized, f"Desktop step '{step_id}' uses an unsupported operation."
+            if action == "search":
+                if operation != "find_files" or not 2 <= len(query) <= 120 or "/" in query or "\\\\" in query:
+                    return normalized, f"Desktop file-search step '{step_id}' has an invalid operation or query."
+                normalized["desktop_query"] = query
+                normalized["desktop_operation"] = operation
+                return normalized, None
+            if action != "start":
+                return normalized, f"Desktop step '{step_id}' must use the start or search action."
+            if operation != "inspect_screen" and not target:
+                return normalized, f"Desktop step '{step_id}' requires a target."
+            maximum_target = {
+                "open_app": 80,
+                "open_url": 2048,
+                "search_web": 500,
+                "open_folder": 80,
+                "open_file": 180,
+                "inspect_screen": 160,
+                "click_ui": 160,
+                "type_ui": 160,
+                "press_key": 32,
+                "play_youtube": 180,
+            }.get(operation, 0)
+            if len(target) > maximum_target or any(ord(char) < 32 for char in target):
+                return normalized, f"Desktop step '{step_id}' has a target outside the allowed size or character rules."
+            if operation == "play_youtube":
+                if target.casefold() in {
+                    "song", "songs", "music", "a song", "any song", "something",
+                    "anything", "whatever", "that song", "this song", "my favorite song",
+                    "my favourite song", "kuch", "koi song", "koi gana", "gaana", "gana", "गाना", "गाने", "गीत", "कोई गाना", "कोई गीत",
+                }:
+                    return normalized, f"Desktop step '{step_id}' needs a specific YouTube title."
+                if len(target) < 2:
+                    return normalized, f"Desktop step '{step_id}' needs a specific YouTube title."
+            if operation == "type_ui" and (not query or len(query) > 2000):
+                return normalized, f"Desktop type step '{step_id}' needs 1–2000 characters of text."
+            if operation in {"click_ui", "press_key"} and len(query) > 160:
+                return normalized, f"Desktop UI step '{step_id}' has an invalid window hint."
+            if operation == "open_url" and not target.lower().startswith(("http://", "https://")):
+                return normalized, f"Desktop URL step '{step_id}' must use HTTP(S)."
+            normalized["desktop_operation"] = operation
+            normalized["desktop_target"] = target or None
+            if query_value is not None:
+                normalized["desktop_query"] = query
+            return normalized, None
+
         if tool != "web":
             return normalized, None
 
@@ -592,6 +650,7 @@ class PlannerService:
             "general",
             "news",
             "finance",
+            "weather",
         }:
             return (
                 normalized,

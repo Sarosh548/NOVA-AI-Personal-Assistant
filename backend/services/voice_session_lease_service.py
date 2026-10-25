@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import math
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -38,6 +38,7 @@ class VoiceSessionLeaseService:
         *,
         db_engine: Any | None = None,
         lease_seconds: int | None = None,
+        heartbeat_grace_seconds: int | None = None,
     ):
         self.engine = (
             db_engine
@@ -45,21 +46,33 @@ class VoiceSessionLeaseService:
             else default_engine
         )
 
-        configured = (
-            get_voice_settings()
-            if lease_seconds is None
-            else None
-        )
+        configured = get_voice_settings()
 
         self.lease_seconds = int(
             lease_seconds
             if lease_seconds is not None
             else configured.voice_session_lease_duration_seconds
         )
+        default_grace = min(
+            self.lease_seconds,
+            max(
+                15,
+                configured.voice_session_lease_heartbeat_interval_seconds * 3,
+            ),
+        )
+        self.heartbeat_grace_seconds = int(
+            heartbeat_grace_seconds
+            if heartbeat_grace_seconds is not None
+            else default_grace
+        )
 
         if self.lease_seconds < 1:
             raise ValueError(
                 "lease_seconds must be at least 1."
+            )
+        if self.heartbeat_grace_seconds < 1:
+            raise ValueError(
+                "heartbeat_grace_seconds must be at least 1."
             )
 
     @staticmethod
@@ -183,9 +196,12 @@ class VoiceSessionLeaseService:
                 "heartbeat_at": reference_now,
                 "updated_at": reference_now,
             },
-            where=(
-                VoiceSessionLease.lease_until
-                <= reference_now
+            where=or_(
+                VoiceSessionLease.lease_until <= reference_now,
+                VoiceSessionLease.heartbeat_at
+                <= reference_now - timedelta(
+                    seconds=self.heartbeat_grace_seconds
+                ),
             ),
         ).returning(
             VoiceSessionLease.lease_until,

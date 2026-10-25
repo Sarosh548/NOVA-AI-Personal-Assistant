@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from agent.graph import (
     memory_node,
     permission_node,
@@ -476,3 +478,156 @@ def test_understanding_node_handles_missing_history(
         fake_service.received_history
         == []
     )
+
+def test_permission_node_snapshots_exact_pending_task_ids_before_confirmation(monkeypatch):
+    import agent.graph as graph
+
+    selected = [
+        {"id": 219, "title": "Nova test B", "priority": "high", "status": "pending", "due_at": None},
+        {"id": 218, "title": "Nova test B", "priority": "medium", "status": "pending", "due_at": None},
+        {"id": 217, "title": "Nova Test A Basic", "priority": "low", "status": "pending", "due_at": None},
+        {"id": 216, "title": "named Nova test", "priority": "medium", "status": "pending", "due_at": None},
+        {"id": 215, "title": "lower test a basic", "priority": "medium", "status": "pending", "due_at": None},
+        {"id": 214, "title": 'with the exact title "lower test a basic', "priority": "medium", "status": "pending", "due_at": None},
+    ]
+
+    class FakeTaskService:
+        def __init__(self):
+            self.requested_status = None
+
+        def get_tasks(self, *, user_id, status=None):
+            self.requested_status = status
+            return [task for task in selected if status is None or task["status"] == status]
+
+    class FakeToolRouter:
+        def __init__(self):
+            self.task_service = FakeTaskService()
+
+    class FakePermissionService:
+        def check(self, **kwargs):
+            return SimpleNamespace(
+                allowed=False,
+                requires_confirmation=True,
+                reason="Task deletion requires explicit confirmation.",
+            )
+
+    class FakeConfirmationService:
+        def __init__(self):
+            self.created = []
+
+        def create_confirmation(self, **kwargs):
+            self.created.append(kwargs)
+            return 901
+
+    router = FakeToolRouter()
+    confirmations = FakeConfirmationService()
+    monkeypatch.setattr(graph, "tool_router", router)
+    monkeypatch.setattr(graph, "permission_service", FakePermissionService())
+    monkeypatch.setattr(graph, "confirmation_service", confirmations)
+
+    state = {
+        "user_id": "test-user",
+        "conversation_id": 394,
+        "user_requested": True,
+        "plan": {
+            "requires_tool": True,
+            "tool": "task",
+            "action": "delete",
+            "data": {
+                "intent": "task",
+                "task_action": "delete",
+                "task_reference": None,
+                "bulk_task_delete": True,
+                "task_status_filter": "pending",
+            },
+            "steps": [],
+        },
+    }
+
+    result = graph.permission_node(state)
+
+    assert result["confirmation"]["status"] == "pending"
+    assert router.task_service.requested_status == "pending"
+    assert len(confirmations.created) == 1
+
+    saved = confirmations.created[0]
+    assert "expires_in_seconds" not in saved
+    assert saved["data"]["task_ids"] == [219, 218, 217, 216, 215, 214]
+    assert [task["title"] for task in saved["data"]["task_snapshot"]] == [
+        task["title"] for task in selected
+    ]
+    assert "6 task(s)" in saved["reason"]
+    assert '#219 "Nova test B"' in saved["reason"]
+    assert '#214 "with the exact title "lower test a basic"' in saved["reason"]
+
+def test_permission_node_exposes_email_draft_preview_without_mutating_saved_confirmation(monkeypatch):
+    import agent.graph as graph
+
+    class FakeNotificationService:
+        def resolve_self_email_destination(self, *, user_id):
+            assert user_id == "test-user"
+            return "owner@example.com"
+
+    class FakeToolRouter:
+        notification_service = FakeNotificationService()
+
+    class FakePermissionService:
+        def check(self, **kwargs):
+            assert kwargs["tool"] == "email"
+            assert kwargs["action"] == "send"
+            return SimpleNamespace(
+                allowed=False,
+                requires_confirmation=True,
+                reason="External email requires explicit confirmation.",
+            )
+
+    class FakeConfirmationService:
+        def __init__(self):
+            self.created = []
+
+        def create_confirmation(self, **kwargs):
+            self.created.append(kwargs)
+            return 902
+
+    confirmations = FakeConfirmationService()
+    monkeypatch.setattr(graph, "tool_router", FakeToolRouter())
+    monkeypatch.setattr(graph, "permission_service", FakePermissionService())
+    monkeypatch.setattr(graph, "confirmation_service", confirmations)
+
+    email_data = {
+        "intent": "email",
+        "email_action": "send",
+        "recipient_reference": "self",
+        "to": None,
+        "cc": ["copy@example.com"],
+        "bcc": None,
+        "subject": "Project update",
+        "body": "The project is on track.",
+    }
+    result = graph.permission_node({
+        "user_id": "test-user",
+        "conversation_id": 395,
+        "execution_context": graph.ExecutionContext.interactive(),
+        "plan": {
+            "requires_tool": True,
+            "tool": "email",
+            "action": "send",
+            "data": email_data,
+            "steps": [],
+        },
+    })
+
+    assert result["permission"]["requires_confirmation"] is True
+    assert result["confirmation"]["status"] == "pending"
+    assert result["confirmation"]["preview"] == {
+        "kind": "email",
+        "to": "owner@example.com",
+        "cc": ["copy@example.com"],
+        "bcc": None,
+        "subject": "Project update",
+        "body": "The project is on track.",
+    }
+    assert len(confirmations.created) == 1
+    assert confirmations.created[0]["expires_in_seconds"] == graph.EMAIL_SEND_CONFIRMATION_TTL_SECONDS
+    assert "preview" not in confirmations.created[0]["data"]
+    assert confirmations.created[0]["data"]["body"] == "The project is on track."

@@ -6,6 +6,7 @@ import "./AccountMenu.css"
 type AccountMenuProps = {
   displayName: string
   onOpenSettings: () => void
+  onOpenControlCenter: () => void
   onSignOut: () => Promise<void>
 }
 
@@ -27,6 +28,7 @@ function initialsFor(name: string): string {
 export function AccountMenu({
   displayName,
   onOpenSettings,
+  onOpenControlCenter,
   onSignOut,
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false)
@@ -151,6 +153,19 @@ export function AccountMenu({
           >
             <Icon name="settings" size={16} />
             <span>Settings</span>
+          </button>
+
+          <button
+            className="account-menu-item"
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false)
+              onOpenControlCenter()
+            }}
+          >
+            <Icon name="sliders" size={16} />
+            <span>Control Center</span>
           </button>
 
           <button

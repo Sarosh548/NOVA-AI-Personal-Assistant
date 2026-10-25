@@ -342,3 +342,91 @@ def test_webhook_notification_sends_idempotency_header(
         == "nova:reminder:42"
     )
     assert captured[0]["timeout"] == 7
+
+
+def test_direct_email_uses_the_connected_users_mailbox_provider():
+    class FakeGoogleMailService:
+        def __init__(self):
+            self.sent = []
+
+        def get_connection(self, *, user_id):
+            return {"email": "owner@example.com"} if user_id == "user-001" else None
+
+        def send_email(self, **kwargs):
+            self.sent.append(kwargs)
+            return {"status": "sent", "from": "owner@example.com"}
+
+    google_mail = FakeGoogleMailService()
+    service = NotificationService(
+        channel=FakeNotificationChannel(),
+        google_mail_service=google_mail,
+    )
+
+    assert service.resolve_self_email_destination(user_id="user-001") == "owner@example.com"
+    assert service.send_email(
+        user_id="user-001",
+        to="recipient@example.com",
+        subject="NOVA test",
+        body="NOVA test successful.",
+    ) is True
+    assert google_mail.sent == [{
+        "user_id": "user-001",
+        "to": "recipient@example.com",
+        "subject": "NOVA test",
+        "body": "NOVA test successful.",
+        "cc": None,
+        "bcc": None,
+    }]
+
+
+def test_direct_email_result_preserves_gmail_provider_receipt():
+    class FakeGoogleMailService:
+        def get_connection(self, *, user_id):
+            return {"email": "owner@example.com"}
+
+        def send_email(self, **kwargs):
+            return {
+                "status": "sent",
+                "provider": "gmail",
+                "message_id": "gmail-message-id",
+                "sent_label_confirmed": True,
+                "from": "owner@example.com",
+                "to": [kwargs["to"]],
+                "subject": kwargs["subject"],
+            }
+
+    service = NotificationService(
+        channel=FakeNotificationChannel(),
+        google_mail_service=FakeGoogleMailService(),
+    )
+    result = service.send_email_result(
+        user_id="user-001",
+        to="recipient@example.com",
+        subject="NOVA test",
+        body="NOVA test successful.",
+    )
+    assert result is not None
+    assert result["message_id"] == "gmail-message-id"
+    assert result["sent_label_confirmed"] is True
+
+
+def test_direct_email_does_not_silently_fall_back_to_shared_smtp():
+    class NoConnectedGoogleMailService:
+        def get_connection(self, *, user_id):
+            return None
+
+        def send_email(self, **kwargs):
+            raise ValueError("Connect your Google/Gmail account before sending email.")
+
+    service = NotificationService(
+        channel=FakeNotificationChannel(),
+        google_mail_service=NoConnectedGoogleMailService(),
+    )
+
+    with pytest.raises(ValueError, match="Connect your Google/Gmail account"):
+        service.send_email(
+            user_id="user-001",
+            to="recipient@example.com",
+            subject="NOVA test",
+            body="NOVA test successful.",
+        )

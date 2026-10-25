@@ -170,9 +170,19 @@ def test_calendar_read_only_request_flows_through_full_graph(
         captured["permission"]["data"]["calendar_action"]
         == "list"
     )
+    timezone = graph.ZoneInfo("Asia/Karachi")
+    now = graph.datetime.now(timezone)
+    tomorrow = (now + graph.timedelta(days=1)).date()
+    expected_time_min = graph.datetime(
+        tomorrow.year,
+        tomorrow.month,
+        tomorrow.day,
+        tzinfo=timezone,
+    ).isoformat()
+
     assert (
         captured["permission"]["data"]["time_min"]
-        == "2026-09-21T00:00:00+05:00"
+        == expected_time_min
     )
 
     assert captured["tool"]["intent"] == "calendar"
@@ -180,7 +190,7 @@ def test_calendar_read_only_request_flows_through_full_graph(
     assert captured["tool"]["data"]["calendar_action"] == "list"
     assert (
         captured["tool"]["data"]["time_min"]
-        == "2026-09-21T00:00:00+05:00"
+        == expected_time_min
     )
 
     assert result["tool_result"]["success"] is True
@@ -272,7 +282,7 @@ def test_calendar_create_invitation_requires_confirmation_and_approval_executes_
     monkeypatch.setattr(
         graph.confirmation_service,
         "parse_response",
-        lambda message: (
+        lambda message, **_kwargs: (
             "approve"
             if message.strip().lower() == "approve"
             else None

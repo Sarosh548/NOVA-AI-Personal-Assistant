@@ -279,6 +279,15 @@ class _FakeExecutionService:
 
 
 class _FakeLLMService:
+    def generate_companion_response(
+        self,
+        *,
+        message,
+        history,
+        memory_context,
+    ):
+        return "NOVA response"
+
     def extract_memory(self, message):
         return None
 
@@ -301,7 +310,7 @@ def test_conversation_execution_service_propagates_response_delta_callback():
 
     result = service.execute_message(
         user_id="user-001",
-        message="Hello NOVA",
+        message="Create a task for NOVA",
         conversation_id=42,
         on_response_delta=callback,
     )

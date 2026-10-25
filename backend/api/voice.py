@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from uuid import uuid4
 
 from fastapi import (
     APIRouter,
@@ -53,8 +54,8 @@ from services.tts_runtime_service import (
 from services.token_service import (
     TokenService,
 )
-from services.elevenlabs_tts_adapter import (
-    ElevenLabsTTSAdapter,
+from services.voice_tts_adapter_router import (
+    VoiceTTSAdapterRouter,
 )
 from services.tts_adapter import (
     TTSAudioFormat,
@@ -93,6 +94,45 @@ router = APIRouter(
     prefix="/voice",
     tags=["voice"],
 )
+
+
+def _resolve_tts_language(
+    requested_language: str | None,
+    user_text: str,
+) -> str:
+    """Select an output TTS language from the explicit mode and transcript."""
+    if requested_language == "ur":
+        return "ur"
+    if requested_language == "hi":
+        return "hi"
+    if requested_language == "en-US":
+        return "en"
+
+    if any(
+        "\u0600" <= character <= "\u06ff"
+        or "\u0750" <= character <= "\u077f"
+        for character in user_text
+    ):
+        return "ur"
+
+    if any("\u0900" <= character <= "\u097f" for character in user_text):
+        return "hi"
+
+    roman_urdu_markers = {
+        "acha", "abhi", "aap", "batao", "btao", "bhi", "chahiye",
+        "hai", "hain", "haan", "han", "ho", "kaise", "kab", "kahan",
+        "kar", "kro", "kr", "krna", "kya", "kyun", "main", "mera",
+        "meri", "mujhe", "mja", "nahi", "nahin", "rha", "raha",
+        "rhi", "yr", "yaar", "tum",
+    }
+    normalized_words = {
+        word.strip(".,!?;:\"'()[]{}").lower()
+        for word in user_text.split()
+    }
+    if len(normalized_words & roman_urdu_markers) >= 2:
+        return "ur"
+
+    return "en"
 
 
 def _extract_bearer_token(
@@ -412,7 +452,7 @@ def _build_voice_tts_orchestrator(
     voice_settings,
 ) -> VoiceTTSOrchestrator:
     return VoiceTTSOrchestrator(
-        adapter=ElevenLabsTTSAdapter(),
+        adapter=VoiceTTSAdapterRouter(),
         settings=voice_settings,
     )
 
@@ -490,6 +530,8 @@ async def _run_tts_output(
     response_bridge: VoiceResponseStreamBridge,
     session_id: str,
     turn_id: str,
+    tts_start_task: asyncio.Task[str],
+    audio_format: TTSAudioFormat,
 ) -> None:
     timing_state: dict[str, float | bool | int | None] = {
         "first_text_sent_at": None,
@@ -501,15 +543,48 @@ async def _run_tts_output(
         "provider_final_observed": False,
     }
 
-    relay_task = asyncio.create_task(
-        _relay_tts_audio(
-            websocket=websocket,
-            orchestrator=orchestrator,
-            timing_state=timing_state,
-        )
-    )
+    relay_task: asyncio.Task[None] | None = None
+
+    provider_name = "elevenlabs"
 
     try:
+        stream_id = await tts_start_task
+        if stream_id.startswith("azure-speech:"):
+            provider_name = "azure_speech"
+
+        voice_metrics.record_provider_event(
+            provider=provider_name,
+            event="stream_started",
+        )
+        log_voice_event(
+            event="tts_stream_started",
+            session_id=session_id,
+            turn_id=turn_id,
+            provider=provider_name,
+        )
+
+        await _send_websocket_json(
+            websocket,
+            {
+                "type": "assistant.audio.started",
+                "stream_id": stream_id,
+                "turn_id": turn_id,
+                "audio_format": {
+                    "encoding": audio_format.encoding,
+                    "sample_rate_hz": audio_format.sample_rate_hz,
+                    "channels": audio_format.channels,
+                },
+            },
+        )
+
+        relay_task = asyncio.create_task(
+            _relay_tts_audio(
+                websocket=websocket,
+                orchestrator=orchestrator,
+                timing_state=timing_state,
+            )
+        )
+
         async for delta in response_bridge.text_deltas():
             if timing_state["first_text_sent_at"] is None:
                 timing_state["first_text_sent_at"] = time.monotonic()
@@ -544,6 +619,14 @@ async def _run_tts_output(
 
         await relay_task
     except asyncio.CancelledError:
+        if not tts_start_task.done():
+            tts_start_task.cancel()
+
+            try:
+                await tts_start_task
+            except asyncio.CancelledError:
+                pass
+
         try:
             await response_bridge.abort(
                 "Voice TTS response stream was cancelled."
@@ -551,23 +634,9 @@ async def _run_tts_output(
         except Exception:
             pass
         raise
-    except (
-        VoiceResponseStreamBridgeError,
-        VoiceTTSOrchestratorError,
-        TTSRuntimeError,
-        ValueError,
-    ) as exc:
-        if isinstance(
-            exc,
-            (
-                VoiceTTSOrchestratorError,
-                TTSRuntimeError,
-            ),
-        ):
-            voice_metrics.record_provider_event(
-                provider="elevenlabs",
-                event="stream_failed",
-            )
+    except VoiceResponseStreamBridgeError as exc:
+        if str(exc) == "Voice assistant response was superseded.":
+            return
 
         voice_metrics.record_error(
             stage="tts",
@@ -577,7 +646,7 @@ async def _run_tts_output(
             event="assistant_audio_failed",
             session_id=session_id,
             turn_id=turn_id,
-            provider="elevenlabs",
+            provider=provider_name,
             code="assistant_audio_failed",
             recoverable=True,
         )
@@ -593,19 +662,82 @@ async def _run_tts_output(
             await _send_error(
                 websocket,
                 code="assistant_audio_failed",
-                message=str(exc),
+                message=(
+                    "NOVA voice audio is temporarily unavailable. "
+                    "Continuing with local audio fallback."
+                ),
                 recoverable=True,
-                recovery_action="start_new_turn",
+                recovery_action="fallback_to_local_audio",
             )
-        except WebSocketDisconnect:
+        except Exception:
+            pass
+    except (
+        VoiceTTSOrchestratorError,
+        TTSRuntimeError,
+        ValueError,
+    ) as exc:
+        if isinstance(
+            exc,
+            (
+                VoiceTTSOrchestratorError,
+                TTSRuntimeError,
+            ),
+        ):
+            voice_metrics.record_provider_event(
+                provider=provider_name,
+                event="stream_failed",
+            )
+
+        voice_metrics.record_error(
+            stage="tts",
+            code="assistant_audio_failed",
+        )
+        log_voice_event(
+            event="assistant_audio_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            provider=provider_name,
+            code="assistant_audio_failed",
+            recoverable=True,
+        )
+
+        try:
+            await response_bridge.abort(
+                str(exc)
+            )
+        except Exception:
+            pass
+
+        try:
+            await _send_error(
+                websocket,
+                code="assistant_audio_failed",
+                message=(
+                    "NOVA voice audio is temporarily unavailable. "
+                    "Continuing with local audio fallback."
+                ),
+                recoverable=True,
+                recovery_action="fallback_to_local_audio",
+            )
+        except Exception:
+            # The websocket may have closed while the provider failure was
+            # being recovered. The browser already owns the fallback path.
             pass
     finally:
-        if not relay_task.done():
-            relay_task.cancel()
+        if relay_task is not None:
+            if not relay_task.done():
+                relay_task.cancel()
 
             try:
                 await relay_task
-            except asyncio.CancelledError:
+            except (
+                asyncio.CancelledError,
+                VoiceTTSOrchestratorError,
+                TTSRuntimeError,
+            ):
+                # Always retrieve a completed relay-task exception so a
+                # provider failure cannot surface as an unhandled background
+                # Task exception after the user-facing recovery path runs.
                 pass
 
         try:
@@ -712,7 +844,6 @@ async def _run_voice_assistant_execution(
         "user_id": user_id,
         "message": message,
         "conversation_id": session.conversation_id,
-        "execution_context": ExecutionContext.interactive(voice=True),
     }
 
     if response_bridge is not None:
@@ -728,7 +859,13 @@ async def _run_voice_assistant_execution(
                 )
                 first_delta_observed = True
 
-            response_bridge.on_delta(delta)
+            try:
+                response_bridge.on_delta(delta)
+            except VoiceResponseStreamBridgeError:
+                # A failed TTS stream must not cancel the authoritative LLM
+                # response. The final response will still be delivered to the
+                # client so it can use the local browser speech fallback.
+                return
 
         execution_kwargs["on_response_delta"] = on_response_delta
 
@@ -737,8 +874,17 @@ async def _run_voice_assistant_execution(
 
     try:
         response_payload = await asyncio.to_thread(
-            conversation_execution_service.execute_message,
-            **execution_kwargs,
+            conversation_execution_service.execute_voice_message,
+            on_response_delta=execution_kwargs.get("on_response_delta"),
+            is_execution_current=execution_kwargs.get("is_execution_current"),
+            **{
+                key: value
+                for key, value in execution_kwargs.items()
+                if key not in {
+                    "on_response_delta",
+                    "is_execution_current",
+                }
+            },
         )
     except asyncio.CancelledError:
         raise
@@ -907,6 +1053,17 @@ async def _run_voice_assistant_execution(
             response_payload["response"]
         )
 
+    # Memory enrichment is deliberately post-response work for voice. The
+    # user should hear NOVA's answer as soon as the authoritative response is
+    # ready; memory extraction can continue in the background.
+    asyncio.create_task(
+        asyncio.to_thread(
+            conversation_execution_service.extract_and_save_memory,
+            user_id=user_id,
+            user_message=message,
+        )
+    )
+
 
 def _get_voice_conversation_execution_service(
     websocket: WebSocket,
@@ -994,6 +1151,8 @@ async def _relay_transcripts(
         except asyncio.QueueFull:
             pass
 
+    barge_in_partial_count = 0
+
     try:
         async for event in orchestrator.events():
             await _send_websocket_json(websocket,
@@ -1002,11 +1161,22 @@ async def _relay_transcripts(
 
             event_type = event.get("type")
 
+            if event_type == "speech.started":
+                barge_in_partial_count = 0
+
+            if event_type == "transcript.final":
+                barge_in_partial_count = 0
+
+            if event_type == "transcript.partial":
+                partial_text = str(event.get("text") or "").strip()
+                if len(partial_text) >= 2:
+                    barge_in_partial_count += 1
+                else:
+                    barge_in_partial_count = 0
+
             if (
-                event_type in {
-                    "speech.started",
-                    "transcript.partial",
-                }
+                event_type == "transcript.partial"
+                and barge_in_partial_count >= 2
                 and barge_in_events is not None
                 and (
                     barge_in_enabled is None
@@ -1040,14 +1210,18 @@ async def _relay_transcripts(
                     queue_auto_commit()
                 )
 
-            if (
-                event_type
-                == "transcript.final"
-                and not final_delivery.done()
-            ):
-                final_delivery.set_result(
-                    None
-                )
+            if event_type == "transcript.final":
+                if (
+                    event.get("is_end_of_speech") is True
+                    and auto_turn_events is not None
+                ):
+                    await cancel_auto_commit()
+                    auto_commit_task = asyncio.create_task(
+                        queue_auto_commit()
+                    )
+
+                if not final_delivery.done():
+                    final_delivery.set_result(None)
 
     except asyncio.CancelledError:
         raise
@@ -1132,6 +1306,7 @@ async def voice_websocket(
     )
 
     current_turn_started_monotonic: float | None = None
+    current_turn_language: str | None = None
 
     voice_rate_limit_service = RateLimitService()
     voice_session_lease_service = VoiceSessionLeaseService(
@@ -1722,6 +1897,74 @@ async def voice_websocket(
                     )
                     continue
 
+                if control.type == "assistant.interrupt":
+                    response_turn_id = assistant_turn_id
+
+                    if (
+                        response_turn_id is None
+                        or control.turn_id != response_turn_id
+                    ):
+                        continue
+
+                    previous_tts_task = tts_task
+                    previous_execution_task = assistant_execution_task
+                    previous_response_bridge = assistant_response_bridge
+                    had_active_audio = (
+                        previous_tts_task is not None
+                        and not previous_tts_task.done()
+                    )
+                    had_active_response = (
+                        (
+                            previous_tts_task is not None
+                            and not previous_tts_task.done()
+                        )
+                        or (
+                            previous_execution_task is not None
+                            and not previous_execution_task.done()
+                        )
+                        or previous_response_bridge is not None
+                    )
+
+                    if not had_active_response:
+                        continue
+
+                    tts_task = None
+                    assistant_execution_task = None
+                    assistant_response_bridge = None
+                    assistant_turn_id = None
+                    assistant_response_generation = None
+                    session_service.invalidate_response(session)
+
+                    await _cancel_voice_response(
+                        assistant_execution_task=previous_execution_task,
+                        tts_task=previous_tts_task,
+                        response_bridge=previous_response_bridge,
+                    )
+
+                    log_voice_event(
+                        event="assistant_response_interrupted",
+                        session_id=session.session_id,
+                        turn_id=response_turn_id,
+                    )
+
+                    await _send_websocket_json(
+                        websocket,
+                        {
+                            "type": "assistant.response.cancelled",
+                            "turn_id": response_turn_id,
+                        },
+                    )
+
+                    if had_active_audio:
+                        await _send_websocket_json(
+                            websocket,
+                            {
+                                "type": "assistant.audio.cancelled",
+                            },
+                        )
+
+                    continue
+
                 if (
                     control.audio_format is not None
                     and control.type != "turn.start"
@@ -1871,6 +2114,7 @@ async def voice_websocket(
                             except asyncio.QueueEmpty:
                                 break
 
+                        current_turn_language = control.language
                         event = session_service.start_turn(
                             session=session,
                             turn_id=control.turn_id,
@@ -1889,6 +2133,7 @@ async def voice_websocket(
                                     session_id=session.session_id,
                                     turn_id=event["turn_id"],
                                     audio_format=audio_format,
+                                    language=current_turn_language,
                                 )
                             )
                         except (
@@ -2096,116 +2341,55 @@ async def voice_websocket(
                                 voice_id is not None
                                 and voice_id.strip()
                             ):
-                                try:
-                                    if tts_task is not None:
-                                        tts_task.cancel()
+                                audio_format = (
+                                    _tts_audio_format_from_settings(
+                                        voice_settings
+                                    )
+                                )
 
-                                        try:
-                                            await tts_task
-                                        except asyncio.CancelledError:
-                                            pass
-
-                                    audio_format = (
-                                        _tts_audio_format_from_settings(
+                                assistant_response_bridge = (
+                                    VoiceResponseStreamBridge(
+                                        loop=(
+                                            asyncio.get_running_loop()
+                                        ),
+                                        max_queue_items=(
                                             voice_settings
-                                        )
+                                            .voice_response_delta_queue_max_items
+                                        ),
+                                        enqueue_timeout_seconds=(
+                                            voice_settings
+                                            .voice_response_delta_enqueue_timeout_seconds
+                                        ),
                                     )
+                                )
 
-                                    stream_id = (
-                                        await tts_orchestrator.start_turn(
-                                            user_id=context.user.id,
-                                            session_id=session.session_id,
-                                            turn_id=turn_id,
-                                            voice=voice_id,
-                                            audio_format=audio_format,
-                                        )
-                                    )
-
-                                    voice_metrics.record_provider_event(
-                                        provider="elevenlabs",
-                                        event="stream_started",
-                                    )
-                                    log_voice_event(
-                                        event="tts_stream_started",
+                                tts_start_task = asyncio.create_task(
+                                    tts_orchestrator.start_turn(
+                                        user_id=context.user.id,
                                         session_id=session.session_id,
                                         turn_id=turn_id,
-                                        provider="elevenlabs",
+                                        voice=voice_id,
+                                        audio_format=audio_format,
+                                        language=_resolve_tts_language(
+                                            current_turn_language,
+                                            final_event.text,
+                                        ),
                                     )
+                                )
 
-                                    await _send_websocket_json(websocket,
-                                        {
-                                            "type": "assistant.audio.started",
-                                            "stream_id": stream_id,
-                                            "turn_id": turn_id,
-                                            "audio_format": {
-                                                "encoding": (
-                                                    audio_format.encoding
-                                                ),
-                                                "sample_rate_hz": (
-                                                    audio_format.sample_rate_hz
-                                                ),
-                                                "channels": (
-                                                    audio_format.channels
-                                                ),
-                                            },
-                                        }
-                                    )
-
-                                    assistant_response_bridge = (
-                                        VoiceResponseStreamBridge(
-                                            loop=(
-                                                asyncio.get_running_loop()
-                                            ),
-                                            max_queue_items=(
-                                                voice_settings
-                                                .voice_response_delta_queue_max_items
-                                            ),
-                                            enqueue_timeout_seconds=(
-                                                voice_settings
-                                                .voice_response_delta_enqueue_timeout_seconds
-                                            ),
-                                        )
-                                    )
-
-                                    tts_task = asyncio.create_task(
-                                        _run_tts_output(
-                                            websocket=websocket,
-                                            orchestrator=tts_orchestrator,
-                                            response_bridge=(
-                                                assistant_response_bridge
-                                            ),
-                                            session_id=session.session_id,
-                                            turn_id=turn_id,
-                                        )
-                                    )
-                                except (
-                                    VoiceTTSOrchestratorError,
-                                    TTSRuntimeError,
-                                    ValueError,
-                                ) as exc:
-                                    assistant_response_bridge = None
-
-                                    voice_metrics.record_provider_event(
-                                        provider="elevenlabs",
-                                        event="stream_failed",
-                                    )
-                                    voice_metrics.record_error(
-                                        stage="tts",
-                                        code="assistant_audio_start_failed",
-                                    )
-                                    log_voice_event(
-                                        event="tts_stream_start_failed",
+                                tts_task = asyncio.create_task(
+                                    _run_tts_output(
+                                        websocket=websocket,
+                                        orchestrator=tts_orchestrator,
+                                        response_bridge=(
+                                            assistant_response_bridge
+                                        ),
                                         session_id=session.session_id,
                                         turn_id=turn_id,
-                                        provider="elevenlabs",
-                                        code="assistant_audio_start_failed",
+                                        tts_start_task=tts_start_task,
+                                        audio_format=audio_format,
                                     )
-
-                                    await _send_error(
-                                        websocket,
-                                        code="assistant_audio_start_failed",
-                                        message=str(exc),
-                                    )
+                                )
 
                         assistant_execution_task = (
                             asyncio.create_task(
@@ -2656,3 +2840,204 @@ async def voice_websocket(
             session_service.close_session(
                 session
             )
+
+
+@router.websocket("/dictation/ws")
+async def voice_dictation_websocket(
+    websocket: WebSocket,
+) -> None:
+    """Stream microphone audio to STT and return transcript text only."""
+    _validate_origin(websocket)
+    await websocket.accept()
+
+    context = None
+    stt_orchestrator: VoiceSTTOrchestrator | None = None
+    transcript_task: asyncio.Task[None] | None = None
+    session_id = f"dictation-{uuid4().hex}"
+    turn_id = uuid4().hex
+    voice_settings = get_voice_settings()
+    requested_language = websocket.query_params.get("language")
+    dictation_language = (
+        requested_language
+        if requested_language in {"en-US", "ur", "hi", "multi"}
+        else None
+    )
+
+    try:
+        header_token = _extract_bearer_token(websocket)
+        if header_token is not None:
+            try:
+                context = _resolve_authenticated_context(header_token)
+            except Exception:
+                await _send_error(
+                    websocket,
+                    code="authentication_required",
+                    message="Authentication required.",
+                )
+                await websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION
+                )
+                return
+        else:
+            context = await _authenticate_after_connect(
+                websocket,
+                voice_settings,
+            )
+            if context is None:
+                return
+
+        rate_limit_decision = _check_voice_turn_rate_limit(
+            user_id=str(context.user.id),
+            rate_limit_service=RateLimitService(),
+            rate_limit_settings=get_rate_limit_settings(),
+        )
+        if (
+            rate_limit_decision is not None
+            and not rate_limit_decision.allowed
+        ):
+            await _send_error(
+                websocket,
+                code="voice_rate_limit_exceeded",
+                message="Voice dictation rate limit exceeded. Please wait and try again.",
+                recoverable=True,
+                recovery_action="retry_after_reset",
+                retry_after_seconds=rate_limit_decision.reset_after_seconds,
+            )
+            await websocket.close(code=1008)
+            return
+
+        stt_orchestrator = _build_voice_stt_orchestrator(
+            voice_settings
+        )
+        await stt_orchestrator.start_turn(
+            user_id=str(context.user.id),
+            session_id=session_id,
+            turn_id=turn_id,
+            audio_format=STTAudioFormat(
+                encoding="pcm_s16le",
+                sample_rate_hz=16_000,
+                channels=1,
+            ),
+            language=dictation_language,
+        )
+
+        await _send_websocket_json(
+            websocket,
+            {
+                "type": "dictation.ready",
+                "turn_id": turn_id,
+            },
+        )
+
+        async def relay_transcripts() -> None:
+            assert stt_orchestrator is not None
+            async for event in stt_orchestrator.events():
+                if event.get("type") in {
+                    "transcript.partial",
+                    "transcript.final",
+                    "speech.started",
+                }:
+                    await _send_websocket_json(
+                        websocket,
+                        {
+                            "type": "dictation.transcript",
+                            "event": event,
+                        },
+                    )
+
+        transcript_task = asyncio.create_task(relay_transcripts())
+
+        while True:
+            incoming = await websocket.receive()
+            if incoming.get("type") == "websocket.disconnect":
+                break
+
+            audio_frame = incoming.get("bytes")
+            if audio_frame is not None:
+                await stt_orchestrator.send_audio(audio_frame)
+                continue
+
+            text_data = incoming.get("text")
+            if not text_data:
+                continue
+
+            try:
+                control = json.loads(text_data)
+            except json.JSONDecodeError:
+                await _send_error(
+                    websocket,
+                    code="invalid_dictation_message",
+                    message="Invalid dictation control message.",
+                    recoverable=True,
+                )
+                continue
+
+            if not isinstance(control, dict):
+                continue
+
+            if control.get("type") == "dictation.cancel":
+                break
+
+            if control.get("type") != "dictation.stop":
+                continue
+
+            final_event = await stt_orchestrator.finish_turn()
+            final_text = final_event.text.strip()
+            if final_text:
+                await _send_websocket_json(
+                    websocket,
+                    {
+                        "type": "dictation.final",
+                        "turn_id": turn_id,
+                        "text": final_text,
+                    },
+                )
+            else:
+                await _send_error(
+                    websocket,
+                    code="empty_transcript",
+                    message="I couldn't hear any words. Try speaking a little closer to the microphone.",
+                    recoverable=True,
+                )
+            break
+
+    except WebSocketDisconnect:
+        pass
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log_voice_event(
+            event="dictation_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            provider="deepgram",
+        )
+        try:
+            await _send_error(
+                websocket,
+                code="dictation_unavailable",
+                message="NOVA could not transcribe audio. Check the microphone and speech service, then try again.",
+                recoverable=True,
+                recovery_action="retry_dictation",
+            )
+        except Exception:
+            pass
+    finally:
+        if transcript_task is not None:
+            if not transcript_task.done():
+                transcript_task.cancel()
+            try:
+                await transcript_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if stt_orchestrator is not None:
+            try:
+                await stt_orchestrator.close_session()
+            except Exception:
+                pass
+
+        try:
+            await websocket.close()
+        except Exception:
+            pass

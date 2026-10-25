@@ -118,6 +118,19 @@ class FailingTTSStream(FakeTTSStream):
         raise self.error
 
 
+class FailingFinishTTSStream(FakeTTSStream):
+    def __init__(
+        self,
+        *,
+        error: Exception,
+    ) -> None:
+        super().__init__()
+        self.error = error
+
+    async def finish(self) -> None:
+        raise self.error
+
+
 class FakeTTSAdapter(TTSAdapter):
     def __init__(
         self,
@@ -326,6 +339,63 @@ async def test_runtime_logs_provider_event_pump_exception(
     assert record.exc_info is not None
     assert str(record.exc_info[1]) == (
         "missing_permissions"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_provider_finish_exception(
+    settings: VoiceSettings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(
+        "ERROR",
+        logger="nova.tts",
+    )
+
+    provider_error = TTSAdapterError(
+        "Azure Speech synthesis failed (HTTP 503)."
+    )
+    stream = FailingFinishTTSStream(
+        error=provider_error,
+    )
+    runtime = TTSRuntimeService(
+        FakeTTSAdapter(stream),
+        settings,
+    )
+
+    await runtime.start_turn(
+        make_request()
+    )
+
+    with pytest.raises(
+        TTSRuntimeError,
+        match="Failed to finish the TTS stream",
+    ):
+        await runtime.finish_turn(
+            session_id="session-1",
+            turn_id="turn-1",
+        )
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "nova.tts"
+        and record.getMessage()
+        == "TTS provider finish failed"
+    ]
+    assert records
+
+    record = records[-1]
+    assert record.nova_context == {
+        "event": "tts_provider_finish_failed",
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "provider": "FailingFinishTTSStream",
+        "error_type": "TTSAdapterError",
+    }
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == (
+        "Azure Speech synthesis failed (HTTP 503)."
     )
 
 

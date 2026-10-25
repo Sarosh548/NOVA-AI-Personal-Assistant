@@ -109,6 +109,7 @@ class RiskPolicyService:
         "pay",
         "purchase",
         "publish",
+        "delete",
         "wipe",
         "delete_all",
         "execute_command",
@@ -242,14 +243,10 @@ class RiskPolicyService:
             )
 
         if (
-            normalized_tool
-            in self.COMMUNICATION_TOOLS
-            and data_keys
-            & self.EXTERNAL_TARGET_KEYS
+            normalized_tool in self.COMMUNICATION_TOOLS
+            and self._has_external_target(normalized_data)
         ):
-            flags.append(
-                "external_communication"
-            )
+            flags.append("external_communication")
 
         if (
             normalized_tool == "calendar"
@@ -288,10 +285,11 @@ class RiskPolicyService:
             )
 
         if (
-            normalized_action
-            in self.STATE_CHANGING_ACTIONS
-            or normalized_tool
-            in self.COMMUNICATION_TOOLS
+            normalized_action in self.STATE_CHANGING_ACTIONS
+            or (
+                normalized_tool in self.COMMUNICATION_TOOLS
+                and normalized_action not in self.READ_ONLY_ACTIONS
+            )
         ):
             return RiskAssessment(
                 level=RiskLevel.MEDIUM.value,
@@ -310,6 +308,30 @@ class RiskPolicyService:
                 "under the current NOVA safety policy."
             ),
         )
+
+    def _has_external_target(self, value: Any) -> bool:
+        """Return true only when a communication target is actually populated."""
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized_key = self._normalize(str(key))
+                if normalized_key in self.EXTERNAL_TARGET_KEYS:
+                    if isinstance(item, str) and item.strip():
+                        return True
+                    if isinstance(item, (list, tuple)) and any(
+                        str(candidate).strip()
+                        for candidate in item
+                        if candidate is not None
+                    ):
+                        return True
+                    if isinstance(item, dict) and bool(item):
+                        return True
+                    if item is not None and not isinstance(item, (str, list, tuple, dict)):
+                        return True
+                if self._has_external_target(item):
+                    return True
+        elif isinstance(value, (list, tuple)):
+            return any(self._has_external_target(item) for item in value)
+        return False
 
     def _collect_keys(
         self,

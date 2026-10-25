@@ -255,10 +255,10 @@ class VoiceSettings(BaseSettings):
         le=2,
     )
 
-    # Wait briefly after Deepgram signals an utterance boundary so a user
-    # can naturally continue speaking without losing the same voice turn.
+    # Keep the hands-free response boundary responsive while leaving a
+    # small window for a natural continuation.
     voice_auto_turn_commit_grace_seconds: float = Field(
-        default=1.0,
+        default=0.45,
         gt=0,
         le=5,
     )
@@ -422,19 +422,18 @@ class STTProviderSettings(BaseSettings):
 
     deepgram_interim_results: bool = True
 
-    # 700 ms limits accidental early turn cuts while remaining responsive.
-    # Keep this environment-tunable; later latency/segmentation telemetry
-    # should drive any further tuning.
+    # 500 ms is a responsive conversational endpoint while still leaving
+    # room for normal mid-thought pauses.
     deepgram_endpointing_ms: int = Field(
-        default=700,
+        default=500,
         ge=50,
         le=5000,
     )
 
-    # Give natural mid-thought pauses enough room before treating them as
-    # the end of a realtime voice turn.
+    # UtteranceEnd remains the secondary boundary signal when endpointing is
+    # not enough to finalize the current speech segment.
     deepgram_utterance_end_ms: int = Field(
-        default=2000,
+        default=1000,
         ge=1000,
         le=5000,
     )
@@ -524,6 +523,39 @@ class TTSProviderSettings(BaseSettings):
         default=None,
         min_length=1,
     )
+
+    # Optional Urdu-Pakistan fallback/provider. Keep credentials in the
+    # process environment; never persist them in source or frontend config.
+    azure_speech_key: str | None = Field(
+        default=None,
+        min_length=1,
+    )
+
+    azure_speech_region: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+    )
+
+    azure_speech_urdu_voice: str = Field(
+        default="ur-PK-UzmaNeural",
+        min_length=1,
+        max_length=128,
+    )
+
+    # Urdu can use the original Pakistani voice or a configured Hindi HD
+    # voice for clearer South Asian pronunciation when the Urdu voices fail.
+    azure_speech_urdu_rate: Literal["-30%", "-25%", "-20%", "-15%", "-10%", "-5%", "0%", "5%"] = "-20%"
+
+    # Hindi is a separate selectable voice route, not a replacement for Urdu.
+    azure_speech_hindi_voice: str = Field(
+        default="hi-IN-Priya:MAI-Voice-2",
+        min_length=1,
+        max_length=128,
+    )
+
+    # The faster default avoids the overly slow delivery reported in testing.
+    azure_speech_hindi_rate: Literal["-10%", "-5%", "0%", "5%"] = "0%"
 
     elevenlabs_voice_id: str | None = Field(
         default=None,
@@ -700,13 +732,13 @@ class LLMSettings(BaseSettings):
     """
 
     llm_request_timeout_seconds: float = Field(
-        default=20.0,
+        default=10.0,
         gt=0,
         le=120,
     )
 
     llm_max_retries: int = Field(
-        default=2,
+        default=0,
         ge=0,
         le=5,
     )

@@ -90,6 +90,14 @@ export function Icon({ name, size = 20 }: IconProps) {
           <path d="M19 13.2v-2.4l-2-.6a6.4 6.4 0 00-.8-1.8l1-1.8-1.7-1.7-1.8 1a6.4 6.4 0 00-1.8-.8l-.6-2h-2.4l-.6 2a6.4 6.4 0 00-1.8.8l-1.8-1L4.1 6.6l1 1.8a6.4 6.4 0 00-.8 1.8l-2 .6v2.4l2 .6c.2.7.4 1.2.8 1.8l-1 1.8 1.7 1.7 1.8-1c.6.4 1.2.7 1.8.8l.6 2h2.4l.6-2a6.4 6.4 0 001.8-.8l1.8 1 1.7-1.7-1-1.8c.4-.6.7-1.2-.8-1.8l2-.6z" />
         </svg>
       )
+    case "sliders":
+      return (
+        <svg {...common}>
+          <path d="M4 7h8M16 7h4M4 17h4M12 17h8" />
+          <circle cx="14" cy="7" r="2" />
+          <circle cx="10" cy="17" r="2" />
+        </svg>
+      )
     case "plus":
       return (
         <svg {...common}>

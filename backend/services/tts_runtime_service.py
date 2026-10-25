@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -55,6 +56,8 @@ class TTSRuntimeService:
             else get_voice_settings()
         )
         self._turns: dict[str, _RuntimeTurn] = {}
+        self._provider_retry_after_monotonic = 0.0
+        self._provider_retry_cooldown_seconds = 60.0
 
     async def start_turn(
         self,
@@ -65,11 +68,20 @@ class TTSRuntimeService:
                 "A realtime TTS turn is already active for this session."
             )
 
+        if time.monotonic() < self._provider_retry_after_monotonic:
+            raise TTSRuntimeError(
+                "The TTS provider is temporarily unavailable for this voice session."
+            )
+
         try:
             stream = await self.adapter.start_stream(
                 request
             )
         except Exception as exc:
+            self._provider_retry_after_monotonic = (
+                time.monotonic()
+                + self._provider_retry_cooldown_seconds
+            )
             raise TTSRuntimeError(
                 "Failed to start the TTS stream."
             ) from exc
@@ -179,6 +191,20 @@ class TTSRuntimeService:
         try:
             await turn.stream.finish()
         except Exception as exc:
+            logging.getLogger(
+                "nova.tts"
+            ).exception(
+                "TTS provider finish failed",
+                extra={
+                    "nova_context": {
+                        "event": "tts_provider_finish_failed",
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "provider": type(turn.stream).__name__,
+                        "error_type": type(exc).__name__,
+                    }
+                },
+            )
             await self._cancel_and_cleanup(
                 session_id,
                 turn_id,
@@ -334,6 +360,10 @@ class TTSRuntimeService:
             raise
         except Exception as exc:
             pump_failed = True
+            self._provider_retry_after_monotonic = (
+                time.monotonic()
+                + self._provider_retry_cooldown_seconds
+            )
 
             logging.getLogger(
                 "nova.tts"

@@ -22,6 +22,18 @@ VALID_PRIORITIES = {
 }
 
 
+def _sanitize_task_title(title: str) -> str:
+    """Remove an appended natural-language due-date instruction from a title."""
+    cleaned = " ".join(str(title or "").split())
+    trailing_instruction_patterns = (
+        r"\s+(?:(?:ko|koi)\s+)?due\s+date\s+(?:mat\s+lagana|na\s+lagana)(?:\s+hai)?\.?$",
+        r"\s+(?:do\s+not|don't|dont|never)\s+(?:set|add|assign)\s+(?:a\s+)?due\s+date(?:\s+to\s+(?:this\s+task|it))?\.?$",
+    )
+    for pattern in trailing_instruction_patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).rstrip()
+    return cleaned
+
+
 class TaskService:
 
     def _utc_now_naive(self) -> datetime:
@@ -71,11 +83,19 @@ class TaskService:
         due_at: datetime | None = None,
     ) -> int:
 
-        cleaned_title = title.strip()
+        cleaned_title = _sanitize_task_title(title)
 
         if not cleaned_title:
             raise ValueError(
                 "Task title cannot be empty."
+            )
+
+        # Never silently truncate user-authored task titles. If a title
+        # cannot fit the database's 300-character column, fail explicitly
+        # so callers cannot report success for a different saved title.
+        if len(cleaned_title) > 300:
+            raise ValueError(
+                "Task title cannot exceed 300 characters."
             )
 
         if priority not in VALID_PRIORITIES:
@@ -99,7 +119,7 @@ class TaskService:
 
         task = Task(
             user_id=user_id,
-            title=cleaned_title[:300],
+            title=cleaned_title,
             description=(
                 description.strip()
                 if description
@@ -596,3 +616,80 @@ class TaskService:
             session.commit()
 
             return True
+    def delete_tasks(
+        self,
+        task_ids: list[int],
+        user_id: str,
+        expected_status: str | None = None,
+    ) -> list[dict]:
+        """
+        Delete an exact, previously confirmed set of task IDs atomically.
+
+        When expected_status is provided, every task must still have that
+        status. If any task is missing, belongs to another user, or changed
+        status after confirmation, abort before deleting any task.
+        """
+        if not isinstance(task_ids, (list, tuple)) or not task_ids:
+            raise ValueError("At least one task ID is required for bulk deletion.")
+
+        if expected_status is not None and expected_status not in VALID_STATUSES:
+            raise ValueError("Invalid task status.")
+
+        normalized_ids: list[int] = []
+        for raw_id in task_ids:
+            if isinstance(raw_id, bool):
+                raise ValueError("Task IDs must be positive integers.")
+            try:
+                task_id = int(raw_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Task IDs must be positive integers.") from exc
+            if task_id <= 0:
+                raise ValueError("Task IDs must be positive integers.")
+            if task_id not in normalized_ids:
+                normalized_ids.append(task_id)
+
+        with Session(engine) as session:
+            tasks = session.scalars(
+                select(Task).where(
+                    Task.user_id == user_id,
+                    Task.id.in_(normalized_ids),
+                )
+            ).all()
+
+            tasks_by_id = {task.id: task for task in tasks}
+            missing_ids = [
+                task_id for task_id in normalized_ids
+                if task_id not in tasks_by_id
+            ]
+            if missing_ids:
+                raise ValueError(
+                    f"Tasks no longer available for deletion: {missing_ids}."
+                )
+
+            if expected_status is not None:
+                changed_ids = [
+                    task_id
+                    for task_id in normalized_ids
+                    if tasks_by_id[task_id].status != expected_status
+                ]
+                if changed_ids:
+                    raise ValueError(
+                        "Some selected tasks no longer match the confirmed "
+                        f"status '{expected_status}': {changed_ids}. "
+                        "No tasks were deleted."
+                    )
+
+            deleted = [
+                {
+                    "id": task_id,
+                    "title": tasks_by_id[task_id].title,
+                    "status": tasks_by_id[task_id].status,
+                    "priority": tasks_by_id[task_id].priority,
+                }
+                for task_id in normalized_ids
+            ]
+            for task_id in normalized_ids:
+                session.delete(tasks_by_id[task_id])
+            session.commit()
+
+            return deleted

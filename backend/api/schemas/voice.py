@@ -30,6 +30,7 @@ class VoiceControlMessage(BaseModel):
         "turn.start",
         "turn.commit",
         "turn.cancel",
+        "assistant.interrupt",
         "session.ping",
         "session.close",
     ]
@@ -38,6 +39,9 @@ class VoiceControlMessage(BaseModel):
     access_token: str | None = None
     audio_format: VoiceAudioFormat | None = None
     interrupt_response: bool = True
+    # Per-turn speech recognition language. "multi" enables Deepgram's
+    # multilingual mode; Urdu and Hindi have independent language routes.
+    language: Literal["en-US", "ur", "hi", "multi"] | None = None
 
     model_config = ConfigDict(
         extra="forbid",

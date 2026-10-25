@@ -4,29 +4,34 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import time
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     JSONResponse,
     Response,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from security import configure_api_security
-from config import get_settings
 
-from agent.graph import build_graph
+from agent.graph import (
+    build_graph,
+    confirmation_service as graph_confirmation_service,
+    knowledge_service as graph_knowledge_service,
+)
 from api.activity import (
     router as activity_router,
 )
 from api.auth import router as auth_router
-from api import auth as auth_module
 from api.conversations import (
     router as conversations_router,
 )
 from api.calendar import (
     router as calendar_router,
+)
+from api.google_mail import (
+    router as google_mail_router,
 )
 from api.memories import (
     router as memories_router,
@@ -62,6 +67,15 @@ from api.confirmations import (
 from api.voice import (
     router as voice_router,
 )
+from api.realtime_voice import (
+    router as realtime_voice_router,
+)
+from api.gemini_live_voice import (
+    router as gemini_live_voice_router,
+)
+from api.livekit_voice import (
+    router as livekit_voice_router,
+)
 from services.autonomous_workflow_scheduler import (
     AutonomousWorkflowScheduler,
 )
@@ -76,12 +90,6 @@ from services.execution_context import (
 )
 from services.execution_service import (
     NOVAExecutionService,
-)
-from services.email_verification_service import (
-    EmailVerificationService,
-)
-from services.password_reset_service import (
-    PasswordResetService,
 )
 from services.idempotency_cleanup_scheduler import (
     IdempotencyCleanupScheduler,
@@ -237,6 +245,7 @@ app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(conversations_router)
 app.include_router(calendar_router)
+app.include_router(google_mail_router)
 app.include_router(memories_router)
 app.include_router(tasks_router)
 app.include_router(reminders_router)
@@ -252,6 +261,15 @@ app.include_router(
 )
 app.include_router(
     voice_router
+)
+app.include_router(
+    realtime_voice_router
+)
+app.include_router(
+    gemini_live_voice_router
+)
+app.include_router(
+    livekit_voice_router
 )
 
 llm_service = LLMService()
@@ -356,6 +374,8 @@ conversation_execution_service = ConversationExecutionService(
     execution_service=execution_service,
     llm_service=llm_service,
     memory_service=memory_service,
+    knowledge_service=graph_knowledge_service,
+    confirmation_service=graph_confirmation_service,
     context_max_messages=CONTEXT_MAX_MESSAGES,
     context_max_characters=CONTEXT_MAX_CHARACTERS,
 )
@@ -368,6 +388,12 @@ app.state.conversation_execution_service = (
 class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
+
+
+class RealtimeVoiceTurnLogRequest(BaseModel):
+    conversation_id: int = Field(gt=0)
+    user_text: str = Field(min_length=1, max_length=12000)
+    assistant_text: str = Field(min_length=1, max_length=20000)
 
 
 class NotificationPreferencesUpdateRequest(BaseModel):
@@ -513,6 +539,30 @@ async def request_id_middleware(
     return response
 
 
+def configure_runtime_notification_service(
+    *,
+    force: bool = False,
+) -> NotificationService:
+    """Ensure the shared execution graph has runtime-configured delivery providers.
+
+    FastAPI initializes providers during its lifespan, but the LiveKit voice
+    worker imports ``main`` without starting the FastAPI lifespan.  Voice actions
+    therefore need the same provider wiring before executing a confirmed email.
+    """
+    global notification_service
+
+    if force or getattr(notification_service, "google_mail_service", None) is None:
+        notification_service = build_notification_service(
+            destination_service=notification_destination_service,
+        )
+
+    # The graph and confirmation executor share this exact ToolRouter instance.
+    from agent import graph as agent_graph_module
+
+    agent_graph_module.tool_router.notification_service = notification_service
+    return notification_service
+
+
 async def startup_event():
     configure_api_logging()
 
@@ -525,35 +575,7 @@ async def startup_event():
     global proactive_activity_scheduler_task
     global notification_service
 
-    notification_service = (
-        build_notification_service(
-            destination_service=(
-                notification_destination_service
-            )
-        )
-    )
-
-    auth_module.email_verification_service = (
-        EmailVerificationService(
-            notification_service=notification_service,
-            secret_key=get_settings().auth_jwt_secret_key,
-        )
-    )
-    auth_module.password_reset_service = (
-        PasswordResetService(
-            notification_service=notification_service,
-            secret_key=get_settings().auth_jwt_secret_key,
-        )
-    )
-
-    # The agent graph and its confirmation executor share the same
-    # ToolRouter instance. Inject the runtime-configured provider so
-    # confirmed email actions use the exact startup configuration.
-    from agent import graph as agent_graph_module
-
-    agent_graph_module.tool_router.notification_service = (
-        notification_service
-    )
+    notification_service = configure_runtime_notification_service(force=True)
 
     reminder_scheduler.notification_service = (
         notification_service
@@ -824,6 +846,7 @@ def _execute_chat(
         message=request.message,
         conversation_id=request.conversation_id,
         execution_context=ExecutionContext.interactive(),
+        defer_memory_extraction=True,
     )
 
 
@@ -835,6 +858,7 @@ def chat(
         default=None,
         alias="Idempotency-Key",
     ),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     normalized_message = request.message.strip()
 
@@ -919,4 +943,64 @@ def chat(
         except Exception:
             pass
 
+    understanding = response_payload.get("understanding", {})
+    intent = str(understanding.get("intent") or "").strip().lower()
+
+    # Memory is an enhancement, not part of the critical /chat response path.
+    # Only queue it for non-executable conversational/planning turns so tool
+    # requests do not generate an extra Groq request after the action.
+    if (
+        background_tasks is not None
+        and understanding.get("requires_tool") is not True
+        and intent in {"chat", "question", "advice", "planning"}
+    ):
+        background_tasks.add_task(
+            conversation_execution_service.extract_and_save_memory,
+            user_id=current_user_id,
+            user_message=normalized_message,
+        )
+
     return response_payload
+
+
+@app.post("/voice/realtime/turns")
+def save_realtime_voice_turn(
+    request: RealtimeVoiceTurnLogRequest,
+    current_user_id: CurrentUserId,
+    background_tasks: BackgroundTasks,
+):
+    """Persist native Realtime speech turns to NOVA conversation history."""
+    user_text = request.user_text.strip()
+    assistant_text = request.assistant_text.strip()
+    if not user_text or not assistant_text:
+        raise HTTPException(
+            status_code=422,
+            detail="Both user and assistant transcripts are required.",
+        )
+
+    resolved_conversation_id = conversation_service.get_or_create_conversation(
+        user_id=current_user_id,
+        conversation_id=request.conversation_id,
+    )
+    conversation_service.save_message(
+        user_id=current_user_id,
+        conversation_id=resolved_conversation_id,
+        role="user",
+        content=user_text,
+    )
+    conversation_service.save_message(
+        user_id=current_user_id,
+        conversation_id=resolved_conversation_id,
+        role="assistant",
+        content=assistant_text,
+    )
+
+    background_tasks.add_task(
+        conversation_execution_service.extract_and_save_memory,
+        user_id=current_user_id,
+        user_message=user_text,
+    )
+    return {
+        "saved": True,
+        "conversation_id": resolved_conversation_id,
+    }
