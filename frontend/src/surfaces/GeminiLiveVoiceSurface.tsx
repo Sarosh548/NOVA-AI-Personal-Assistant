@@ -21,9 +21,12 @@ type GeminiTokenResponse = {
 }
 type ConversationCreated = { id: number }
 type ToolResult = Record<string, unknown>
-type ActiveTurn = {
+type VoiceTranscriptTurn = {
+  id: number
   userText: string
   assistantText: string
+}
+type ActiveTurn = VoiceTranscriptTurn & {
   responseDone: boolean
   toolUsed: boolean
   saveStarted: boolean
@@ -116,8 +119,11 @@ const PCM_WORKLET_SOURCE = [
   "registerProcessor('nova-gemini-pcm-processor', NovaGeminiPcmProcessor)",
 ].join("\n")
 
+let voiceTurnSequence = 0
+
 function newTurn(): ActiveTurn {
   return {
+    id: ++voiceTurnSequence,
     userText: "",
     assistantText: "",
     responseDone: false,
@@ -231,6 +237,7 @@ export function GeminiLiveVoiceSurface({
   const [connected, setConnected] = useState(false)
   const [transcript, setTranscript] = useState("")
   const [response, setResponse] = useState("")
+  const [turnHistory, setTurnHistory] = useState<VoiceTranscriptTurn[]>([])
   const [error, setError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
   const [microphonePermission, setMicrophonePermission] = useState<"unknown" | "granted" | "denied">("unknown")
@@ -251,6 +258,7 @@ export function GeminiLiveVoiceSurface({
   const workletUrlRef = useRef<string | null>(null)
   const conversationIdRef = useRef<number | null>(null)
   const activeTurnRef = useRef<ActiveTurn>(newTurn())
+  const completedTurnIdsRef = useRef<Set<number>>(new Set())
   const handledToolCallsRef = useRef<Set<string>>(new Set())
   const connectedRef = useRef(false)
   const connectingRef = useRef(false)
@@ -261,7 +269,7 @@ export function GeminiLiveVoiceSurface({
   useEffect(() => {
     const panel = transcriptPanelRef.current
     if (panel) panel.scrollTop = panel.scrollHeight
-  }, [transcript, response])
+  }, [transcript, response, turnHistory])
 
   const errorRef = useRef<string | null>(null)
   errorRef.current = error
@@ -540,6 +548,23 @@ export function GeminiLiveVoiceSurface({
         const turn = activeTurnRef.current
         turn.responseDone = true
         persistTurn()
+
+        // Retain completed exchanges. The next voice-start creates a new active
+        // turn, while prior user/assistant messages remain visible above the orb.
+        const archivedTurn = {
+          id: turn.id,
+          userText: turn.userText.trim(),
+          assistantText: turn.assistantText.trim(),
+        }
+        if (
+          !turn.cancelled
+          && (archivedTurn.userText || archivedTurn.assistantText)
+          && !completedTurnIdsRef.current.has(turn.id)
+        ) {
+          completedTurnIdsRef.current.add(turn.id)
+          setTurnHistory((current) => [...current, archivedTurn].slice(-40))
+        }
+
         if (playbackSourcesRef.current.size === 0) {
           setAudioState("idle")
           if (connectedRef.current) setState("ready")
@@ -899,10 +924,10 @@ export function GeminiLiveVoiceSurface({
         )}
       </header>
 
-      <main className="voice-main">
-        <section className="voice-stage" aria-label="NOVA Gemini Live voice session">
+      <main className="voice-main gemini-live-main">
+        <section className="voice-stage gemini-live-stage" aria-label="NOVA Gemini Live voice session">
           <button
-            className={"voice-orb voice-orb-" + state}
+            className={"voice-orb gemini-live-orb voice-orb-" + state}
             type="button"
             onClick={handleVoiceButton}
             disabled={state === "connecting"}
@@ -924,50 +949,68 @@ export function GeminiLiveVoiceSurface({
 
           <div
             ref={transcriptPanelRef}
-            className="voice-live-transcript"
+            className="voice-live-transcript gemini-live-transcript"
             aria-label="Live voice conversation"
             aria-live="polite"
             aria-relevant="additions text"
           >
-            {!transcript && !response && (
-              <p className="voice-transcript-placeholder">
-                {connected
-                  ? state === "listening"
-                    ? "I'm listening. Your words will appear here."
-                    : "Speak naturally — your conversation will appear here."
-                  : state === "connecting"
-                    ? "Connecting to NOVA voice…"
-                    : state === "disconnected"
-                      ? "Voice is disconnected. Reconnect to continue."
-                      : "Tap the orb to start a voice conversation."}
-              </p>
-            )}
-            {transcript && (
-              <div className="voice-turn-card user">
-                <div className="voice-turn-label">YOU</div>
-                <p>{transcript}</p>
-              </div>
-            )}
-            {response && (
-              <div className="voice-turn-card assistant">
-                <div className="voice-turn-label">
-                  <span>NOVA</span>
-                  {audioState !== "idle" && (
-                    <span className={"voice-audio-label " + audioState}>
-                      {audioState === "playing" ? "AUDIO LIVE" : "PREPARING AUDIO"}
-                    </span>
-                  )}
-                </div>
-                {audioState !== "idle" && (
-                  <div className={"voice-audio-status " + audioState} role="status">
-                    <span className="voice-audio-bars" aria-hidden="true">
-                      <i /><i /><i /><i /><i />
-                    </span>
-                    <span>{audioState === "playing" ? "NOVA is speaking" : "Preparing realtime response"}</span>
+            {turnHistory.map((turn) => (
+              <div className="voice-turn-group" key={turn.id}>
+                {turn.userText && (
+                  <div className="voice-turn-card user">
+                    <p>{turn.userText}</p>
                   </div>
                 )}
-                <p>{response}</p>
+                {turn.assistantText && (
+                  <div className="voice-turn-card assistant">
+                    <p>{turn.assistantText}</p>
+                  </div>
+                )}
               </div>
+            ))}
+
+            {!completedTurnIdsRef.current.has(activeTurnRef.current.id) && (
+              <>
+                {!transcript && !response && turnHistory.length === 0 && (
+                  <p className="voice-transcript-placeholder">
+                    {connected
+                      ? state === "listening"
+                        ? "I'm listening. Your words will appear here."
+                        : "Speak naturally — your conversation will appear here."
+                      : state === "connecting"
+                        ? "Connecting to NOVA voice…"
+                        : state === "disconnected"
+                          ? "Voice is disconnected. Reconnect to continue."
+                          : "Tap the orb to start a voice conversation."}
+                  </p>
+                )}
+                {transcript && (
+                  <div className="voice-turn-card user current">
+                    <p>{transcript}</p>
+                  </div>
+                )}
+                {response && (
+                  <div className="voice-turn-card assistant current">
+                    <div className="voice-turn-label">
+                      <span>NOVA</span>
+                      {audioState !== "idle" && (
+                        <span className={"voice-audio-label " + audioState}>
+                          {audioState === "playing" ? "AUDIO LIVE" : "PREPARING AUDIO"}
+                        </span>
+                      )}
+                    </div>
+                    {audioState !== "idle" && (
+                      <div className={"voice-audio-status " + audioState} role="status">
+                        <span className="voice-audio-bars" aria-hidden="true">
+                          <i /><i /><i /><i /><i />
+                        </span>
+                        <span>{audioState === "playing" ? "NOVA is speaking" : "Preparing realtime response"}</span>
+                      </div>
+                    )}
+                    <p>{response}</p>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
