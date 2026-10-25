@@ -138,6 +138,22 @@ class WebSearchService:
             )
 
     @staticmethod
+    def _is_live_sports_query(query: str) -> bool:
+        normalized = " ".join(str(query or "").lower().split())
+        has_sport = re.search(
+            r"\b(?:cricket|football|soccer|sports?|match|matches|score|scores|"
+            r"scorecard|fixture|fixtures|wickets?|innings|goals?|premier league|"
+            r"world cup|t20|odi)\b",
+            normalized,
+        ) is not None
+        has_freshness = re.search(
+            r"\b(?:live|right now|today|today's|current|currently|latest|"
+            r"now|aaj|abhi|filhal|real time|realtime)\b",
+            normalized,
+        ) is not None
+        return has_sport and has_freshness
+
+    @staticmethod
     def _normalize_query(query: str) -> str:
         normalized = " ".join(
             str(query).strip().split()
@@ -279,7 +295,11 @@ class WebSearchService:
         try:
             with urlopen(
                 request,
-                timeout=self.timeout_seconds,
+                timeout=(
+                    min(self.timeout_seconds, 5)
+                    if self._is_live_sports_query(payload.get("query", ""))
+                    else self.timeout_seconds
+                ),
             ) as response:
                 raw_body = response.read()
         except HTTPError as exc:
@@ -346,7 +366,11 @@ class WebSearchService:
         try:
             with urlopen(
                 request,
-                timeout=self.timeout_seconds,
+                timeout=(
+                    min(self.timeout_seconds, 4)
+                    if self._is_live_sports_query(query)
+                    else self.timeout_seconds
+                ),
             ) as response:
                 raw_body = response.read()
         except HTTPError as exc:
@@ -624,7 +648,10 @@ class WebSearchService:
             # searches may fetch several vendor-specific feeds in one turn.
             with urlopen(
                 request,
-                timeout=min(self.timeout_seconds, 5),
+                timeout=min(
+                    self.timeout_seconds,
+                    4 if self._is_live_sports_query(query) else 5,
+                ),
             ) as response:
                 raw_body = response.read()
         except HTTPError as exc:
@@ -1158,6 +1185,7 @@ class WebSearchService:
         normalized_max_results = self._normalize_max_results(max_results)
         normalized_topic = self._normalize_topic(topic)
         normalized_time_range = self._normalize_time_range(time_range)
+        is_live_sports_query = self._is_live_sports_query(normalized_query)
 
         if normalized_topic == "weather":
             return self._search_weather(normalized_query)
@@ -1181,7 +1209,12 @@ class WebSearchService:
             found = response.get("results", [])
             return found if isinstance(found, list) else []
 
-        def normalize_results(raw_results: list[dict], *, rss: bool = False) -> list[dict]:
+        def normalize_results(
+            raw_results: list[dict],
+            *,
+            rss: bool = False,
+            resolve_rss_urls: bool = True,
+        ) -> list[dict]:
             normalized: list[dict] = []
             for raw in raw_results:
                 if not isinstance(raw, dict):
@@ -1215,7 +1248,11 @@ class WebSearchService:
                     published = self._publication_date_from_content(content)
                 published_text = str(published).strip()[:100] if published else None
                 if rss and "news.google.com" in urlparse(url).netloc.lower():
-                    resolved = self._resolve_google_news_article_url(url)
+                    resolved = (
+                        self._resolve_google_news_article_url(url)
+                        if resolve_rss_urls
+                        else None
+                    )
                     if resolved:
                         url = resolved
                     else:
@@ -1438,9 +1475,12 @@ class WebSearchService:
                     time_range=normalized_time_range,
                 )
             except Exception as exc:
-                if normalized_topic != "news":
+                if normalized_topic != "news" and not is_live_sports_query:
                     raise
-                logger.warning("SearXNG news search failed; trying Google News RSS: %s", type(exc).__name__)
+                logger.warning(
+                    "SearXNG search failed; trying Google News RSS fallback: %s",
+                    type(exc).__name__,
+                )
                 provider = "rss"
                 response = None
                 last_error: Exception | None = None
@@ -1466,6 +1506,46 @@ class WebSearchService:
 
         if not isinstance(raw_results, list):
             raise RuntimeError("Live web search provider returned invalid results.")
+
+        if not used_rss and not raw_results and is_live_sports_query:
+            # Search APIs sometimes return HTTP 200 with zero indexed results.
+            # Try the secondary provider once, then a keyless RSS fallback.
+            try:
+                response = self._request_searxng(
+                    query=normalized_query,
+                    topic="general",
+                    time_range=normalized_time_range,
+                )
+                raw_results = response.get("results", []) if isinstance(response, dict) else []
+            except Exception as exc:
+                logger.warning("Live-sports secondary search failed: %s", type(exc).__name__)
+                raw_results = []
+
+            if not raw_results:
+                last_sports_error: Exception | None = None
+                for retry_range in (normalized_time_range, None):
+                    try:
+                        rss_response = self._request_google_news_rss(
+                            query=normalized_query,
+                            time_range=retry_range,
+                        )
+                        raw_results = (
+                            rss_response.get("results", [])
+                            if isinstance(rss_response, dict)
+                            else []
+                        )
+                        if raw_results:
+                            provider = "rss"
+                            used_rss = True
+                            break
+                    except Exception as exc:
+                        last_sports_error = exc
+                        logger.warning(
+                            "Live-sports RSS fallback failed: %s",
+                            type(exc).__name__,
+                        )
+                if not raw_results and last_sports_error is not None:
+                    logger.warning("No fallback sources returned for live-sports query.")
 
         if used_rss and not raw_results:
             # A date-filtered RSS query can be too narrow; retry the same
@@ -1517,7 +1597,11 @@ class WebSearchService:
                     logger.warning("Unfiltered general-search fallback failed: %s", type(exc).__name__)
                     raw_results = []
 
-        normalized = normalize_results(raw_results, rss=used_rss)
+        normalized = normalize_results(
+            raw_results,
+            rss=used_rss,
+            resolve_rss_urls=not is_live_sports_query,
+        )
         if normalized_topic == "news" and is_ai_news:
             relevant = [item for item in normalized if self._matches_ai_news_query(item)]
             if not relevant and normalized_time_range is not None and not used_rss:
