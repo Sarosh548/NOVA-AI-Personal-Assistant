@@ -48,6 +48,63 @@ def test_production_does_not_default_to_container_loopback_searxng(monkeypatch):
     assert service.searxng_endpoint == ""
 
 
+def test_live_sports_freshness_filter_rejects_stale_undated_and_future_results():
+    now = datetime(2026, 10, 25, 17, 45, tzinfo=timezone.utc)
+    results = [
+        {
+            "title": "Old Pakistan vs England score",
+            "url": "https://example.com/old-score",
+            "published_date": (now - timedelta(hours=5)).isoformat(),
+        },
+        {
+            "title": "Recent Pakistan vs England score",
+            "url": "https://www.espncricinfo.com/live-score",
+            "published_date": (now - timedelta(minutes=12)).isoformat(),
+        },
+        {
+            "title": "Undated scorecard",
+            "url": "https://example.com/undated-score",
+            "content": "Pakistan vs England scorecard",
+        },
+        {
+            "title": "Future scorecard",
+            "url": "https://example.com/future-score",
+            "published_date": (now + timedelta(hours=1)).isoformat(),
+        },
+    ]
+
+    filtered = WebSearchService._filter_fresh_live_sports_results(results, now=now)
+
+    assert [item["title"] for item in filtered] == ["Recent Pakistan vs England score"]
+
+
+def test_live_sports_search_never_returns_a_stale_score_as_current(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    monkeypatch.setattr(
+        service,
+        "_request_tavily",
+        lambda _payload: {
+            "results": [
+                {
+                    "title": "Pakistan vs England live score: ENG 241/10",
+                    "url": "https://example.com/old-score",
+                    "content": "ENG 241/10 in 46.4 overs. Pakistan need 242.",
+                    "published_date": (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),
+                }
+            ]
+        },
+    )
+
+    results = service.search(
+        query="Pakistan vs England cricket live score today",
+        topic="general",
+        time_range="day",
+        max_results=5,
+    )
+
+    assert results == []
+
+
 def test_live_sports_result_ranking_prefers_scorecards_over_previews():
     results = [
         {
@@ -191,6 +248,7 @@ def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
 def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, tavily_mode):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
     rss_calls = []
+    now = datetime.now(timezone.utc)
 
     if tavily_mode == "unavailable":
         def tavily_failure(_payload):
@@ -215,13 +273,13 @@ def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, t
                     "title": "Pakistan vs England live score and match updates",
                     "url": "https://news.google.com/rss/articles/live-score",
                     "content": "Live match score update and scorecard.",
-                    "published_date": "2026-10-25T16:00:00Z",
+                    "published_date": (now - timedelta(minutes=4)).isoformat(),
                 },
                 {
                     "title": "Pakistan England scorecard",
                     "url": "https://example.com/scorecard",
                     "content": "Current cricket match scorecard with runs and wickets.",
-                    "published_date": "2026-10-25T15:59:00Z",
+                    "published_date": (now - timedelta(minutes=5)).isoformat(),
                 },
             ]
         }
