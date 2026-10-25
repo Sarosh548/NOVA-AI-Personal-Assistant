@@ -48,6 +48,207 @@ def test_production_does_not_default_to_container_loopback_searxng(monkeypatch):
     assert service.searxng_endpoint == ""
 
 
+def test_live_sports_result_ranking_prefers_scorecards_over_previews():
+    results = [
+        {
+            "title": "Pakistan vs England match preview and prediction",
+            "url": "https://www.espncricinfo.com/series/preview",
+            "content": "Preview, team lineup and match prediction before the game.",
+            "score": 0.8,
+            "published_date": "2026-10-25",
+        },
+        {
+            "title": "Pakistan vs England live scorecard, score and match updates",
+            "url": "https://www.cricbuzz.com/live-cricket-score/123",
+            "content": "Live cricket scorecard showing current runs, wickets and overs.",
+            "score": 0.7,
+            "published_date": "2026-10-25",
+        },
+        {
+            "title": "Pakistan and England sports news roundup",
+            "url": "https://example.com/roundup",
+            "content": "A general sports news roundup.",
+            "score": 0.9,
+            "published_date": "2026-10-25",
+        },
+    ]
+
+    ranked = WebSearchService._rank_live_sports_results(
+        "Pakistan vs England cricket live score today",
+        results,
+    )
+
+    assert ranked[0]["title"] == "Pakistan vs England live scorecard, score and match updates"
+    assert ranked[-1]["title"] == "Pakistan vs England match preview and prediction"
+
+
+def test_live_sports_ranking_prefers_newer_score_update_over_stale_scorecard():
+    now = datetime.now(timezone.utc)
+    stale_date = (now - timedelta(hours=5)).isoformat()
+    fresh_date = (now - timedelta(minutes=10)).isoformat()
+    results = [
+        {
+            "title": "Pakistan vs England live scorecard and match updates",
+            "url": "https://www.cricbuzz.com/live-cricket-score/stale",
+            "content": "Pakistan vs England cricket scorecard with current runs and wickets.",
+            "score": 1.0,
+            "published_date": stale_date,
+        },
+        {
+            "title": "Pakistan vs England live scorecard and match updates",
+            "url": "https://www.espncricinfo.com/live-cricket-score/fresh",
+            "content": "Pakistan vs England cricket scorecard with current runs and wickets.",
+            "score": 0.0,
+            "published_date": fresh_date,
+        },
+    ]
+
+    ranked = WebSearchService._rank_live_sports_results(
+        "Pakistan vs England cricket live score today",
+        results,
+    )
+
+    assert ranked[0]["url"].endswith("/fresh")
+
+
+def test_live_sports_provider_timeouts_are_bounded(monkeypatch):
+    service = WebSearchService(
+        api_key="tvly-test",
+        searxng_endpoint="https://searx.example/search",
+        timeout_seconds=10,
+    )
+    observed = []
+
+    class FakeRSSResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"<rss><channel></channel></rss>"
+
+    def fake_urlopen(request, timeout):
+        observed.append((request.full_url, timeout))
+        if "news.google.com" in request.full_url:
+            return FakeRSSResponse()
+        return FakeResponse({"results": []})
+
+    monkeypatch.setattr("services.web_search_service.urlopen", fake_urlopen)
+
+    query = "Pakistan vs England cricket live score today"
+    service._request_tavily({
+        "query": query,
+        "search_depth": "basic",
+        "topic": "general",
+        "max_results": 5,
+    })
+    service._request_searxng(query=query, topic="general", time_range="day")
+    service._request_google_news_rss(query=query, time_range="day")
+
+    assert [timeout for _url, timeout in observed] == [5, 4, 4]
+
+
+def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
+    service = WebSearchService(api_key="", searxng_endpoint="")
+
+    def fail_searxng(*, query, topic, time_range):
+        raise RuntimeError("SearXNG unavailable")
+
+    def rss_results(*, query, time_range):
+        return {
+            "results": [
+                {
+                    "title": "OpenAI announces a new AI model",
+                    "url": "https://news.google.com/rss/articles/CBMiFreshAINews",
+                    "content": "OpenAI announced a new AI model today.",
+                    "published_date": "2026-10-25T17:00:00Z",
+                }
+            ]
+        }
+
+    def unexpected_resolution(_url):
+        raise AssertionError("Fresh news should not wait on serial publisher URL resolution")
+
+    monkeypatch.setattr(service, "_request_searxng", fail_searxng)
+    monkeypatch.setattr(service, "_request_google_news_rss", rss_results)
+    monkeypatch.setattr(service, "_resolve_google_news_article_url", unexpected_resolution)
+
+    results = service.search(
+        query="latest AI news today",
+        topic="news",
+        time_range="day",
+        max_results=5,
+    )
+
+    assert len(results) == 1
+    assert results[0]["url"] == "https://news.google.com/rss/articles/CBMiFreshAINews"
+    assert "intermediary link" in results[0]["content"]
+
+
+@pytest.mark.parametrize("tavily_mode", ["unavailable", "empty"])
+def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, tavily_mode):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    rss_calls = []
+
+    if tavily_mode == "unavailable":
+        def tavily_failure(_payload):
+            raise RuntimeError("Tavily unavailable")
+        monkeypatch.setattr(service, "_request_tavily", tavily_failure)
+    else:
+        monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": []})
+
+    searx_calls = []
+
+    def empty_searxng(*, query, topic, time_range):
+        searx_calls.append((query, topic, time_range))
+        return {"results": []}
+
+    monkeypatch.setattr(service, "_request_searxng", empty_searxng)
+
+    def rss_results(*, query, time_range):
+        rss_calls.append((query, time_range))
+        return {
+            "results": [
+                {
+                    "title": "Pakistan vs England live score and match updates",
+                    "url": "https://news.google.com/rss/articles/live-score",
+                    "content": "Live match score update and scorecard.",
+                    "published_date": "2026-10-25T16:00:00Z",
+                },
+                {
+                    "title": "Pakistan England scorecard",
+                    "url": "https://example.com/scorecard",
+                    "content": "Current cricket match scorecard with runs and wickets.",
+                    "published_date": "2026-10-25T15:59:00Z",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(service, "_request_google_news_rss", rss_results)
+
+    def unexpected_article_resolution(_url):
+        raise AssertionError("Live-score search must not serially resolve RSS intermediary URLs")
+
+    monkeypatch.setattr(service, "_resolve_google_news_article_url", unexpected_article_resolution)
+
+    results = service.search(
+        query="Pakistan vs England cricket live score today",
+        topic="general",
+        time_range="day",
+        max_results=5,
+    )
+
+    assert results
+    assert rss_calls[0] == ("Pakistan vs England cricket live score today", "day")
+    assert results[0]["title"] == "Pakistan vs England live score and match updates"
+    assert searx_calls == [("Pakistan vs England cricket live score today", "general", "day")]
+    # Fast live-score mode avoids one serial network request per Google News URL.
+    assert "news.google.com" in results[0]["url"]
+    assert "intermediary link" in results[0]["content"]
+
+
 def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
     monkeypatch,
 ):

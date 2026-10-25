@@ -1143,6 +1143,52 @@ def test_force_fresh_web_research_routes_current_weather_to_weather_topic():
     assert result["requires_tool"] is True
 
 
+def test_force_fresh_web_research_routes_current_sports_scores_to_live_search():
+    service = make_service_without_llm()
+    messages = (
+        (
+            "Aaj Pakistan vs England ka match ho raha hai, kya score chal raha?",
+            "Pakistan vs England cricket live score today",
+        ),
+        (
+            "What is the score in Pak vs Eng right now?",
+            "Pakistan vs England cricket live score today",
+        ),
+        (
+            "Who is playing in the cricket match right now?",
+            "Who is playing in the cricket match right now?",
+        ),
+        (
+            "Show me the latest football score today",
+            "Show me the latest football score today",
+        ),
+        (
+            "Show me the England vs Pakistan football score today",
+            "Pakistan vs England football live score today",
+        ),
+    )
+
+    for message, expected_query in messages:
+        result = service._force_fresh_web_research(
+            message=message,
+            result={
+                "intent": "question",
+                "query": None,
+                "web_action": None,
+                "web_topic": None,
+                "web_time_range": None,
+                "requires_tool": False,
+            },
+        )
+
+        assert result["intent"] == "web"
+        assert result["web_action"] == "search"
+        assert result["web_topic"] == "general"
+        assert result["web_time_range"] == "day"
+        assert result["query"] == expected_query
+        assert result["requires_tool"] is True
+
+
 def test_analyze_routes_task_list_requests_deterministically_without_llm():
     service = make_service_without_llm()
 

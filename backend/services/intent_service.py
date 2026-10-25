@@ -484,6 +484,9 @@ Return the full schema with null for absent values:
             "currently",
             "today",
             "today's",
+            "aaj",
+            "abhi",
+            "filhal",
             "recent",
             "recently",
             "newest",
@@ -497,7 +500,11 @@ Return the full schema with null for absent values:
             "real time",
             "realtime",
             "right now",
+            "at the moment",
             "now",
+            "score",
+            "scores",
+            "scorecard",
         )
 
         has_fresh_marker = any(
@@ -564,6 +571,28 @@ Return the full schema with null for absent values:
             "research",
             "look up",
             "find ",
+            "score",
+            "scores",
+            "scorecard",
+            "match",
+            "matches",
+            "fixture",
+            "fixtures",
+            "cricket",
+            "football",
+            "soccer",
+            "sports",
+            "playing",
+            "wicket",
+            "wickets",
+            "runs",
+            "goal",
+            "goals",
+            "innings",
+            "tournament",
+            "league",
+            "points table",
+            "standings",
         )
 
         has_information_marker = any(
@@ -592,8 +621,42 @@ Return the full schema with null for absent values:
             )
         )
 
+        live_sports_terms = (
+            "cricket",
+            "football",
+            "soccer",
+            "sports",
+            "match",
+            "matches",
+            "score",
+            "scores",
+            "scorecard",
+            "fixture",
+            "fixtures",
+            "playing",
+            "wicket",
+            "wickets",
+            "innings",
+            "goals",
+            "goal",
+            "pakistan vs england",
+            "pak vs eng",
+            "pak vs england",
+            "eng vs pak",
+            "england vs pakistan",
+        )
+        has_live_sports_question = any(
+            term in normalized
+            for term in live_sports_terms
+        )
+
         if has_weather and has_weather_location:
             topic = "weather"
+        elif has_live_sports_question:
+            # Scorecards, fixtures, and live-match status are best searched as
+            # general web pages; a news-only search can return commentary but
+            # miss the actual scoreboard/scorecard.
+            topic = "general"
         elif "news" in normalized or "headline" in normalized:
             topic = "news"
         elif any(
@@ -635,23 +698,30 @@ Return the full schema with null for absent values:
             "web_time_range"
         )
 
-        if any(
-            marker in normalized
-            for marker in (
-                "today",
-                "today's",
-                "right now",
-                "now",
-                "live",
-                "realtime",
-                "real time",
-                "latest developments",
-                "latest development",
-                "recent developments",
-                "recent development",
-                "current developments",
-                "current development",
+        if (
+            any(
+                marker in normalized
+                for marker in (
+                    "today",
+                    "today's",
+                    "aaj",
+                    "abhi",
+                    "filhal",
+                    "right now",
+                    "at the moment",
+                    "now",
+                    "live",
+                    "realtime",
+                    "real time",
+                    "latest developments",
+                    "latest development",
+                    "recent developments",
+                    "recent development",
+                    "current developments",
+                    "current development",
+                )
             )
+            or has_live_sports_question
         ):
             time_range = "day"
         elif "this week" in normalized:
@@ -683,6 +753,47 @@ Return the full schema with null for absent values:
             normalized,
         ):
             query = "latest AI news"
+        elif has_live_sports_question:
+            # Use canonical team names for common cricket abbreviations, while
+            # preserving the user's exact utterance for less common teams/leagues.
+            team_aliases = (
+                (r"\b(?:pak|pakistan)\b", "Pakistan"),
+                (r"\b(?:eng|england)\b", "England"),
+                (r"\b(?:ind|india)\b", "India"),
+                (r"\b(?:aus|australia)\b", "Australia"),
+                (r"\b(?:nz|new zealand)\b", "New Zealand"),
+                (r"\b(?:bangladesh|ban)\b", "Bangladesh"),
+                (r"\b(?:sri lanka|sl)\b", "Sri Lanka"),
+                (r"\b(?:west indies|wi)\b", "West Indies"),
+                (r"\b(?:afghanistan|afg)\b", "Afghanistan"),
+            )
+            detected_teams = [
+                canonical for pattern, canonical in team_aliases
+                if re.search(pattern, normalized)
+            ]
+            if len(detected_teams) >= 2:
+                if any(term in normalized for term in ("football", "soccer", "premier league", "champions league")):
+                    sport_label = "football"
+                elif any(term in normalized for term in ("cricket", "wicket", "wickets", "innings", "odi", "t20", "test match")):
+                    sport_label = "cricket"
+                elif set(detected_teams).issubset({
+                    "Pakistan", "England", "India", "Australia", "New Zealand",
+                    "Bangladesh", "Sri Lanka", "West Indies", "Afghanistan",
+                }):
+                    sport_label = "cricket"
+                else:
+                    sport_label = "sports"
+                query = (
+                    f"{detected_teams[0]} vs {detected_teams[1]} "
+                    f"{sport_label} live score today"
+                )
+            else:
+                query = message.strip()
+                if not re.search(
+                    r"\b(?:live|score|scores|scorecard|today|aaj|abhi|right now|now)\b",
+                    normalized,
+                ):
+                    query = f"{query} live score today"
 
         result["intent"] = "web"
         result["web_action"] = "search"

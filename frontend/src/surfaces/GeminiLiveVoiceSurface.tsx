@@ -21,10 +21,19 @@ type GeminiTokenResponse = {
 }
 type ConversationCreated = { id: number }
 type ToolResult = Record<string, unknown>
+type VoiceSearchSource = {
+  title: string
+  url: string
+  snippet: string
+  publishedDate: string | null
+  host: string
+}
 type VoiceTranscriptTurn = {
   id: number
   userText: string
   assistantText: string
+  searchStatus: string | null
+  searchSources: VoiceSearchSource[]
 }
 type ActiveTurn = VoiceTranscriptTurn & {
   responseDone: boolean
@@ -126,6 +135,8 @@ function newTurn(): ActiveTurn {
     id: ++voiceTurnSequence,
     userText: "",
     assistantText: "",
+    searchStatus: null,
+    searchSources: [],
     responseDone: false,
     toolUsed: false,
     saveStarted: false,
@@ -225,10 +236,19 @@ function shouldRouteToNova(message: string): boolean {
   if (!normalized) return false
 
   if (/\b(?:https?:\/\/|www\.)/u.test(normalized)) return true
-  if (/\b(?:search|look up|research|google search|find out)\b/u.test(normalized)) return true
-  if (/\b(?:latest|recent|current|today(?:'s)?|news|headlines?|weather|forecast|exchange rates?|stock prices?)\b/u.test(normalized)) {
-    if (/\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|search|research|look up|latest|recent|current|news|weather|forecast|price|rate)\b/u.test(normalized)) return true
-  }
+  if (/\b(?:search|look up|research|google search|find out|browse the web)\b/u.test(normalized)) return true
+
+  const freshness = /\b(?:latest|recent|current(?:ly)?|today(?:'s)?|live|right now|at the moment|real time|realtime|now|aaj|abhi|filhal)\b/u.test(normalized)
+  const liveSubject = /\b(?:news|headlines?|weather|forecast|exchange rates?|stock prices?|score|scores|scorecard|match|matches|cricket|football|soccer|sports?|fixtures?|standings|playing|wickets?|innings|goals?)\b/u.test(normalized)
+  const informationRequest = /\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|check|search|research|look up|score|scores|kya|batao|btao|kitna|kitne|kaun|dikhao|chal raha|ho raha)\b/u.test(normalized)
+  if (freshness && liveSubject && informationRequest) return true
+
+  // Current-score questions often imply freshness without saying "live".
+  if (
+    liveSubject
+    && /\b(?:pak|pakistan|eng|england|india|ind|australia|aus|new zealand|nz|cricket|football|soccer|team|match)\b/u.test(normalized)
+    && /\b(?:score|scores|scorecard|who(?:'s| is) playing|kya score|score chal|match ho raha)\b/u.test(normalized)
+  ) return true
 
   const emailAction = /\b(?:send|compose|draft|read|search|check|open|reply|forward|delete|list|find)\b/u
   const emailTarget = /\b(?:email|e-mail|mail|gmail|inbox)\b/u
@@ -241,6 +261,87 @@ function shouldRouteToNova(message: string): boolean {
   const desktopAction = /\b(?:open|launch|start|visit|go to|navigate to|show|find|inspect|check|click|tap|type|press|play|turn on|turn off|increase|decrease|raise|lower|mute|unmute|set)\b/u
   const desktopTarget = /\b(?:notepad|calculator|file explorer|browser|website|web site|app|application|folder|file|desktop|screen|downloads|documents|youtube|google|chrome|edge|firefox|settings|volume|brightness|wifi|wi-fi|bluetooth|spotify|local disk|c drive|computer|pc)\b/u
   return desktopAction.test(normalized) && desktopTarget.test(normalized)
+}
+
+function isLiveSearchRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase()
+  if (!normalized) return false
+
+  const emailTarget = /\b(?:email|e-mail|mail|gmail|inbox)\b/u.test(normalized)
+  const explicitWebSearch = /\b(?:search|look up|research|google search|find out|browse the web|web search)\b/u.test(normalized)
+  if (explicitWebSearch && !emailTarget) return true
+
+  const freshness = /\b(?:latest|recent|current(?:ly)?|today(?:'s)?|live|right now|at the moment|real time|realtime|now|aaj|abhi|filhal)\b/u.test(normalized)
+  const liveSubject = /\b(?:news|headlines?|weather|forecast|prices?|rates?|stocks?|score|scores|scorecard|match|matches|cricket|football|soccer|sports?|fixtures?|standings|playing|wickets?|innings|goals?)\b/u.test(normalized)
+  const informationRequest = /\b(?:what|who|which|when|where|why|how|tell me|show me|give me|find|check|kya|batao|btao|kitna|kitne|kaun|dikhao|chal raha|ho raha)\b/u.test(normalized)
+  return liveSubject && informationRequest && (freshness || /\b(?:score|scores|scorecard)\b/u.test(normalized))
+}
+
+function extractVoiceSearchSources(value: unknown): VoiceSearchSource[] {
+  if (!value || typeof value !== "object") return []
+  const root = value as Record<string, unknown>
+  let candidates: unknown[] = Array.isArray(root.web_sources) ? root.web_sources : []
+
+  if (candidates.length === 0) {
+    const toolResult = root.tool_result
+    if (toolResult && typeof toolResult === "object") {
+      const toolPayload = (toolResult as Record<string, unknown>).result
+      if (toolPayload && typeof toolPayload === "object") {
+        const results = (toolPayload as Record<string, unknown>).results
+        if (Array.isArray(results)) candidates = results
+      }
+    }
+  }
+
+  const sources: VoiceSearchSource[] = []
+  const seen = new Set<string>()
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue
+    const item = candidate as Record<string, unknown>
+    const title = String(item.title ?? "").trim().slice(0, 180)
+    const url = String(item.url ?? item.link ?? "").trim()
+    const snippet = String(item.content ?? item.snippet ?? item.description ?? "").trim().slice(0, 420)
+    const published = String(item.published_date ?? item.publishedDate ?? "").trim().slice(0, 60)
+    if (!title || !url || seen.has(url)) continue
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") continue
+      seen.add(url)
+      sources.push({
+        title,
+        url: parsed.href,
+        snippet,
+        publishedDate: published || null,
+        host: parsed.hostname.replace(/^www\./u, ""),
+      })
+      if (sources.length >= 5) break
+    } catch {
+      // Provider output is untrusted; only render navigable HTTP(S) links.
+    }
+  }
+  return sources
+}
+
+function liveSearchStatusFromResult(result: unknown, sources: VoiceSearchSource[], failure?: string): string {
+  if (failure) return "Live search failed: " + failure.slice(0, 180)
+  if (sources.length > 0) {
+    return "Found " + sources.length + " search source" + (sources.length === 1 ? "" : "s")
+  }
+  if (result && typeof result === "object") {
+    const root = result as Record<string, unknown>
+    const toolResult = root.tool_result
+    if (toolResult && typeof toolResult === "object") {
+      const tool = toolResult as Record<string, unknown>
+      if (tool.success === false && typeof tool.error === "string") {
+        return "Live search failed: " + tool.error.slice(0, 180)
+      }
+      const payload = tool.result
+      if (payload && typeof payload === "object" && Array.isArray((payload as Record<string, unknown>).results)) {
+        return "No verified live sources were returned; I won't guess the current score."
+      }
+    }
+  }
+  return "No verified live sources were returned; I won't guess the current score."
 }
 
 export function GeminiLiveVoiceSurface({
@@ -261,6 +362,8 @@ export function GeminiLiveVoiceSurface({
   const [transcript, setTranscript] = useState("")
   const [response, setResponse] = useState("")
   const [turnHistory, setTurnHistory] = useState<VoiceTranscriptTurn[]>([])
+  const [activeSearchStatus, setActiveSearchStatus] = useState<string | null>(null)
+  const [activeSearchSources, setActiveSearchSources] = useState<VoiceSearchSource[]>([])
   const [error, setError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<"idle" | "preparing" | "playing">("idle")
   const [microphonePermission, setMicrophonePermission] = useState<"unknown" | "granted" | "denied">("unknown")
@@ -292,7 +395,7 @@ export function GeminiLiveVoiceSurface({
   useEffect(() => {
     const panel = transcriptPanelRef.current
     if (panel) panel.scrollTop = panel.scrollHeight
-  }, [transcript, response, turnHistory])
+  }, [transcript, response, turnHistory, activeSearchStatus, activeSearchSources])
 
   const errorRef = useRef<string | null>(null)
   errorRef.current = error
@@ -308,6 +411,33 @@ export function GeminiLiveVoiceSurface({
     playbackSourcesRef.current.clear()
     playbackEndTimeRef.current = 0
     setAudioState("idle")
+  }, [])
+
+  const startSearchProgress = useCallback((turn: ActiveTurn, query: string) => {
+    if (!isLiveSearchRequest(query)) return
+    turn.searchStatus = "Searching live sources…"
+    turn.searchSources = []
+    if (activeTurnRef.current.id === turn.id) {
+      setActiveSearchStatus(turn.searchStatus)
+      setActiveSearchSources([])
+    }
+  }, [])
+
+  const finishSearchProgress = useCallback((
+    turn: ActiveTurn,
+    query: string,
+    result: unknown,
+    failure?: string,
+  ) => {
+    if (!isLiveSearchRequest(query)) return
+    const sources = extractVoiceSearchSources(result)
+    const status = liveSearchStatusFromResult(result, sources, failure)
+    turn.searchStatus = status
+    turn.searchSources = sources
+    if (activeTurnRef.current.id === turn.id) {
+      setActiveSearchStatus(status)
+      setActiveSearchSources(sources)
+    }
   }, [])
 
   const releaseConnection = useCallback(() => {
@@ -431,15 +561,17 @@ export function GeminiLiveVoiceSurface({
       setAudioState("preparing")
 
       let output: Record<string, unknown>
+      let requestText = sourceUtterance
       try {
         const args = call.args && typeof call.args === "object"
           ? call.args as Record<string, unknown>
           : {}
         const modelRequest = typeof args.request === "string" ? args.request.trim() : ""
-        const requestText = sourceUtterance || modelRequest
+        requestText = sourceUtterance || modelRequest
         if (!requestText) {
           output = { error: "The NOVA request was empty. Ask the user to repeat it.", action_taken: false }
         } else {
+          startSearchProgress(turn, requestText)
           const conversationId = conversationIdRef.current
           if (!conversationId) throw new Error("The NOVA conversation is not ready.")
           const result = await apiRequestWithRefresh<ToolResult>("/chat", {
@@ -447,11 +579,14 @@ export function GeminiLiveVoiceSurface({
             headers: { "Idempotency-Key": toolCallIdempotencyKey(callId) },
             body: JSON.stringify({ message: requestText, conversation_id: conversationId }),
           })
+          finishSearchProgress(turn, requestText, result)
           output = boundedToolOutput(result)
         }
       } catch (toolError) {
+        const messageText = readableError(toolError, "NOVA could not complete the request.")
+        finishSearchProgress(turn, requestText, null, messageText)
         output = {
-          error: readableError(toolError, "NOVA could not complete the request."),
+          error: messageText,
           action_taken: false,
         }
       }
@@ -462,7 +597,7 @@ export function GeminiLiveVoiceSurface({
     if (functionResponses.length && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ toolResponse: { functionResponses } }))
     }
-  }, [])
+  }, [finishSearchProgress, startSearchProgress])
 
   const routeUndelegatedAction = useCallback(async (
     turn: ActiveTurn,
@@ -485,7 +620,8 @@ export function GeminiLiveVoiceSurface({
     turn.assistantText = ""
     suppressPlaybackRef.current = true
     stopPlayback()
-    setResponse("Working on that through NOVA…")
+    startSearchProgress(turn, sourceUtterance)
+    setResponse(isLiveSearchRequest(sourceUtterance) ? "Searching live sources…" : "Working on that through NOVA…")
     setAudioState("preparing")
     setState("thinking")
     console.info("[NOVA Gemini Live] routing an undelegated action through NOVA", {
@@ -509,6 +645,7 @@ export function GeminiLiveVoiceSurface({
         }),
       })
 
+      finishSearchProgress(turn, sourceUtterance, result)
       const resultSummary = JSON.stringify(boundedToolOutput(result))
       if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN) {
         const answer = typeof result.response === "string" ? result.response : ""
@@ -560,6 +697,7 @@ export function GeminiLiveVoiceSurface({
     } catch (routeError) {
       suppressPlaybackRef.current = false
       const message = readableError(routeError, "NOVA could not complete the request.")
+      finishSearchProgress(turn, sourceUtterance, null, message)
       if (pendingToolCalls.length > 0 && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
           toolResponse: {
@@ -585,10 +723,12 @@ export function GeminiLiveVoiceSurface({
           id: turn.id,
           userText: sourceUtterance,
           assistantText: message,
+          searchStatus: turn.searchStatus,
+          searchSources: turn.searchSources,
         },
       ].slice(-40))
     }
-  }, [stopPlayback])
+  }, [finishSearchProgress, startSearchProgress, stopPlayback])
 
   const handleServerMessage = useCallback((message: GeminiMessage) => {
     const socket = socketRef.current
@@ -682,6 +822,8 @@ export function GeminiLiveVoiceSurface({
           activeTurnRef.current = newTurn()
           setResponse("")
           setTranscript("")
+          setActiveSearchStatus(null)
+          setActiveSearchSources([])
         }
         const turn = activeTurnRef.current
         turn.userText = appendTranscript(turn.userText, inputChunk)
@@ -705,8 +847,19 @@ export function GeminiLiveVoiceSurface({
         })
         || serverContent.turnComplete === true
       const turn = activeTurnRef.current
-      if (
-        hasModelOutput
+      const interactionStatus = String(serverContent.interactionStatus ?? "").toUpperCase()
+      const intermediateThinkingTurn = (
+        serverContent.turnComplete === true
+        && interactionStatus === "IN_PROGRESS"
+      )
+
+      // Gemini Live can finish an interim spoken segment while still working
+      // on a tool call. This is not the final answer: keep the turn open and
+      // show immediate progress instead of archiving a filler as the response.
+      if (intermediateThinkingTurn && isLiveSearchRequest(turn.userText)) {
+        startSearchProgress(turn, turn.userText)
+      }
+      if (hasModelOutput && !intermediateThinkingTurn
         && !turn.toolUsed
         && !turn.cancelled
         && shouldRouteToNova(turn.userText)
@@ -762,18 +915,29 @@ export function GeminiLiveVoiceSurface({
         }
       }
 
-      if (serverContent.turnComplete === true) {
+      if (serverContent.turnComplete === true && interactionStatus === "IN_PROGRESS") {
+        // Keep the microphone/session active while Gemini performs the tool step.
+        // The next toolResponse and final IDLE turn belong to the same exchange.
+        if (playbackSourcesRef.current.size === 0) {
+          setAudioState("idle")
+          if (connectedRef.current) setState("thinking")
+        } else {
+          setState("speaking")
+        }
+      } else if (serverContent.turnComplete === true) {
         if (suppressPlaybackRef.current) suppressPlaybackRef.current = false
         const turn = activeTurnRef.current
         turn.responseDone = true
         persistTurn()
 
-        // Retain completed exchanges. The next voice-start creates a new active
-        // turn, while prior user/assistant messages remain visible above the orb.
+        // Only final turns are archived. Gemini Live can emit an interim
+        // turnComplete with IN_PROGRESS first.
         const archivedTurn = {
           id: turn.id,
           userText: turn.userText.trim(),
           assistantText: turn.assistantText.trim(),
+          searchStatus: turn.searchStatus,
+          searchSources: turn.searchSources,
         }
         if (
           !turn.cancelled
@@ -824,7 +988,7 @@ export function GeminiLiveVoiceSurface({
       intentionalCloseRef.current = true
       releaseConnection()
     }
-  }, [persistTurn, releaseConnection, routeUndelegatedAction, sendToolCall, stopPlayback])
+  }, [persistTurn, releaseConnection, routeUndelegatedAction, sendToolCall, startSearchProgress, stopPlayback])
 
   const connect = useCallback(async () => {
     if (connectingRef.current || connectedRef.current) return
@@ -927,6 +1091,8 @@ export function GeminiLiveVoiceSurface({
             activeTurnRef.current = newTurn()
             setResponse("")
             setTranscript("")
+            setActiveSearchStatus(null)
+            setActiveSearchSources([])
           }
           if (connectedRef.current && stateRef.current !== "speaking") setState("listening")
           return
@@ -1181,6 +1347,30 @@ export function GeminiLiveVoiceSurface({
                     <p>{turn.assistantText}</p>
                   </div>
                 )}
+                {turn.searchStatus && (
+                  <div className={"gemini-live-search-status " + (turn.searchStatus.startsWith("Searching") ? "loading" : "complete")} role="status">
+                    <span className="gemini-live-search-indicator" aria-hidden="true" />
+                    <span>{turn.searchStatus}</span>
+                  </div>
+                )}
+                {turn.searchSources.length > 0 && (
+                  <div className="gemini-live-search-sources" aria-label="Live search sources">
+                    {turn.searchSources.map((source) => (
+                      <a
+                        className="gemini-live-search-source"
+                        key={source.url}
+                        href={source.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                      >
+                        <span className="gemini-live-search-host">{source.host}</span>
+                        <strong>{source.title}</strong>
+                        {source.snippet && <p>{source.snippet}</p>}
+                        {source.publishedDate && <small>Published {source.publishedDate}</small>}
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
 
@@ -1223,6 +1413,30 @@ export function GeminiLiveVoiceSurface({
                       </div>
                     )}
                     <p>{response}</p>
+                  </div>
+                )}
+                {activeSearchStatus && (
+                  <div className={"gemini-live-search-status " + (activeSearchStatus.startsWith("Searching") ? "loading" : "complete")} role="status">
+                    <span className="gemini-live-search-indicator" aria-hidden="true" />
+                    <span>{activeSearchStatus}</span>
+                  </div>
+                )}
+                {activeSearchSources.length > 0 && (
+                  <div className="gemini-live-search-sources" aria-label="Live search sources">
+                    {activeSearchSources.map((source) => (
+                      <a
+                        className="gemini-live-search-source"
+                        key={source.url}
+                        href={source.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                      >
+                        <span className="gemini-live-search-host">{source.host}</span>
+                        <strong>{source.title}</strong>
+                        {source.snippet && <p>{source.snippet}</p>}
+                        {source.publishedDate && <small>Published {source.publishedDate}</small>}
+                      </a>
+                    ))}
                   </div>
                 )}
               </>
