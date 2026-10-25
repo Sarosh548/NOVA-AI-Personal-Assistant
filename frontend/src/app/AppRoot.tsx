@@ -56,7 +56,8 @@ export function AppRoot() {
   useEffect(() => {
     const previousStatus = previousAuthStatusRef.current
 
-    if (status === "authenticated" && previousStatus !== "authenticated") {
+    // Preserve deep links on reload; only route to Home after an explicit sign-in.
+    if (status === "authenticated" && previousStatus === "unauthenticated") {
       setActiveSurfaceState("Home")
       const nextHash = surfaceHash("Home")
       if (window.location.hash !== nextHash) {
