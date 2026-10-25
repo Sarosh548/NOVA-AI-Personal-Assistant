@@ -121,6 +121,43 @@ def test_live_sports_provider_timeouts_are_bounded(monkeypatch):
     assert [timeout for _url, timeout in observed] == [5, 4, 4]
 
 
+def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
+    service = WebSearchService(api_key="", searxng_endpoint="")
+
+    def fail_searxng(*, query, topic, time_range):
+        raise RuntimeError("SearXNG unavailable")
+
+    def rss_results(*, query, time_range):
+        return {
+            "results": [
+                {
+                    "title": "OpenAI announces a new AI model",
+                    "url": "https://news.google.com/rss/articles/CBMiFreshAINews",
+                    "content": "OpenAI announced a new AI model today.",
+                    "published_date": "2026-10-25T17:00:00Z",
+                }
+            ]
+        }
+
+    def unexpected_resolution(_url):
+        raise AssertionError("Fresh news should not wait on serial publisher URL resolution")
+
+    monkeypatch.setattr(service, "_request_searxng", fail_searxng)
+    monkeypatch.setattr(service, "_request_google_news_rss", rss_results)
+    monkeypatch.setattr(service, "_resolve_google_news_article_url", unexpected_resolution)
+
+    results = service.search(
+        query="latest AI news today",
+        topic="news",
+        time_range="day",
+        max_results=5,
+    )
+
+    assert len(results) == 1
+    assert results[0]["url"] == "https://news.google.com/rss/articles/CBMiFreshAINews"
+    assert "intermediary link" in results[0]["content"]
+
+
 @pytest.mark.parametrize("tavily_mode", ["unavailable", "empty"])
 def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, tavily_mode):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
