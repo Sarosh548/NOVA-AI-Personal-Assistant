@@ -772,13 +772,17 @@ Return the full schema with null for absent values:
                 if re.search(pattern, normalized)
             ]
             if len(detected_teams) >= 2:
-                sport_label = "cricket" if any(
-                    term in normalized
-                    for term in ("cricket", "wicket", "wickets", "innings", "odi", "t20", "test match")
-                ) or set(detected_teams).issubset({
+                if any(term in normalized for term in ("football", "soccer", "premier league", "champions league")):
+                    sport_label = "football"
+                elif any(term in normalized for term in ("cricket", "wicket", "wickets", "innings", "odi", "t20", "test match")):
+                    sport_label = "cricket"
+                elif set(detected_teams).issubset({
                     "Pakistan", "England", "India", "Australia", "New Zealand",
                     "Bangladesh", "Sri Lanka", "West Indies", "Afghanistan",
-                }) else "sports"
+                }):
+                    sport_label = "cricket"
+                else:
+                    sport_label = "sports"
                 query = (
                     f"{detected_teams[0]} vs {detected_teams[1]} "
                     f"{sport_label} live score today"
