@@ -1659,7 +1659,11 @@ class WebSearchService:
                 score += 10.0
             if any(term in haystack for term in live_terms):
                 score += 4.0
-            if any(host in url for host in preferred_hosts):
+            parsed_host = urlparse(url).hostname or ""
+            if any(
+                parsed_host == host or parsed_host.endswith("." + host)
+                for host in preferred_hosts
+            ):
                 score += 5.0
             for team in requested_teams:
                 if team in haystack:
