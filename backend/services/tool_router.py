@@ -695,6 +695,32 @@ class ToolRouter:
                 "error": safe_error,
             }
 
+        live_sports_detector = getattr(
+            self.web_search_service,
+            "_is_live_sports_query",
+            None,
+        )
+        if not results and callable(live_sports_detector) and live_sports_detector(query):
+            # Empty results here mean the search returned no score with a
+            # provider timestamp in the configured live freshness window.
+            # Make the safety condition explicit to the model instead of
+            # treating an empty scorecard lookup as a normal successful search.
+            return {
+                "success": False,
+                "tool": "web",
+                "action": "search",
+                "result": {
+                    "query": query,
+                    "results": [],
+                },
+                "error": (
+                    "No verified live-score source with an explicit timestamp "
+                    "within the last 45 minutes was found. Do not guess or "
+                    "repeat an older score as current; tell the user it could "
+                    "not be verified."
+                ),
+            }
+
         return {
             "success": True,
             "tool": "web",
