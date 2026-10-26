@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -12,6 +14,9 @@ from fastapi.responses import (
     Response,
 )
 from pydantic import BaseModel, Field
+
+from config import get_settings
+import api.auth as auth_api
 
 from security import configure_api_security
 
@@ -108,6 +113,8 @@ from services.notification_factory import (
 from services.notification_service import (
     NotificationService,
 )
+from services.email_verification_service import EmailVerificationService
+from services.password_reset_service import PasswordResetService
 from services.notification_delivery_cleanup_scheduler import (
     NotificationDeliveryCleanupScheduler,
 )
@@ -563,6 +570,53 @@ def configure_runtime_notification_service(
     return notification_service
 
 
+def _derive_auth_flow_secret(master_key: str, purpose: str) -> str:
+    """Derive purpose-scoped secrets for one-time auth codes."""
+    return hmac.new(
+        master_key.encode("utf-8"),
+        f"nova:{purpose}:v1".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def configure_runtime_auth_services() -> NotificationService | None:
+    """Wire email verification and password reset during API startup.
+
+    Auth flows must send transactional mail through the configured SMTP
+    channel, not through the registering user's (not-yet-connected) Gmail
+    mailbox. The normal notification service is retained for user actions.
+    """
+    if not notification_service.channel_registry.has("email"):
+        auth_api.email_verification_service = None
+        auth_api.password_reset_service = None
+        logging.getLogger(__name__).warning(
+            "NOVA account verification and password reset are unavailable: "
+            "an SMTP email channel is not configured."
+        )
+        return None
+
+    settings = get_settings()
+    auth_email_service = NotificationService(
+        channel_registry=notification_service.channel_registry,
+        default_channel="email",
+    )
+    auth_api.email_verification_service = EmailVerificationService(
+        notification_service=auth_email_service,
+        secret_key=_derive_auth_flow_secret(
+            settings.auth_jwt_secret_key,
+            "email-verification",
+        ),
+    )
+    auth_api.password_reset_service = PasswordResetService(
+        notification_service=auth_email_service,
+        secret_key=_derive_auth_flow_secret(
+            settings.auth_jwt_secret_key,
+            "password-reset",
+        ),
+    )
+    return auth_email_service
+
+
 async def startup_event():
     configure_api_logging()
 
@@ -576,6 +630,7 @@ async def startup_event():
     global notification_service
 
     notification_service = configure_runtime_notification_service(force=True)
+    configure_runtime_auth_services()
 
     reminder_scheduler.notification_service = (
         notification_service

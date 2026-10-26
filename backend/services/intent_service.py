@@ -465,6 +465,8 @@ Return the full schema with null for absent values:
             return result
 
         protected_patterns = (
+            r"\bsearch\s+(?:my\s+)?(?:files?|documents?|emails?|mail|private knowledge|knowledge)\b",
+            r"\b(?:find|locate|search)\s+(?:the\s+)?(?:file|document|resume|cv)\b",
             r"\bremind me\b",
             r"\b(?:create|add|make)\s+(?:a\s+)?(?:high\s+|medium\s+|low\s+)?priority\s+task\b",
             r"\b(?:create|add|make)\s+(?:a\s+)?task\b",
@@ -515,7 +517,14 @@ Return the full schema with null for absent values:
             for marker in fresh_markers
         )
 
-        if not has_fresh_marker:
+        explicit_search_request = re.search(
+            r"\b(?:search(?:\s+for)?|web search|google search|bing search|look up|lookup|browse(?:\s+the)?\s+web|research)\b|"
+            r"\b(?:google|internet|web|online)\s+(?:par|pe)\s+search\b|"
+            r"\b(?:search|google|internet|web|online)\b.{0,35}\b(?:karo|karna|kar|kr|kro|karke|krke)\b",
+            normalized,
+            re.IGNORECASE,
+        ) is not None
+        if not has_fresh_marker and not explicit_search_request:
             return result
 
         personal_current_patterns = (
@@ -600,7 +609,7 @@ Return the full schema with null for absent values:
             for marker in information_markers
         )
 
-        if not has_information_marker:
+        if not has_information_marker and not explicit_search_request:
             return result
 
         topic = result.get("web_topic")
@@ -745,6 +754,25 @@ Return the full schema with null for absent values:
         if not query:
             query = message.strip()
 
+        # An explicit search command must keep the user's actual search target,
+        # even if the intent model selected chat or proposed a placeholder query.
+        if explicit_search_request:
+            extraction_patterns = (
+                r"\bsearch\s+(?:the\s+)?(?:web|internet|online)\s+(?:for|about|on)\s+(.+)$",
+                r"\b(?:web|internet|online)\s+search\s+(?:for|about|on)\s+(.+)$",
+                r"\b(?:google|bing)\s+search\s+(?:for\s+)?(.+)$",
+                r"\b(?:google|internet|web|online)\s+(?:par|pe)\s+search\s+(?:karo|kar|kr|kro)\s+(.+)$",
+                r"\bsearch\s+(?:for\s+)?(.+)$",
+            )
+            for pattern in extraction_patterns:
+                match = re.search(pattern, message, flags=re.IGNORECASE)
+                if match:
+                    target = match.group(1).strip()
+                    target = re.sub(r"[.!?]+$", "", target).strip()
+                    if target:
+                        query = target
+                        break
+
         # The classifier can return an overly broad or unrelated query for
         # short breaking/current-news prompts. Keep explicit AI-news requests
         # anchored to the requested subject rather than trusting that guess.
@@ -827,7 +855,17 @@ Return the full schema with null for absent values:
             normalized_reply,
             flags=re.IGNORECASE,
         )
-        if not affirmative or not history:
+        explicit_task_confirmation = re.fullmatch(
+            r"(?:(?:okay|ok|yes|yeah|yep|sure|please|haan|han)\s+)?"
+            r"(?:please\s+)?(?:go ahead and\s+)?(?:create|add|make)\s+"
+            r"(?:(?:that|the|this|temporary|qa|test)\s+)*task"
+            r"(?:\s+now)?"
+            r"(?:\s+then\s+report\s+(?:its|the)\s+"
+            r"(?:id(?:\s+and\s+status)?|status))?",
+            normalized_reply,
+            flags=re.IGNORECASE,
+        )
+        if not (affirmative or explicit_task_confirmation) or not history:
             return None
 
         recent = history[-8:]
@@ -856,7 +894,8 @@ Return the full schema with null for absent values:
         asks_for_confirmation = re.search(
             r"exactly what you want|let me know if|is that correct|"
             r"is this correct|confirm(?:ation)?|should i create|"
-            r"shall i create|do you want me to create",
+            r"shall i create|do you want me to create|"
+            r"would you like me to (?:create|add)",
             latest_assistant,
             flags=re.IGNORECASE,
         ) is not None
@@ -895,13 +934,22 @@ Return the full schema with null for absent values:
                     continue
 
                 result = self._default_result()
+                priority_match = re.search(
+                    r"\b(?P<priority>low|medium|high)[ -]priority\b",
+                    content,
+                    flags=re.IGNORECASE,
+                )
                 result.update(
                     {
                         "intent": "task",
                         "task": title,
                         "task_reference": None,
                         "task_action": "create",
-                        "priority": None,
+                        "priority": (
+                            priority_match.group("priority").lower()
+                            if priority_match
+                            else None
+                        ),
                         "requires_tool": True,
                         "clarification_required": False,
                     }
@@ -2127,6 +2175,14 @@ Return the full schema with null for absent values:
         original_message = " ".join(
             str(message).strip().replace("’", "'").replace("‘", "'").replace("“", '"' ).replace("”", '"' ).split()
         )
+        # QA labels frame tests, not commands. Remove only an explicit leading label.
+        original_message = re.sub(
+            r"^(?:(?:read[- ]only\s+)?qa(?:[- ]only)?|for\s+qa(?:\s+only)?|"
+            r"(?:qa|test(?:ing)?)\s+only)\s*[:,-]\s*",
+            "",
+            original_message,
+            flags=re.IGNORECASE,
+        ).strip()
         normalized = original_message.lower()
 
         # Calendar event creation is a state-changing action. Do not leave a
@@ -2666,47 +2722,85 @@ Return the full schema with null for absent values:
 
                 return result
 
-        if normalized.startswith((
-            "remind me ",
-            "remind me to ",
-            "set a reminder",
-            "set reminder",
-        )):
+        reminder_command = re.match(
+            r"^(?:please\s+)?(?:remind me(?:\s+to)?|set\s+(?:a\s+)?reminder|"
+            r"(?:create|make|add)\s+(?:a\s+)?(?:temporary\s+)?reminder)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if reminder_command:
             result["intent"] = "reminder"
             result["reminder_action"] = "create"
             result["requires_tool"] = True
 
-            time_match = re.search(
-                r"\b(today|tomorrow)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+            relative_time_match = re.search(
+                r"\b(?:in|for)\s+(?P<amount>\d{1,4})\s*"
+                r"(?P<unit>minutes?|mins?|hours?|hrs?|days?)\s*"
+                r"(?:from\s+now)?\b",
                 original_message,
                 flags=re.IGNORECASE,
             )
-
-            if time_match:
-                result["time"] = time_match.group(0)
-                result["scheduled_at"] = self._deterministic_scheduled_at(
-                    day_expression=time_match.group(1).lower(),
-                    hour_text=time_match.group(2),
-                    minute_text=time_match.group(3),
-                    meridiem=time_match.group(4).lower(),
+            time_match = None
+            remainder = original_message
+            if relative_time_match:
+                amount = int(relative_time_match.group("amount"))
+                unit = relative_time_match.group("unit").lower()
+                if unit.startswith("min"):
+                    delta = timedelta(minutes=amount)
+                elif unit.startswith(("hour", "hr")):
+                    delta = timedelta(hours=amount)
+                else:
+                    delta = timedelta(days=amount)
+                result["time"] = relative_time_match.group(0)
+                result["scheduled_at"] = (
+                    datetime.now(ZoneInfo(USER_TIMEZONE)) + delta
+                ).isoformat(timespec="seconds")
+                remainder = (
+                    original_message[:relative_time_match.start()]
+                    + " "
+                    + original_message[relative_time_match.end():]
                 )
-
-                remainder = original_message[:time_match.start()] + " " + original_message[time_match.end():]
             else:
-                remainder = original_message
+                time_match = re.search(
+                    r"\b(today|tomorrow)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+                    original_message,
+                    flags=re.IGNORECASE,
+                )
+                if time_match:
+                    result["time"] = time_match.group(0)
+                    result["scheduled_at"] = self._deterministic_scheduled_at(
+                        day_expression=time_match.group(1).lower(),
+                        hour_text=time_match.group(2),
+                        minute_text=time_match.group(3),
+                        meridiem=time_match.group(4).lower(),
+                    )
+                    remainder = (
+                        original_message[:time_match.start()]
+                        + " "
+                        + original_message[time_match.end():]
+                    )
 
-            content_match = re.search(
-                r"\bto\s+(.+)$",
-                remainder,
+            title_match = re.search(
+                r"\b(?:titled|named|called)\s+[\"']?(?P<title>.+?)[\"']?(?=[.!?]|$)",
+                original_message,
                 flags=re.IGNORECASE,
             )
+            if title_match:
+                result["task"] = title_match.group("title").strip().strip("\"'").rstrip(" .,!?:;")
 
-            if content_match:
-                result["task"] = content_match.group(1).strip(" .")
+            if result["task"] is None:
+                content_match = re.search(
+                    r"\bto\s+(.+)$",
+                    remainder,
+                    flags=re.IGNORECASE,
+                )
+                if content_match:
+                    result["task"] = content_match.group(1).strip(" .")
 
             if result["task"] is None:
                 cleaned = re.sub(
-                    r"^(remind me|set a reminder|set reminder)\s*",
+                    r"^(?:please\s+)?(?:remind me(?:\s+to)?|set\s+(?:a\s+)?reminder|"
+                    r"(?:create|make|add)\s+(?:a\s+)?(?:temporary\s+)?reminder)\s*",
                     "",
                     remainder,
                     flags=re.IGNORECASE,
@@ -2784,8 +2878,8 @@ Return the full schema with null for absent values:
             r"^(?:please\s+)?(?:show|list|display|view|get|fetch)\s+"
             r"(?:(?:me|us)\s+)?"
             r"(?:(?:my|all|current|available|saved|existing|pending|completed|cancelled|canceled|"
-            r"in[- ]progress|only)\s+)*"
-            r"(?:tasks?|task\s+lists?)(?:\b|$)",
+            r"in[- ]progress|only|nova|nova's)\s+)*"
+            r"(?:tasks?|task\s+lists?)\b.*",
             r"^(?:what|which)\s+(?:(?:are|is)\s+)?"
             r"(?:(?:all|my|the|current|available|saved|pending|outstanding|incomplete|unfinished|active|overdue|due|completed|cancelled|canceled)\s+)*tasks?\b",
             r"^(?:mujhe\s+)?(?:(?:batao|bata|dikhao|dikha|list)\s+)?"
@@ -2867,7 +2961,10 @@ Return the full schema with null for absent values:
         task_match = re.match(
             r"^(?:"
             r"(?:please\s+)?(?:create|add|make)\s+"
-            r"(?:(?:a(?:\s+new)?|another|new)\s+)?task\s+(?P<details>.+)"
+            r"(?:(?:a(?:\s+new)?|another|new)\s+)?"
+            r"(?:(?:temporary|disposable|qa|test)\s+)?"
+            r"(?:(?:low|medium|high)[ -]priority\s+)?"
+            r"task\s+(?P<details>.+)"
             r"|"
             r"(?:hey\s+)?(?:nova[\s,:-]+)?(?:ek\s+)?task\s+"
             r"(?:create|add|make|bana(?:o)?|bana\s+do)\s+"
@@ -2888,7 +2985,8 @@ Return the full schema with null for absent values:
             # requests. Extract the quoted title rather than persisting
             # wrapper words such as "with the title" as part of the title.
             title_introducer_match = re.search(
-                r"\b(?:with\s+)?(?:the\s+)?(?:exact\s+)?title\s+(?:is\s+)?",
+                r"\b(?:with\s+)?(?:the\s+)?(?:exact\s+)?(?:title|name)\s+(?:is\s+)?"
+                r"|\b(?:named|called|titled)\s+",
                 original_message,
                 flags=re.IGNORECASE,
             )
@@ -2918,9 +3016,10 @@ Return the full schema with null for absent values:
                     )
                     if end_of_title is None:
                         end_of_title = re.search(
-                            r"\s+(?:no\s+due\s+date|without\s+(?:a\s+)?due\s+date|"
+                            r"\s+(?:(?:with|and|using|use)\s+)?"
+                            r"(?:no\s+due\s+date|without\s+(?:a\s+)?due\s+date|"
                             r"due\s+date\b|default\s+priority\b|"
-                            r"(?:low|medium|high)\s+priority\b)",
+                            r"(?:low|medium|high)[ -]priority\b)",
                             unquoted_title,
                             flags=re.IGNORECASE,
                         )
@@ -2980,11 +3079,11 @@ Return the full schema with null for absent values:
             result["task_action"] = "create"
             result["requires_tool"] = True
 
-            if "high priority" in normalized:
+            if re.search(r"\bhigh[ -]priority\b", normalized):
                 result["priority"] = "high"
-            elif "medium priority" in normalized:
+            elif re.search(r"\bmedium[ -]priority\b", normalized):
                 result["priority"] = "medium"
-            elif "low priority" in normalized:
+            elif re.search(r"\blow[ -]priority\b", normalized):
                 result["priority"] = "low"
 
             # Parse an explicit calendar date/time before creating the task.

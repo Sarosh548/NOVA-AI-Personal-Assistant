@@ -3730,3 +3730,39 @@ def test_email_send_intent_supports_natural_language_but_not_how_to_questions():
     assert not graph._is_email_send_request("How do I send an email?")
     assert not graph._is_email_send_request("Explain how to send an email.")
     assert not graph._is_email_send_request("Email mat bhejna.")
+
+
+def test_knowledge_retrieval_retries_with_exact_document_title(monkeypatch):
+    class FakeKnowledgeService:
+        def __init__(self):
+            self.queries = []
+
+        def search(self, *, user_id, query, threshold, limit, rerank, candidate_limit):
+            self.queries.append((query, threshold))
+            if query == "NOVA QA TEMP 20261026":
+                return [{
+                    "document_id": "qa-doc-id",
+                    "title": "NOVA QA TEMP 20261026",
+                    "source": "Disposable QA test source",
+                    "chunk_index": 0,
+                    "similarity": 0.66,
+                    "content": "QA_ONLY_TOKEN=NEBULA-7429.",
+                }]
+            return []
+
+    fake = FakeKnowledgeService()
+    monkeypatch.setattr(graph, "knowledge_service", fake)
+    context, sources = graph._get_knowledge_retrieval({
+        "user_id": "user-1",
+        "user_message": (
+            "What exact QA sample value is stored in NOVA QA TEMP 20261026? "
+            "Please include the source title."
+        ),
+        "understanding": {"intent": "chat"},
+        "plan": {"requires_tool": False},
+        "confirmation": {"status": None},
+    })
+
+    assert "NEBULA-7429" in context
+    assert sources[0]["title"] == "NOVA QA TEMP 20261026"
+    assert ("NOVA QA TEMP 20261026", 0.45) in fake.queries

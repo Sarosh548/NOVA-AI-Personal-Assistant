@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import unescape
+from html.parser import HTMLParser
 import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -14,8 +15,10 @@ import xml.etree.ElementTree as ET
 
 
 DEFAULT_TAVILY_ENDPOINT = "https://api.tavily.com/search"
+DEFAULT_BRAVE_SEARCH_API_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_SEARXNG_ENDPOINT = "http://127.0.0.1:8080/search"
 DEFAULT_GOOGLE_NEWS_RSS_ENDPOINT = "https://news.google.com/rss/search"
+DEFAULT_CRICBUZZ_LIVE_SCORES_URL = "https://www.cricbuzz.com/cricket-match/live-scores"
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_RESULTS = 5
 MAX_MAX_RESULTS = 10
@@ -45,15 +48,127 @@ class WebSearchResult:
         }
 
 
+class _BraveSearchResultParser(HTMLParser):
+    """Extract organic web results from Brave's server-rendered search page."""
+
+    _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._active: dict[str, str] | None = None
+        self._depth = 0
+        self._title_depth: int | None = None
+        self._snippet_depth: int | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        classes = str(attributes.get("class") or "").split()
+        if (
+            tag.lower() == "div"
+            and self._active is None
+            and attributes.get("data-type") == "web"
+            and "snippet" in classes
+        ):
+            self._active = {"title": "", "url": "", "content": ""}
+            self._depth = 1
+            return
+        if self._active is None:
+            return
+        if tag.lower() not in self._VOID_TAGS:
+            self._depth += 1
+        if tag.lower() == "a" and not self._active["url"]:
+            href = str(attributes.get("href") or "").strip()
+            parsed = urlparse(href)
+            if parsed.scheme in {"http", "https"} and parsed.netloc and "brave.com" not in parsed.netloc.lower():
+                self._active["url"] = href
+        if tag.lower() == "div" and "search-snippet-title" in classes:
+            self._title_depth = self._depth
+            self._active["title"] = str(attributes.get("title") or "").strip()
+        elif tag.lower() == "div" and "generic-snippet" in classes:
+            self._snippet_depth = self._depth
+
+    def handle_data(self, data: str) -> None:
+        if self._active is None:
+            return
+        value = " ".join(str(data or "").split())
+        if not value:
+            return
+        if self._title_depth is not None and not self._active["title"]:
+            self._active["title"] = value
+        elif self._snippet_depth is not None:
+            self._active["content"] = " ".join(filter(None, (self._active["content"], value)))
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._active is None:
+            return
+        if tag.lower() == "div":
+            if self._title_depth == self._depth:
+                self._title_depth = None
+            if self._snippet_depth == self._depth:
+                self._snippet_depth = None
+        if tag.lower() not in self._VOID_TAGS:
+            self._depth -= 1
+        if self._depth <= 0:
+            if self._active.get("title") and self._active.get("url"):
+                self.results.append(self._active)
+            self._active = None
+            self._depth = 0
+            self._title_depth = None
+            self._snippet_depth = None
+
+
+class _CricbuzzLiveScoreParser(HTMLParser):
+    """Extract server-rendered Cricbuzz live-score cards without third-party HTML dependencies."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.matches: list[dict[str, str]] = []
+        self._active: dict[str, str | list[str]] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a" or self._active is not None:
+            return
+        attributes = dict(attrs)
+        href = str(attributes.get("href") or "").strip()
+        classes = str(attributes.get("class") or "")
+        if (
+            href.startswith("/live-cricket-scores/")
+            and "flex-col" in classes
+            and "p-3" in classes
+        ):
+            self._active = {
+                "href": href,
+                "title": str(attributes.get("title") or "").strip(),
+                "parts": [],
+            }
+
+    def handle_data(self, data: str) -> None:
+        if self._active is not None:
+            parts = self._active.get("parts")
+            if isinstance(parts, list) and data.strip():
+                parts.append(data.strip())
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a" or self._active is None:
+            return
+        parts = self._active.get("parts")
+        text = " ".join(" ".join(parts).split()) if isinstance(parts, list) else ""
+        href = str(self._active.get("href") or "")
+        title = str(self._active.get("title") or "")
+        if href and text:
+            self.matches.append({"href": href, "title": title, "text": text})
+        self._active = None
+
+
 class WebSearchService:
     """
     Read-only live web search boundary for NOVA.
 
-    The default provider is Tavily's Search API. API credentials
-    are read only from the TAVILY_API_KEY environment variable.
-    Search results are normalized before entering NOVA's agent
-    context so provider-specific response shapes do not leak
-    into the rest of the application.
+    The primary provider is Tavily's Search API. Optional SearXNG and
+    Brave Search API credentials enable bounded provider fallback. Public
+    HTML search is best-effort only because public endpoints may rate-limit.
+    Results are normalized before entering NOVA's agent context.
     """
 
     def __init__(
@@ -61,6 +176,7 @@ class WebSearchService:
         *,
         api_key: str | None = None,
         endpoint: str = DEFAULT_TAVILY_ENDPOINT,
+        brave_api_key: str | None = None,
         searxng_endpoint: str | None = None,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     ):
@@ -96,6 +212,12 @@ class WebSearchService:
                     if environment in {"production", "prod"}
                     else DEFAULT_SEARXNG_ENDPOINT
                 )
+        self.brave_api_key = (
+            str(brave_api_key).strip()
+            if brave_api_key is not None
+            else os.getenv("BRAVE_API_KEY", "").strip()
+        )
+
         self.searxng_endpoint = str(
             configured_searxng_endpoint
         ).strip()
@@ -148,10 +270,38 @@ class WebSearchService:
         ) is not None
         has_freshness = re.search(
             r"\b(?:live|right now|today|today's|current|currently|latest|"
-            r"now|aaj|abhi|filhal|real time|realtime)\b",
+            r"now|aaj|abhi|filhal|real time|realtime|ongoing|underway|"
+            r"chal raha(?: hai)?|ho raha(?: hai)?|khel raha(?: hai)?|"
+            r"currently playing)\b",
             normalized,
         ) is not None
-        return has_sport and has_freshness
+        asks_for_score = (
+            re.search(r"\b(?:score|scores|scorecard|wickets?|innings|goals?)\b", normalized)
+            and re.search(r"\b(?:what|kya|kitna|kitne|batao|bata|batana|tell|show|give|check|chahiye)\b", normalized)
+        ) is not None
+        return has_sport and (has_freshness or asks_for_score)
+
+    @staticmethod
+    def _is_live_cricket_score_query(query: str) -> bool:
+        normalized = " ".join(str(query or "").lower().split())
+        asks_for_score = re.search(
+            r"\b(?:score|scores|scorecard|wickets?|innings|runs?)\b",
+            normalized,
+        ) is not None and re.search(
+            r"\b(?:what|kya|kitna|kitne|batao|bata|batana|tell|show|give|check|chahiye|live|today|aaj|abhi)\b",
+            normalized,
+        ) is not None
+        asks_about_current_match = re.search(
+            r"\b(?:match|matches|game|cricket)\b.{0,45}\b(?:ho raha|chal raha|playing|underway|live|now|today|aaj|abhi|happening|taking place)\b|"
+            r"\b(?:ho raha|chal raha|happening|taking place|playing)\b.{0,45}\b(?:match|cricket)\b|"
+            r"\b(?:who|which|what)\b.{0,35}\b(?:playing|match|matches|cricket)\b.{0,25}\b(?:now|today|aaj|abhi|live|currently)\b",
+            normalized,
+        ) is not None
+        mentions_cricket = re.search(
+            r"\b(?:cricket|odi|t20|test match|wicket|wickets|innings)\b",
+            normalized,
+        ) is not None
+        return mentions_cricket and (asks_for_score or asks_about_current_match)
 
     @staticmethod
     def _normalize_query(query: str) -> str:
@@ -208,6 +358,80 @@ class WebSearchService:
             return None
 
         return normalized
+
+    @staticmethod
+    def _clean_result_content(content: str, *, title: str, max_length: int = 900) -> str:
+        """Remove common scraped-page chrome before snippets reach NOVA's answer model.
+
+        Search providers sometimes return page text instead of a true snippet,
+        including subscription prompts, navigation menus, ad labels and related
+        links. Keep a short, title-anchored excerpt when that chrome is present.
+        """
+        text = unescape(str(content or ""))
+        text = re.sub(
+            r"(?is)<(script|style|noscript|svg|nav|footer|header|aside)[^>]*>.*?</\1>",
+            " ",
+            text,
+        )
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = " ".join(text.split())
+        if not text:
+            return str(title or "").strip()[:max_length]
+
+        normalized_title = " ".join(str(title or "").split())
+        title_pattern = None
+        title_match = None
+        if normalized_title:
+            title_pattern = r"\s+".join(re.escape(part) for part in normalized_title.split())
+            title_match = re.search(title_pattern, text, flags=re.IGNORECASE)
+            if title_match and title_match.start() >= 100:
+                # Long prefixes before the actual headline are usually publisher
+                # taglines, menus, breadcrumbs, or subscribe prompts.
+                text = text[title_match.start():]
+                title_match = re.search(title_pattern, text, flags=re.IGNORECASE)
+
+        # Google News and some publisher snippets append several unrelated
+        # headlines in a markdown-like list. Do not pass those headlines off as
+        # the article excerpt; use the source title when there is no article text.
+        related_headline = re.search(r"(?:^|\s)#{2,6}\s+", text)
+        if related_headline:
+            if related_headline.start() < 180 and not (
+                title_match and title_match.start() <= 180
+            ):
+                return normalized_title[:max_length]
+            text = text[:related_headline.start()].strip()
+
+        noise_markers = re.compile(
+            r"(?i)\b(?:advertisement|advertisements|sponsored content|subscribe now|"
+            r"no spam|unsubscribe any time|up next|homevideos|quick reads|live tv|"
+            r"skip to content|skip to main content|first published:|sign up for our newsletter|"
+            r"subscribe to our newsletter|all rights reserved|cookie settings|privacy policy|"
+            r"terms of use|click to follow|google logo|follow [a-z0-9 ]{1,50} on google|follow us on)\b"
+        )
+        marker = noise_markers.search(text)
+        if marker:
+            excerpt = text[:marker.start()].strip()
+            title_terms = {
+                term for term in re.findall(r"[a-z0-9]+", normalized_title.lower())
+                if len(term) >= 4 and term not in {
+                    "amid", "latest", "recent", "news", "this", "that", "with", "from",
+                    "into", "over", "after", "their", "model", "models", "update", "updates",
+                }
+            }
+            excerpt_terms = set(re.findall(r"[a-z0-9]+", excerpt.lower()))
+            if marker.start() < 220 and not (title_terms & excerpt_terms):
+                return normalized_title[:max_length]
+            text = excerpt
+
+        text = re.sub(r"(?i)^\s*(?:tags?\s*[:#-].*?)?\s*", "", text)
+        text = " ".join(text.split()).strip(" -|:;·•")
+        if not text:
+            text = normalized_title
+
+        if len(text) > max_length:
+            boundary = max(text.rfind(".", 0, max_length), text.rfind("!", 0, max_length), text.rfind("?", 0, max_length))
+            text = text[:boundary + 1] if boundary >= int(max_length * 0.55) else text[:max_length].rstrip()
+        return text[:max_length].strip()
 
     @staticmethod
     def _normalize_max_results(max_results: int) -> int:
@@ -295,11 +519,7 @@ class WebSearchService:
         try:
             with urlopen(
                 request,
-                timeout=(
-                    min(self.timeout_seconds, 5)
-                    if self._is_live_sports_query(payload.get("query", ""))
-                    else self.timeout_seconds
-                ),
+                timeout=min(self.timeout_seconds, 2.5),
             ) as response:
                 raw_body = response.read()
         except HTTPError as exc:
@@ -367,9 +587,9 @@ class WebSearchService:
             with urlopen(
                 request,
                 timeout=(
-                    min(self.timeout_seconds, 4)
+                    min(self.timeout_seconds, 2.5)
                     if self._is_live_sports_query(query)
-                    else self.timeout_seconds
+                    else min(self.timeout_seconds, 2.5)
                 ),
             ) as response:
                 raw_body = response.read()
@@ -650,7 +870,7 @@ class WebSearchService:
                 request,
                 timeout=min(
                     self.timeout_seconds,
-                    4 if self._is_live_sports_query(query) else 5,
+                    2.5 if self._is_live_sports_query(query) else 3,
                 ),
             ) as response:
                 raw_body = response.read()
@@ -723,6 +943,193 @@ class WebSearchService:
             )
 
         return {"results": raw_results}
+
+    def _request_brave_api(
+        self,
+        *,
+        query: str,
+        time_range: str | None,
+    ) -> dict:
+        """Use the authenticated Brave Search API when a key is configured."""
+        if not self.brave_api_key:
+            raise RuntimeError("Brave Search API key is not configured.")
+        params = {
+            "q": self._normalize_query(query),
+            "count": DEFAULT_MAX_RESULTS,
+            "text_decorations": "false",
+            "spellcheck": "true",
+        }
+        freshness = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}.get(time_range or "")
+        if freshness:
+            params["freshness"] = freshness
+        request = Request(
+            f"{DEFAULT_BRAVE_SEARCH_API_ENDPOINT}?{urlencode(params)}",
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": self.brave_api_key,
+                "User-Agent": "NOVA-AI-Personal-Assistant/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=min(self.timeout_seconds, 2.5)) as response:
+                raw_body = response.read()
+        except HTTPError as exc:
+            raise RuntimeError(f"Brave Search API returned HTTP {exc.code}.") from exc
+        except (OSError, URLError, TimeoutError) as exc:
+            raise RuntimeError("Brave Search API could not be reached.") from exc
+        try:
+            payload = json.loads(raw_body.decode("utf-8", errors="replace"))
+        except (ValueError, AttributeError) as exc:
+            raise RuntimeError("Brave Search API returned invalid JSON.") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Brave Search API returned an invalid response.")
+        web = payload.get("web") or {}
+        raw_results = web.get("results", []) if isinstance(web, dict) else []
+        if not isinstance(raw_results, list):
+            raise RuntimeError("Brave Search API returned invalid web results.")
+        results: list[dict] = []
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            content = str(item.get("description") or "").strip()
+            if not title or not url:
+                continue
+            results.append({
+                "title": title[:500],
+                "url": url[:2000],
+                "content": (content or title)[:MAX_SNIPPET_LENGTH],
+                "score": None,
+                "published_date": item.get("page_age") or item.get("age") or None,
+            })
+        return {"results": results}
+
+    def _request_brave_search(
+        self,
+        *,
+        query: str,
+        time_range: str | None,
+    ) -> dict:
+        """Keyless general-web fallback using Brave's server-rendered results."""
+        normalized = self._normalize_query(query)
+        params = {"q": normalized, "source": "web"}
+        time_filter = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}.get(time_range or "")
+        if time_filter:
+            params["tf"] = time_filter
+        request_url = f"https://search.brave.com/search?{urlencode(params)}"
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129 Safari/537.36",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=min(self.timeout_seconds, 3)) as response:
+                html = response.read(1_500_000).decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            raise RuntimeError(f"Brave web search provider returned HTTP {exc.code}.") from exc
+        except (OSError, URLError, TimeoutError) as exc:
+            raise RuntimeError("Brave web search provider could not be reached.") from exc
+
+        parser = _BraveSearchResultParser()
+        parser.feed(html)
+        results: list[dict] = []
+        for item in parser.results:
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            content = " ".join(str(item.get("content") or "").split())
+            if not title or not url:
+                continue
+            results.append({
+                "title": title[:500],
+                "url": url[:2000],
+                "content": (content or title)[:MAX_SNIPPET_LENGTH],
+                "score": None,
+                "published_date": self._publication_date_from_content(content),
+            })
+        if not results:
+            logger.warning("Brave web search returned no parsable organic results.")
+        return {"results": results}
+
+    def _request_cricbuzz_live_scores(self, query: str, max_results: int) -> list[dict] | None:
+        """Fetch current cricket scorecards directly; None means provider/markup unavailable."""
+        request = Request(
+            DEFAULT_CRICBUZZ_LIVE_SCORES_URL,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": "Mozilla/5.0 (compatible; NOVA-AI-Personal-Assistant/1.0)",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=min(self.timeout_seconds, 2.5)) as response:
+                html = response.read(1_500_000).decode("utf-8", errors="replace")
+        except (HTTPError, OSError, URLError, TimeoutError) as exc:
+            logger.warning("Cricbuzz live-score lookup failed: %s", type(exc).__name__)
+            return None
+
+        parser = _CricbuzzLiveScoreParser()
+        parser.feed(html)
+        if not parser.matches:
+            logger.warning("Cricbuzz live-score page returned no parsable scorecards.")
+            return None
+
+        normalized_query = " ".join(str(query or "").lower().split())
+        team_aliases = {
+            "pakistan": ("pakistan", "pak"),
+            "england": ("england", "eng"),
+            "india": ("india", "ind"),
+            "australia": ("australia", "aus"),
+            "new zealand": ("new zealand", "nz", "nza"),
+            "bangladesh": ("bangladesh", "ban"),
+            "sri lanka": ("sri lanka", "sl"),
+            "west indies": ("west indies", "wi"),
+            "afghanistan": ("afghanistan", "afg"),
+            "south africa": ("south africa", "sa"),
+            "ireland": ("ireland", "ire"),
+            "zimbabwe": ("zimbabwe", "zim"),
+        }
+        requested_teams = [
+            aliases for name, aliases in team_aliases.items()
+            if any(
+                re.search(rf"\b{re.escape(alias)}\b", normalized_query)
+                for alias in aliases
+            )
+        ]
+        results: list[dict] = []
+        final_status = re.compile(
+            r"\b(?:won|match tied|no result|abandoned|cancelled|canceled|completed|complete|stumps|close of play|preview|upcoming match|starts at)\b",
+            re.IGNORECASE,
+        )
+        score_pattern = re.compile(r"\b\d{1,3}\s*(?:-|/)\s*\d{1,2}\b")
+        for match in parser.matches:
+            title = match["title"] or match["text"][:180]
+            content = match["text"]
+            evidence = f"{title} {content}"
+            if final_status.search(evidence) or not score_pattern.search(content):
+                continue
+            if requested_teams and any(
+                not any(re.search(rf"\b{re.escape(alias)}\b", evidence, re.IGNORECASE) for alias in aliases)
+                for aliases in requested_teams
+            ):
+                continue
+            href = match["href"]
+            url = f"https://www.cricbuzz.com{href}"
+            results.append({
+                "title": f"Live cricket score: {title}",
+                "url": url,
+                "content": f"Live scoreboard snapshot checked just now. {content}",
+                "score": None,
+                "published_date": None,
+            })
+            if len(results) >= max_results:
+                break
+        return results
 
     @staticmethod
     def _publication_date_from_content(content: str) -> str | None:
@@ -1026,7 +1433,7 @@ class WebSearchService:
         def read_json(url: str) -> dict:
             request = Request(url, headers={"Accept": "application/json", "User-Agent": "NOVA-AI-Personal-Assistant/1.0"})
             try:
-                with urlopen(request, timeout=self.timeout_seconds) as response:
+                with urlopen(request, timeout=min(self.timeout_seconds, 2.5)) as response:
                     return self._parse_provider_json(response.read())
             except (HTTPError, OSError, URLError, TimeoutError) as exc:
                 raise RuntimeError("Weather provider could not be reached.") from exc
@@ -1190,6 +1597,18 @@ class WebSearchService:
         if normalized_topic == "weather":
             return self._search_weather(normalized_query)
 
+        # A live cricket score is structured match data, not a news-article
+        # search. Check the current scoreboard first and never reinterpret an
+        # old RSS story as a live score. None means provider unavailable; an
+        # empty list means the current page had no matching live scorecard.
+        if self._is_live_cricket_score_query(normalized_query):
+            live_scores = self._request_cricbuzz_live_scores(
+                normalized_query,
+                normalized_max_results,
+            )
+            if live_scores is not None:
+                return live_scores
+
         is_voice_comparison = self._is_voice_assistant_comparison_query(normalized_query)
         is_openai_news = self._is_openai_news_query(normalized_query)
         is_ai_news = self._is_ai_news_query(normalized_query)
@@ -1224,6 +1643,9 @@ class WebSearchService:
                 content = str(raw.get("content") or "").strip()
                 if not title or not url or not content:
                     continue
+                content = self._clean_result_content(content, title=title)
+                if not content:
+                    content = title
                 short_or_metadata_only = (
                     content.lower().startswith("source:")
                     or len(content) < 180
@@ -1477,41 +1899,104 @@ class WebSearchService:
                     time_range=normalized_time_range,
                 )
             except Exception as exc:
-                if normalized_topic != "news" and not is_live_sports_query:
-                    raise
-                logger.warning(
-                    "SearXNG search failed; trying Google News RSS fallback: %s",
-                    type(exc).__name__,
-                )
-                provider = "rss"
                 response = None
-                last_error: Exception | None = None
-                # Live-score requests prefer bounded latency over a second
-                # identical feed request. Returning a transparent no-result
-                # state is safer than delaying the spoken turn by another timeout.
-                max_rss_attempts = 1 if is_live_sports_query else 2
-                for attempt in range(max_rss_attempts):
+                # Prefer a configured API provider over scraping a public search
+                # page. The API response is structured and avoids shared-IP 429s.
+                if self.brave_api_key:
                     try:
-                        response = self._request_google_news_rss(
+                        response = self._request_brave_api(
                             query=normalized_query,
                             time_range=normalized_time_range,
                         )
-                        last_error = None
-                        break
-                    except Exception as rss_exc:
-                        last_error = rss_exc
-                        if attempt == 0 and max_rss_attempts > 1:
-                            logger.warning("Google News RSS transient failure; retrying once: %s", type(rss_exc).__name__)
-                if response is None:
-                    if last_error:
-                        raise last_error
-                    response = {"results": []}
+                        provider = "brave_api"
+                    except Exception as brave_api_exc:
+                        logger.warning(
+                            "Brave Search API fallback failed: %s",
+                            type(brave_api_exc).__name__,
+                        )
+
+                if response is None and (normalized_topic == "news" or is_live_sports_query):
+                    # Preserve the date-aware news and live-sports route. General
+                    # web search must not turn into a news-only feed by default.
+                    logger.warning(
+                        "SearXNG search failed; trying Google News RSS fallback: %s",
+                        type(exc).__name__,
+                    )
+                    provider = "rss"
+                    response = None
+                    last_error: Exception | None = None
+                    max_rss_attempts = 1 if is_live_sports_query else 2
+                    for attempt in range(max_rss_attempts):
+                        try:
+                            response = self._request_google_news_rss(
+                                query=normalized_query,
+                                time_range=normalized_time_range,
+                            )
+                            last_error = None
+                            break
+                        except Exception as rss_exc:
+                            last_error = rss_exc
+                            if attempt == 0 and max_rss_attempts > 1:
+                                logger.warning(
+                                    "Google News RSS transient failure; retrying once: %s",
+                                    type(rss_exc).__name__,
+                                )
+                    if response is None:
+                        if last_error:
+                            raise last_error from exc
+                        response = {"results": []}
+                elif response is None:
+                    logger.warning(
+                        "SearXNG search failed; trying Brave web-search fallback: %s",
+                        type(exc).__name__,
+                    )
+                    try:
+                        response = self._request_brave_search(
+                            query=normalized_query,
+                            time_range=normalized_time_range,
+                        )
+                        provider = "brave"
+                    except Exception as brave_exc:
+                        raise RuntimeError(
+                            "Live web search is temporarily unavailable across configured providers and the public fallback."
+                        ) from brave_exc
 
         raw_results = response.get("results", []) if isinstance(response, dict) else []
         used_rss = provider == "rss"
 
         if not isinstance(raw_results, list):
             raise RuntimeError("Live web search provider returned invalid results.")
+
+        # If a configured general-web search API responds successfully but has
+        # no results, make one bounded independent search attempt before giving
+        # up. News-only queries keep their dedicated publisher-aware RSS route.
+        if (
+            not raw_results
+            and normalized_topic != "news"
+            and not used_rss
+            and not is_live_sports_query
+            and provider not in {"brave", "brave_api"}
+        ):
+            try:
+                if self.brave_api_key:
+                    fallback = self._request_brave_api(
+                        query=normalized_query,
+                        time_range=normalized_time_range,
+                    )
+                    fallback_provider = "brave_api"
+                else:
+                    fallback = self._request_brave_search(
+                        query=normalized_query,
+                        time_range=normalized_time_range,
+                    )
+                    fallback_provider = "brave"
+                fallback_results = fallback.get("results", []) if isinstance(fallback, dict) else []
+                if isinstance(fallback_results, list) and fallback_results:
+                    response = fallback
+                    raw_results = fallback_results
+                    provider = fallback_provider
+            except Exception as exc:
+                logger.warning("Independent web-search fallback failed: %s", type(exc).__name__)
 
         if not used_rss and not raw_results and is_live_sports_query:
             # Search APIs sometimes return HTTP 200 with zero indexed results.

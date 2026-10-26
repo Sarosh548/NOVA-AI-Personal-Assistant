@@ -350,6 +350,34 @@ def test_fresh_information_question_forces_web_search():
     assert routed["requires_tool"] is True
 
 
+def test_explicit_general_web_search_does_not_require_freshness_words():
+    service = make_service_without_llm()
+    cases = (
+        ("Search the web for Python asyncio documentation", "Python asyncio documentation"),
+        ("Internet pe search karo LangGraph tutorials", "LangGraph tutorials"),
+        ("Search for vector database comparisons", "vector database comparisons"),
+    )
+
+    for message, expected_query in cases:
+        routed = service._force_fresh_web_research(
+            message=message,
+            result={
+                "intent": "chat",
+                "query": None,
+                "web_action": None,
+                "web_topic": None,
+                "web_time_range": None,
+                "requires_tool": False,
+            },
+        )
+
+        assert routed["intent"] == "web"
+        assert routed["web_action"] == "search"
+        assert routed["web_topic"] == "general"
+        assert routed["query"] == expected_query
+        assert routed["requires_tool"] is True
+
+
 def test_fresh_news_request_forces_news_day_search():
     service = make_service_without_llm()
 
@@ -2374,4 +2402,70 @@ def test_voice_style_composed_email_without_with_and_with_instruction_routes_det
     assert result["to"] == "saroshqais1@gmail.com"
     assert result["subject"] == "Nova voice email retest 2"
     assert result["body"] == "this is a fresh voice test after the fix."
+    assert result["requires_tool"] is True
+
+
+def test_qa_prefixed_task_list_and_relative_reminder_route_deterministically():
+    service = make_service_without_llm()
+
+    task_result = service.analyze(
+        message=(
+            "Read-only QA: list my current NOVA tasks and tell me the count "
+            "of active tasks. Do not create, complete, or change any task."
+        ),
+        history=[],
+    )
+    assert task_result["intent"] == "task"
+    assert task_result["task_action"] == "list"
+    assert task_result["requires_tool"] is True
+
+    reminder_result = service.analyze(
+        message=(
+            "For QA: create a temporary reminder for 15 minutes from now "
+            "titled NOVA QA TEMP REMINDER 2026-10-26. This is only a test."
+        ),
+        history=[],
+    )
+    assert reminder_result["intent"] == "reminder"
+    assert reminder_result["reminder_action"] == "create"
+    assert reminder_result["requires_tool"] is True
+    assert reminder_result["task"] == "NOVA QA TEMP REMINDER 2026-10-26"
+    assert reminder_result["scheduled_at"]
+
+
+def test_temporary_low_priority_task_with_named_title_routes_deterministically():
+    service = make_service_without_llm()
+    message = (
+        "Create a temporary low-priority task named NOVA QA TEMP 2026-10-26 "
+        "with no due date. This is a QA-only test and should be removed after verification."
+    )
+    result = service.analyze(message=message, history=[])
+
+    assert result["intent"] == "task"
+    assert result["task_action"] == "create"
+    assert result["task"] == "NOVA QA TEMP 2026-10-26"
+    assert result["priority"] == "low"
+    assert result["scheduled_at"] is None
+    assert result["requires_tool"] is True
+
+
+def test_affirmative_temporary_task_follow_up_resolves_from_history():
+    service = make_service_without_llm()
+    request = (
+        "Create a temporary low-priority task named NOVA QA TEMP 2026-10-26 "
+        "with no due date. This is a QA-only test and should be removed after verification."
+    )
+    history = [
+        {"role": "user", "content": request},
+        {"role": "assistant", "content": "Would you like me to create that task?"},
+    ]
+
+    result = service.analyze(
+        message="Yes, create that temporary QA task now, then report its ID and status.",
+        history=history,
+    )
+    assert result["intent"] == "task"
+    assert result["task_action"] == "create"
+    assert result["task"] == "NOVA QA TEMP 2026-10-26"
+    assert result["priority"] == "low"
     assert result["requires_tool"] is True
