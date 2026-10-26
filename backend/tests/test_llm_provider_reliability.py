@@ -336,3 +336,35 @@ def test_empty_llm_completion_is_a_recoverable_provider_failure(monkeypatch):
         )
 
     assert llm_module.is_llm_provider_error(exc_info.value)
+
+
+
+def test_companion_response_returns_safe_fallback_during_provider_cooldown(monkeypatch):
+    service = LLMService(client=SimpleNamespace())
+
+    def provider_cooldown(**_kwargs):
+        raise llm_module.LLMProviderCoolingDownError("provider busy")
+
+    monkeypatch.setattr(service, "_chat_completion", provider_cooldown)
+
+    response = service.generate_companion_response(
+        message="QA-only: calculate 17 times 6",
+        history=[],
+    )
+
+    assert response == llm_module.LLM_PROVIDER_UNAVAILABLE_RESPONSE
+
+
+def test_companion_response_does_not_hide_programming_errors(monkeypatch):
+    service = LLMService(client=SimpleNamespace())
+
+    def programming_error(**_kwargs):
+        raise ValueError("unexpected programming defect")
+
+    monkeypatch.setattr(service, "_chat_completion", programming_error)
+
+    with pytest.raises(ValueError, match="unexpected programming defect"):
+        service.generate_companion_response(
+            message="Hello",
+            history=[],
+        )

@@ -400,3 +400,26 @@ def test_main_application_uses_security_boundary():
         ]
         == "strict-origin-when-cross-origin"
     )
+
+
+
+def test_unhandled_server_error_includes_cors_headers_for_allowed_frontend():
+    app = FastAPI()
+
+    @app.get("/explode")
+    def explode():
+        raise RuntimeError("simulated LLM provider failure")
+
+    settings = SecuritySettings()
+    app.add_exception_handler(Exception, main.unhandled_exception_handler)
+    configure_api_security(app, settings)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get(
+        "/explode",
+        headers={"Origin": settings.nova_frontend_origin},
+    )
+
+    assert response.status_code == 500
+    assert response.headers["Access-Control-Allow-Origin"] == settings.nova_frontend_origin
+    assert response.headers["Access-Control-Expose-Headers"] == "X-Request-ID"

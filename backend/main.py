@@ -15,7 +15,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel, Field
 
-from config import get_settings
+from config import get_security_settings, get_settings
 import api.auth as auth_api
 
 from security import configure_api_security
@@ -244,6 +244,12 @@ async def unhandled_exception_handler(
 
     if request_id:
         response.headers["X-Request-ID"] = request_id
+
+    origin = request.headers.get("origin")
+    if origin and origin in get_security_settings().cors_allowed_origins():
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Expose-Headers"] = "X-Request-ID"
+        response.headers["Vary"] = "Origin"
 
     return response
 
