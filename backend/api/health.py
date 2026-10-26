@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 
 from database.connection import test_connection
+from services.embedding_service import local_embeddings_enabled
 
 
 router = APIRouter(
@@ -29,4 +30,7 @@ def readiness() -> dict[str, str]:
     return {
         "status": "ready",
         "database": "ok",
+        "embedding_mode": (
+            "semantic" if local_embeddings_enabled() else "keyword_fallback"
+        ),
     }
