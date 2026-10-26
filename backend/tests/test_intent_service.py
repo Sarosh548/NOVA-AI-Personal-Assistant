@@ -2487,3 +2487,37 @@ def test_analyze_ignores_negated_english_calendar_write_when_listing_events():
     assert result.get("clarification_required") is not True
     assert result["time_min"]
     assert result["time_max"]
+
+
+
+def test_deterministic_email_list_handles_numbered_read_only_request_without_web_routing():
+    service = make_service_without_llm()
+    message = (
+        "List my 3 most recent emails. Read-only: do not send, reply, archive, "
+        "or delete anything."
+    )
+
+    result = service.analyze(message=message, history=[])
+
+    assert result["intent"] == "email"
+    assert result["email_action"] == "list"
+    assert result["max_results"] == 3
+    assert result["include_body"] is False
+    assert result["requires_tool"] is True
+    assert result.get("web_action") is None
+    assert "llm_provider_unavailable" not in result
+
+
+def test_deterministic_email_list_supports_numbered_most_recent_gmail_messages():
+    service = make_service_without_llm()
+
+    result = service.analyze(
+        message="Show my 3 most recent Gmail messages",
+        history=[],
+    )
+
+    assert result["intent"] == "email"
+    assert result["email_action"] == "list"
+    assert result["max_results"] == 3
+    assert result["include_body"] is False
+    assert result["requires_tool"] is True

@@ -2534,9 +2534,9 @@ Return the full schema with null for absent values:
             r"^(?:(?:please|zara)\s+)?(?:(?:meri|mere|my|the)\s+)*(?:emails?|e-mails?|mail|inbox)\s+"
             r"(?:dikhao|dikhaiye|show|list|check(?:\s+karo)?|dekh(?:\s+lo|o)?|batao)[.!?]*$",
             r"^(?:please\s+)?(?:show|list|check|read|summari[sz]e|fetch|get|open)\s+"
-            r"(?:(?:me|my|the)\s+)*(?:(?:latest|recent|new|unread|important|urgent|priority|"
+            r"(?:(?:me|my|the)\s+)*(?:(?:\d{1,2}\s+)?(?:most\s+recent|latest|recent|new|unread|important|urgent|priority|"
             r"zaroori|zaruri|all|last(?:\s+\d+)?|top(?:\s+\d+)?)\s+)*"
-            r"(?:emails?|e-mails?|inbox|messages?)\b.*$",
+            r"(?:emails?|e-mails?|inbox|(?:gmail\s+)?messages?)\b.*$",
             r"^(?:what(?:'s|\s+is)\s+in\s+my\s+inbox|any\s+new\s+emails?|"
             r"do\s+i\s+have\s+(?:any\s+)?(?:new\s+)?emails?|"
             r"what\s+emails\s+did\s+i\s+get)\??$",
@@ -2553,9 +2553,14 @@ Return the full schema with null for absent values:
         ):
             result["intent"] = "email"
             result["email_action"] = "list"
+            # Only fetch message bodies when the user explicitly asks to read or
+            # summarize email content. A qualifier like "read-only" is not that request.
             result["include_body"] = bool(
                 re.search(
-                    r"\b(?:read|summar(?:y|ies|ize|ise))\b",
+                    r"\b(?:read|summar(?:y|ies|ize|ise))\s+"
+                    r"(?:(?:me|my|the|latest|recent|most\s+recent|new|unread|important|"
+                    r"last(?:\s+\d+)?|top(?:\s+\d+)?|\d{1,2})\s+)*"
+                    r"(?:emails?|e-mails?|mail|inbox|messages?)\b",
                     email_routing_text,
                     flags=re.IGNORECASE,
                 )
@@ -2587,7 +2592,23 @@ Return the full schema with null for absent values:
                     query_parts.append("is:important")
                 if unread_requested or recent_requested or important_requested:
                     result["query"] = " ".join(query_parts)
-            result["max_results"] = 10 if (important_requested and recent_requested) else 5
+            requested_email_count = re.search(
+                r"\b(?:(?:last|top)\s+(?P<before_count>\d{1,2})|"
+                r"(?P<count>\d{1,2})\s+(?:(?:most\s+)?(?:recent|latest|new|unread|"
+                r"important|urgent|priority)))\s+(?=(?:emails?|e-mails?|mail|inbox|(?:gmail\s+)?messages?)\b)",
+                email_routing_text,
+                flags=re.IGNORECASE,
+            )
+            if requested_email_count:
+                requested_count_text = (
+                    requested_email_count.group("before_count")
+                    or requested_email_count.group("count")
+                )
+                result["max_results"] = max(1, min(20, int(requested_count_text)))
+            else:
+                result["max_results"] = (
+                    10 if (important_requested and recent_requested) else 5
+                )
             result["requires_tool"] = True
             return result
 
