@@ -752,3 +752,65 @@ def test_search_validates_threshold(
         raise AssertionError(
             "Expected threshold validation"
         )
+
+
+
+def test_knowledge_search_uses_user_scoped_keyword_fallback_when_embeddings_disabled(monkeypatch):
+    from services.embedding_service import EmbeddingUnavailableError
+
+    class DisabledEmbedding:
+        def create_embedding(self, _text):
+            raise EmbeddingUnavailableError("low memory")
+
+    document = FakeDocument()
+    chunk = FakeChunk(content="Python guide: use RAG for AI retrieval.")
+    session = FakeSession(
+        engine="fake-engine",
+        search_rows=[(chunk, document)],
+    )
+    monkeypatch.setattr(knowledge_module, "Session", lambda _engine: session)
+    service = KnowledgeService(
+        embedding_service=DisabledEmbedding(),
+        reranker_service=FakeReranker(),
+    )
+
+    results = service.search(
+        user_id=document.user_id,
+        query="Python guide",
+        limit=5,
+        rerank=True,
+    )
+
+    assert service.reranker_service.calls == []
+    assert len(results) == 1
+    assert results[0]["document_id"] == document.id
+    assert "Python guide" in results[0]["content"]
+    assert results[0]["similarity"] > 0
+    assert "knowledge_documents.user_id" in str(session.last_statement)
+
+
+def test_knowledge_document_can_be_saved_without_local_embeddings(monkeypatch):
+    from services.embedding_service import EmbeddingUnavailableError
+
+    class DisabledEmbedding:
+        def create_embedding(self, _text):
+            raise EmbeddingUnavailableError("low memory")
+
+    session = FakeSession(engine="fake-engine")
+    monkeypatch.setattr(knowledge_module, "Session", lambda _engine: session)
+    service = KnowledgeService(
+        embedding_service=DisabledEmbedding(),
+        reranker_service=FakeReranker(),
+    )
+
+    result = service.create_document(
+        user_id="user-001",
+        title="Low-memory retrieval guide",
+        content="Python guide for AI retrieval with RAG.",
+    )
+
+    chunks = [item for item in session.added if isinstance(item, KnowledgeChunk)]
+    assert result["id"] == 7
+    assert chunks
+    assert all(item.embedding is None for item in chunks)
+    assert session.committed is True

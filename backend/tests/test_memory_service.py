@@ -165,3 +165,45 @@ def test_unrelated_message_is_not_goal_change():
     assert service._is_explicit_goal_change(
         "I really like working with FastAPI."
     ) is False
+
+
+def test_memory_search_uses_lexical_fallback_when_local_embeddings_disabled(monkeypatch):
+    from services.embedding_service import EmbeddingUnavailableError
+    import services.memory_service as memory_module
+
+    class DisabledEmbedding:
+        def create_embedding(self, _text):
+            raise EmbeddingUnavailableError("low memory")
+
+    class FakeMemoryRow:
+        id = 11
+        user_id = "user-001"
+        memory_text = "Sarosh is building NOVA with RAG and LangGraph."
+        category = "project"
+        importance = "high"
+
+    class FakeScalars:
+        def all(self):
+            return [FakeMemoryRow()]
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def scalars(self, _statement):
+            return FakeScalars()
+
+    monkeypatch.setattr(memory_module, "Session", lambda _engine: FakeSession())
+    service = MemoryService(llm_service=object())
+    service.embedding_service = DisabledEmbedding()
+
+    results = service.find_similar_memories(
+        user_id="user-001",
+        new_memory="Tell me about my NOVA RAG project",
+        limit=4,
+    )
+
+    assert results
+    assert results[0]["id"] == 11
+    assert results[0]["similarity"] > 0

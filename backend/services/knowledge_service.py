@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from database.connection import engine
 from models.knowledge_chunk import KnowledgeChunk
 from models.knowledge_document import KnowledgeDocument
-from services.embedding_service import EmbeddingService
+from services.embedding_service import EmbeddingService, EmbeddingUnavailableError
+from services.lexical_retrieval import lexical_relevance, lexical_terms
 from services.reranker_service import RerankerService
 from services.url_parser_service import (
     ParsedWebPage,
@@ -250,19 +251,16 @@ class KnowledgeService:
             for index, chunk_text in enumerate(
                 chunks
             ):
-                vector = (
-                    self.embedding_service
-                    .create_embedding(chunk_text)
-                )
-
-                embedding = (
-                    vector.tolist()
-                    if hasattr(
-                        vector,
-                        "tolist",
+                try:
+                    vector = self.embedding_service.create_embedding(chunk_text)
+                    embedding = (
+                        vector.tolist()
+                        if hasattr(vector, "tolist")
+                        else list(vector)
                     )
-                    else list(vector)
-                )
+                except EmbeddingUnavailableError:
+                    # Keep document creation available on small plans; search uses keywords.
+                    embedding = None
 
                 session.add(
                     KnowledgeChunk(
@@ -391,6 +389,50 @@ class KnowledgeService:
 
             return True
 
+    def _search_keyword_fallback(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        limit: int,
+    ) -> list[dict]:
+        """User-scoped text search without loading any local transformer model."""
+        if not lexical_terms(query):
+            return []
+        statement = (
+            select(KnowledgeChunk, KnowledgeDocument)
+            .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
+            .where(KnowledgeDocument.user_id == user_id)
+            .order_by(KnowledgeChunk.created_at.desc())
+            .limit(1000)
+        )
+        with Session(engine) as session:
+            rows = session.execute(statement).all()
+
+        matches: list[dict] = []
+        for chunk, document in rows:
+            searchable_text = " ".join(
+                part for part in (document.title, document.source or "", chunk.content)
+                if part
+            )
+            score = lexical_relevance(query, searchable_text)
+            if score <= 0:
+                continue
+            matches.append({
+                "document_id": document.id,
+                "title": document.title,
+                "source": document.source,
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
+                "similarity": round(score, 4),
+            })
+
+        matches.sort(key=lambda item: item["similarity"], reverse=True)
+        matches = matches[:limit]
+        # Deliberately skip cross-encoder reranking here: it would load a second
+        # transformer model and recreate the same memory-pressure failure.
+        return matches
+
     def search(
         self,
         *,
@@ -434,18 +476,18 @@ class KnowledgeService:
             else limit
         )
 
-        vector = (
-            self.embedding_service.create_embedding(
-                normalized_query
+        try:
+            vector = self.embedding_service.create_embedding(normalized_query)
+        except EmbeddingUnavailableError:
+            return self._search_keyword_fallback(
+                user_id=user_id,
+                query=normalized_query,
+                limit=limit,
             )
-        )
 
         query_embedding = (
             vector.tolist()
-            if hasattr(
-                vector,
-                "tolist",
-            )
+            if hasattr(vector, "tolist")
             else list(vector)
         )
 

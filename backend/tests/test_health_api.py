@@ -35,6 +35,11 @@ def test_readiness_probe_reports_database_health(
         "test_connection",
         lambda: True,
     )
+    monkeypatch.setattr(
+        health_module,
+        "local_embeddings_enabled",
+        lambda: False,
+    )
 
     response = client.get(
         "/health/ready"
@@ -44,6 +49,7 @@ def test_readiness_probe_reports_database_health(
     assert response.json() == {
         "status": "ready",
         "database": "ok",
+        "embedding_mode": "keyword_fallback",
     }
 
 
