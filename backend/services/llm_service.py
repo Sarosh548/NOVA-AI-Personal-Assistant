@@ -803,12 +803,23 @@ Recent conversation:
 {history_context}
 """
 
-        return self._chat_completion(
-            instructions=instructions,
-            user_input=f"Current user message:\\n{message.strip()}",
-            max_completion_tokens=768,
-            reasoning_effort="low",
-        )
+        try:
+            return self._chat_completion(
+                instructions=instructions,
+                user_input=f"Current user message:\\n{message.strip()}",
+                max_completion_tokens=768,
+                reasoning_effort="low",
+            )
+        except Exception as exc:
+            if not is_llm_provider_error(exc):
+                raise
+
+            logger.warning(
+                "Companion response is using the safe provider-unavailable "
+                "fallback (%s).",
+                type(exc).__name__,
+            )
+            return LLM_PROVIDER_UNAVAILABLE_RESPONSE
 
     def generate_voice_response_stream(
         self,
