@@ -40,19 +40,11 @@ function waitForChatRetry(delayMs: number): Promise<void> {
 const CHAT_REQUEST_TIMEOUT_MS = 30_000
 
 async function sendChatRequest(options: RequestInit): Promise<ChatResponse> {
-  const controller = new AbortController()
-  const timeoutId = window.setTimeout(
-    () => controller.abort(),
+  return apiRequestWithRefresh<ChatResponse>(
+    "/chat",
+    options,
     CHAT_REQUEST_TIMEOUT_MS,
   )
-  try {
-    return await apiRequestWithRefresh<ChatResponse>("/chat", {
-      ...options,
-      signal: controller.signal,
-    })
-  } finally {
-    window.clearTimeout(timeoutId)
-  }
 }
 
 export async function sendChatMessage(params: { message: string; conversationId: number | null; idempotencyKey: string }): Promise<ChatResponse> {
