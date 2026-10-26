@@ -1037,7 +1037,7 @@ def test_web_search_falls_back_from_empty_news_to_general_search(
                     "url": "https://example.com/current",
                     "content": "A current AI voice assistant result.",
                     "score": 0.9,
-                    "publishedDate": datetime.now(timezone.utc).isoformat(),"
+                    "publishedDate": datetime.now(timezone.utc).isoformat(),
                 }
             ]
         }
