@@ -3766,3 +3766,36 @@ def test_knowledge_retrieval_retries_with_exact_document_title(monkeypatch):
     assert "NEBULA-7429" in context
     assert sources[0]["title"] == "NOVA QA TEMP 20261026"
     assert ("NOVA QA TEMP 20261026", 0.45) in fake.queries
+
+
+
+def test_agent_node_uses_calendar_specific_clarification():
+    state = {
+        "user_id": "user-001",
+        "conversation_id": 1,
+        "user_message": "Create a calendar event.",
+        "history": [],
+        "understanding": {
+            "intent": "calendar",
+            "calendar_action": "create",
+            "clarification_required": True,
+            "requires_tool": False,
+        },
+        "plan": {"requires_tool": False},
+        "permission": {
+            "allowed": False,
+            "requires_confirmation": False,
+        },
+        "confirmation": dict(graph.DEFAULT_CONFIRMATION),
+        "tool_result": dict(graph.DEFAULT_TOOL_RESULT),
+        "workflow_result": dict(graph.DEFAULT_WORKFLOW_RESULT),
+        "memory_context": "",
+        "execution_context": ExecutionContext.interactive(),
+        "response": "",
+    }
+
+    result = graph.agent_node(state)
+
+    assert "calendar event" in result["response"].lower()
+    assert "email" not in result["response"].lower()
+    assert "haven't created or changed anything" in result["response"].lower()

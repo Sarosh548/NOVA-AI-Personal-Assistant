@@ -2469,3 +2469,21 @@ def test_affirmative_temporary_task_follow_up_resolves_from_history():
     assert result["task"] == "NOVA QA TEMP 2026-10-26"
     assert result["priority"] == "low"
     assert result["requires_tool"] is True
+
+
+
+def test_analyze_ignores_negated_english_calendar_write_when_listing_events():
+    service = make_service_without_llm()
+    message = (
+        "List my calendar events for tomorrow in Asia/Karachi timezone. "
+        "Read only; do not create or modify anything."
+    )
+
+    result = service.analyze(message=message, history=[])
+
+    assert result["intent"] == "calendar"
+    assert result["calendar_action"] == "list"
+    assert result["requires_tool"] is True
+    assert result.get("clarification_required") is not True
+    assert result["time_min"]
+    assert result["time_max"]
