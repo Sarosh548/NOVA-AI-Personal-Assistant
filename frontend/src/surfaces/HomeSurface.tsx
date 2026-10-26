@@ -1,3 +1,4 @@
+import { parseApiDateTime } from "../app/datetime"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { ApiRequestError } from "../api/client"
@@ -17,7 +18,7 @@ type HomeSurfaceProps = {
 
 function formatDate(value: string | null): string {
   if (!value) return "No scheduled time"
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return "No scheduled time"
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
 }
