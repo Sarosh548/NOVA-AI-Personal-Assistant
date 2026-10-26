@@ -25,6 +25,40 @@ class FakeResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+def test_day_scoped_web_search_filters_stale_and_undated_sources(monkeypatch):
+    service = WebSearchService(api_key="", searxng_endpoint="http://127.0.0.1:8080/search")
+    fresh_date = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(
+        service,
+        "_request_searxng",
+        lambda **kwargs: {
+            "results": [
+                {
+                    "title": "Latest NASA Artemis II mission update",
+                    "url": "https://example.com/current-artemis-update",
+                    "content": "A current, dated Artemis II update from today.",
+                    "published_date": fresh_date,
+                },
+                {
+                    "title": "Artemis II launches in June",
+                    "url": "https://example.com/old-artemis-launch",
+                    "content": "Historical coverage of a past launch.",
+                    "published_date": "2026-06-23T07:00:00+00:00",
+                },
+                {
+                    "title": "Undated Artemis article",
+                    "url": "https://example.com/undated-artemis",
+                    "content": "No publication timestamp was provided.",
+                },
+            ]
+        },
+    )
+
+    results = service.search(query="latest NASA Artemis II update", time_range="day")
+
+    assert [item["url"] for item in results] == ["https://example.com/current-artemis-update"]
+
+
 def test_web_search_requires_a_search_provider(monkeypatch):
     service = WebSearchService(
         api_key="",
@@ -520,6 +554,7 @@ def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
     )
 
     captured = {}
+    fresh_date = datetime.now(timezone.utc).isoformat()
 
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
@@ -532,7 +567,7 @@ def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
                         "url": "https://example.com/voice",
                         "content": "Fresh live result.",
                         "score": 0.87,
-                        "publishedDate": "2026-10-06",
+                        "publishedDate": fresh_date,
                     }
                 ]
             }
@@ -561,7 +596,7 @@ def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
             "url": "https://example.com/voice",
             "content": "Fresh live result.",
             "score": 0.87,
-            "published_date": "2026-10-06",
+            "published_date": fresh_date,
         }
     ]
 
@@ -574,6 +609,7 @@ def test_web_search_normalizes_provider_results(
     )
 
     captured = {}
+    fresh_date = datetime.now(timezone.utc).isoformat()
 
     def fake_urlopen(request, timeout):
         captured["authorization"] = request.headers["Authorization"]
@@ -590,7 +626,7 @@ def test_web_search_normalizes_provider_results(
                         "url": "https://example.com/ai",
                         "content": "Fresh AI information.",
                         "score": 0.91,
-                        "published_date": "2026-09-21",
+                        "published_date": fresh_date,
                     },
                     {
                         "title": "",
@@ -632,13 +668,14 @@ def test_web_search_normalizes_provider_results(
             "url": "https://example.com/ai",
             "content": "Fresh AI information.",
             "score": 0.91,
-            "published_date": "2026-09-21",
+            "published_date": fresh_date,
         }
     ]
 
 
 def test_web_search_uses_google_news_rss_when_news_providers_are_unavailable(monkeypatch):
     service = WebSearchService(api_key="", searxng_endpoint="")
+    pub_date = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
     class FakeRSSResponse:
         def __enter__(self):
@@ -646,7 +683,7 @@ def test_web_search_uses_google_news_rss_when_news_providers_are_unavailable(mon
         def __exit__(self, exc_type, exc, tb):
             return False
         def read(self):
-            return b"<rss><channel><item><title>AI voice assistant update</title><link>https://example.com/voice</link><pubDate>Tue, 06 Oct 2026 12:00:00 GMT</pubDate><description>Fresh AI voice assistant update.</description><source>Example News</source></item></channel></rss>"
+            return f"<rss><channel><item><title>AI voice assistant update</title><link>https://example.com/voice</link><pubDate>{pub_date}</pubDate><description>Fresh AI voice assistant update.</description><source>Example News</source></item></channel></rss>".encode("utf-8")
 
     monkeypatch.setattr(
         "services.web_search_service.urlopen",
@@ -664,7 +701,7 @@ def test_web_search_uses_google_news_rss_when_news_providers_are_unavailable(mon
         "url": "https://example.com/voice",
         "content": "Source: Example News Fresh AI voice assistant update.",
         "score": None,
-        "published_date": "Tue, 06 Oct 2026 12:00:00 GMT",
+        "published_date": pub_date,
     }]
 
 
@@ -1000,7 +1037,7 @@ def test_web_search_falls_back_from_empty_news_to_general_search(
                     "url": "https://example.com/current",
                     "content": "A current AI voice assistant result.",
                     "score": 0.9,
-                    "publishedDate": "2026-10-06",
+                    "publishedDate": datetime.now(timezone.utc).isoformat(),"
                 }
             ]
         }
@@ -1022,7 +1059,7 @@ def test_web_search_falls_back_from_empty_news_to_general_search(
         ("latest AI voice assistants", "general", "day"),
     ]
     assert results[0]["title"] == "Current AI Voice Assistant Update"
-    assert results[0]["published_date"] == "2026-10-06"
+    assert results[0]["published_date"].startswith(datetime.now(timezone.utc).date().isoformat())
 
 
 def test_empty_google_news_rss_retries_without_filter_without_reusing_failed_searxng(
@@ -1052,7 +1089,7 @@ def test_empty_google_news_rss_retries_without_filter_without_reusing_failed_sea
                     "url": "https://example.com/voice-update",
                     "content": "A current voice assistant development.",
                     "score": None,
-                    "published_date": "2026-10-12",
+                    "published_date": datetime.now(timezone.utc).isoformat(),
                 }
             ]
         }
@@ -1690,9 +1727,9 @@ def test_ai_news_query_retries_without_provider_date_filter_when_relevance_filte
         ("latest AI news today", "news", "day"),
         ("latest AI news today", "news", None),
     ]
-    assert [item["url"] for item in results] == [
-        "https://example.com/anthropic-ai-safety"
-    ]
+    # The unfiltered retry only returned 13 October coverage, stale for a
+    # day-scoped request on 26 October. Do not present it as the latest update.
+    assert results == []
 
 def test_openai_news_result_filter_rejects_roundups_forums_stale_and_undated_items():
     now = datetime.now(timezone.utc)
