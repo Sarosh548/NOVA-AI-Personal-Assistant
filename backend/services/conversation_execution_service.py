@@ -252,6 +252,85 @@ def _format_persisted_task_list_response(tool_result, user_message=None):
     return "\n".join(lines)
 
 
+def _format_persisted_reminder_list_response(tool_result, user_message=None):
+    """Build reminder-list answers from the user's persisted reminder rows."""
+    if not isinstance(tool_result, dict):
+        return None
+    if (
+        tool_result.get("tool") != "reminder"
+        or tool_result.get("action") != "list"
+        or tool_result.get("success") is not True
+        or tool_result.get("error")
+    ):
+        return None
+
+    payload = tool_result.get("result")
+    if not isinstance(payload, dict) or not isinstance(payload.get("reminders"), list):
+        return None
+    reminders = [item for item in payload["reminders"] if isinstance(item, dict)]
+    if not reminders:
+        return "Aapki saved reminder list mein abhi koi pending reminder nahi mila."
+
+    lines = [f"Aapki saved reminder list mein total {len(reminders)} pending reminders hain:"]
+    for reminder in reminders[:12]:
+        title = str(reminder.get("title") or "Untitled reminder").strip()
+        status = str(reminder.get("status") or "unknown").strip()
+        scheduled_at = reminder.get("reminder_time")
+        details = f"status: {status}"
+        if scheduled_at:
+            details += f", scheduled: {scheduled_at}"
+        lines.append(f"- {title} ({details})")
+    if len(reminders) > 12:
+        lines.append(f"Filhal pehle 12 reminders dikhaye gaye hain; total {len(reminders)} pending reminders hain.")
+    return "\n".join(lines)
+
+
+def _format_failed_read_action_response(tool_result):
+    """Surface real read-action failures instead of model-generated success claims."""
+    if not isinstance(tool_result, dict) or tool_result.get("success") is not False:
+        return None
+
+    tool = str(tool_result.get("tool") or "").strip().lower()
+    action = str(tool_result.get("action") or "").strip().lower()
+    error = str(tool_result.get("error") or "").strip()
+    if not error:
+        return None
+
+    if tool == "email" and action in {"list", "search", "get"}:
+        lowered_error = error.casefold()
+        if "inbox access has not been granted" in lowered_error or "read-only email permission" in lowered_error:
+            return (
+                "Gmail inbox reading is not authorized yet. Reconnect Google/Gmail in "
+                "Control Center → Notifications and approve the requested read-only Gmail permission. "
+                "No email was sent, replied to, archived, or deleted."
+            )
+        if "connect your google/gmail account" in lowered_error:
+            return (
+                "Gmail is not connected to NOVA for inbox reading. Connect Google/Gmail in "
+                "Control Center → Notifications, then retry. No email was sent, replied to, "
+                "archived, or deleted."
+            )
+        return (
+            f"NOVA could not read your Gmail inbox: {error} "
+            "No email was sent, replied to, archived, or deleted."
+        )
+
+    if tool == "calendar" and action in {"list", "get"}:
+        lowered_error = error.casefold()
+        if "not connected" in lowered_error or "not configured" in lowered_error or "not authorized" in lowered_error:
+            return (
+                "Google Calendar is not connected or authorized for this NOVA account. "
+                "Open the Calendar workspace, connect Google Calendar, and complete Google's authorization. "
+                "No Calendar changes were made."
+            )
+        return f"NOVA could not load Calendar events: {error} No Calendar changes were made."
+
+    if tool == "reminder" and action == "list":
+        return f"NOVA could not load your saved reminders: {error} No reminders were changed."
+
+    return None
+
+
 def _append_requested_web_sources(response, user_message, tool_result):
     """Attach real retrieved URLs when the user explicitly asks for source links."""
     message = str(user_message or "").lower()
@@ -297,6 +376,18 @@ def _append_requested_web_sources(response, user_message, tool_result):
             break
 
     if not source_lines:
+        requests_fresh_sources = bool(
+            re.search(
+                r"\b(?:latest|recent|current|today|right now|at the moment|live|now|aaj|abhi|filhal)\b",
+                message,
+            )
+        )
+        if requests_fresh_sources:
+            return (
+                "I couldn't verify a fresh, dated source for this request just now. "
+                "The search returned no source within the requested freshness window, "
+                "so I won't present older articles as the latest update."
+            )
         return response
     return str(response or "").rstrip() + "\n\nSources (open links):\n" + "\n".join(source_lines)
 
@@ -2075,6 +2166,19 @@ class ConversationExecutionService:
         )
         if persisted_task_response is not None:
             response = persisted_task_response
+
+        # Reminder-list answers must also reflect the actual user-scoped rows;
+        # the model must not claim it lacks access after a successful tool call.
+        persisted_reminder_response = _format_persisted_reminder_list_response(
+            tool_result,
+            user_message,
+        )
+        if persisted_reminder_response is not None:
+            response = persisted_reminder_response
+
+        read_action_error_response = _format_failed_read_action_response(tool_result)
+        if read_action_error_response is not None:
+            response = read_action_error_response
         response = _append_requested_web_sources(
             response,
             user_message,

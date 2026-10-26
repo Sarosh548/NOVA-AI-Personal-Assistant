@@ -9,6 +9,8 @@ from services.conversation_execution_service import (
     _append_requested_web_sources,
     _clarify_chat_only_email_draft,
     _format_persisted_task_list_response,
+    _format_persisted_reminder_list_response,
+    _format_failed_read_action_response,
 )
 from services.execution_context import (
     ExecutionContext,
@@ -141,6 +143,131 @@ def test_persisted_task_list_verifies_exact_saved_title():
 
     assert response is not None
     assert "verification: exact 'nova retest task 1021b' saved task list mein mila." in response.lower()
+
+
+def test_persisted_reminder_list_response_uses_real_reminder_rows():
+    response = _format_persisted_reminder_list_response(
+        {
+            "success": True,
+            "tool": "reminder",
+            "action": "list",
+            "error": None,
+            "result": {
+                "count": 1,
+                "reminders": [
+                    {
+                        "id": 17,
+                        "title": "NOVA QA reminder",
+                        "reminder_time": "2026-10-27T10:00:00+05:00",
+                        "status": "pending",
+                    }
+                ],
+            },
+        },
+        user_message="List my reminders. Read-only; do not create or modify anything.",
+    )
+
+    assert response is not None
+    assert "NOVA QA reminder" in response
+    assert "status: pending" in response
+    assert "scheduled: 2026-10-27T10:00:00+05:00" in response
+    assert "direct access" not in response.lower()
+
+
+def test_persisted_reminder_list_response_reports_empty_saved_list():
+    response = _format_persisted_reminder_list_response(
+        {
+            "success": True,
+            "tool": "reminder",
+            "action": "list",
+            "error": None,
+            "result": {"count": 0, "reminders": []},
+        }
+    )
+
+    assert response == "Aapki saved reminder list mein abhi koi pending reminder nahi mila."
+
+
+def test_persisted_reminder_list_response_does_not_hide_tool_errors():
+    response = _format_persisted_reminder_list_response(
+        {
+            "success": False,
+            "tool": "reminder",
+            "action": "list",
+            "error": "Database unavailable.",
+            "result": None,
+        }
+    )
+
+    assert response is None
+
+
+def test_failed_gmail_list_exposes_missing_read_permission_safely():
+    response = _format_failed_read_action_response(
+        {
+            "success": False,
+            "tool": "email",
+            "action": "list",
+            "result": None,
+            "error": (
+                "Gmail inbox access has not been granted. Reconnect Google/Gmail from "
+                "Control Center → Notifications and approve the requested read-only email permission."
+            ),
+        }
+    )
+
+    assert response is not None
+    assert "read-only Gmail permission" in response
+    assert "No email was sent" in response
+
+
+def test_failed_calendar_list_is_not_reported_as_an_empty_calendar():
+    response = _format_failed_read_action_response(
+        {
+            "success": False,
+            "tool": "calendar",
+            "action": "list",
+            "result": None,
+            "error": "Google Calendar is not connected.",
+        }
+    )
+
+    assert response is not None
+    assert "not connected or authorized" in response
+    assert "No Calendar changes were made" in response
+    assert "no events" not in response.lower()
+
+
+def test_read_error_formatter_does_not_override_successful_results():
+    response = _format_failed_read_action_response(
+        {
+            "success": True,
+            "tool": "calendar",
+            "action": "list",
+            "result": {"events": []},
+            "error": None,
+        }
+    )
+
+    assert response is None
+
+
+def test_latest_source_request_does_not_repeat_stale_answer_when_no_fresh_sources():
+    response = _append_requested_web_sources(
+        "Artemis II launched in June 2026.",
+        "Search the web for the latest NASA Artemis II update and give me two source links.",
+        {
+            "success": True,
+            "tool": "web",
+            "action": "search",
+            "result": {"results": []},
+            "error": None,
+        },
+    )
+
+    assert "couldn't verify a fresh, dated source" in response.lower()
+    assert "won't present older articles as the latest update" in response.lower()
+    assert "launched in june" not in response.lower()
 
 
 def test_requested_web_source_links_include_only_real_retrieved_urls():
