@@ -1,3 +1,4 @@
+import { parseApiDateTime } from "../app/datetime"
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 
 import { ApiRequestError } from "../api/client"
@@ -16,7 +17,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog"
 import { Icon } from "../components/Icon"
 
 function formatDate(value: string): string {
-  const date = new Date(value)
+  const date = parseApiDateTime(value)
   if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
 }
