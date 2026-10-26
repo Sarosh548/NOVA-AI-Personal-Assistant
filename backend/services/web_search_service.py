@@ -1368,6 +1368,46 @@ class WebSearchService:
         return -1 <= age_days <= max_age_days
 
     @staticmethod
+    def _filter_results_to_fresh_window(
+        results: list[dict],
+        *,
+        now: datetime | None = None,
+        max_age_hours: int = 36,
+    ) -> list[dict]:
+        """Require explicit recent timestamps for day-scoped web searches.
+
+        Search providers and RSS fallbacks may ignore their requested date range.
+        Undated or stale items must not be presented as a verified current update.
+        """
+        reference_time = now or datetime.now(timezone.utc)
+        if reference_time.tzinfo is None:
+            reference_time = reference_time.replace(tzinfo=timezone.utc)
+        reference_time = reference_time.astimezone(timezone.utc)
+        max_age = timedelta(hours=max(1, max_age_hours))
+        future_tolerance = timedelta(minutes=5)
+        fresh: list[dict] = []
+        rejected = 0
+        for item in results:
+            published_at = WebSearchService._publication_datetime(item)
+            if published_at is None:
+                rejected += 1
+                continue
+            age = reference_time - published_at
+            if age < -future_tolerance or age > max_age:
+                rejected += 1
+                continue
+            fresh.append(item)
+
+        if rejected and not fresh:
+            logger.warning(
+                "Day-scoped web search withheld %s stale or undated results; "
+                "no source timestamp met the %s-hour freshness window.",
+                rejected,
+                max(1, max_age_hours),
+            )
+        return fresh
+
+    @staticmethod
     def _is_openai_news_query(query: str) -> bool:
         normalized = " ".join(str(query or "").lower().split())
         return "openai" in normalized and any(term in normalized for term in ("latest", "news", "recent", "current", "today"))
@@ -2121,6 +2161,12 @@ class WebSearchService:
 
         if normalized_topic == "news":
             normalized = self._rank_news_results(normalized_query, normalized)
+
+        # A provider/RSS may ignore the requested date range. Enforce freshness
+        # locally so a June story is never sold as today's update in October.
+        if normalized_time_range == "day":
+            normalized = self._filter_results_to_fresh_window(normalized)
+
         return normalized[:normalized_max_results]
 
     @staticmethod
