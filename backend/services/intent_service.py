@@ -465,6 +465,8 @@ Return the full schema with null for absent values:
             return result
 
         protected_patterns = (
+            r"\bsearch\s+(?:my\s+)?(?:files?|documents?|emails?|mail|private knowledge|knowledge)\b",
+            r"\b(?:find|locate|search)\s+(?:the\s+)?(?:file|document|resume|cv)\b",
             r"\bremind me\b",
             r"\b(?:create|add|make)\s+(?:a\s+)?(?:high\s+|medium\s+|low\s+)?priority\s+task\b",
             r"\b(?:create|add|make)\s+(?:a\s+)?task\b",
@@ -515,7 +517,14 @@ Return the full schema with null for absent values:
             for marker in fresh_markers
         )
 
-        if not has_fresh_marker:
+        explicit_search_request = re.search(
+            r"\b(?:search(?:\s+for)?|web search|google search|bing search|look up|lookup|browse(?:\s+the)?\s+web|research)\b|"
+            r"\b(?:google|internet|web|online)\s+(?:par|pe)\s+search\b|"
+            r"\b(?:search|google|internet|web|online)\b.{0,35}\b(?:karo|karna|kar|kr|kro|karke|krke)\b",
+            normalized,
+            re.IGNORECASE,
+        ) is not None
+        if not has_fresh_marker and not explicit_search_request:
             return result
 
         personal_current_patterns = (
@@ -600,7 +609,7 @@ Return the full schema with null for absent values:
             for marker in information_markers
         )
 
-        if not has_information_marker:
+        if not has_information_marker and not explicit_search_request:
             return result
 
         topic = result.get("web_topic")
@@ -744,6 +753,25 @@ Return the full schema with null for absent values:
 
         if not query:
             query = message.strip()
+
+        # An explicit search command must keep the user's actual search target,
+        # even if the intent model selected chat or proposed a placeholder query.
+        if explicit_search_request:
+            extraction_patterns = (
+                r"\bsearch\s+(?:the\s+)?(?:web|internet|online)\s+(?:for|about|on)\s+(.+)$",
+                r"\b(?:web|internet|online)\s+search\s+(?:for|about|on)\s+(.+)$",
+                r"\b(?:google|bing)\s+search\s+(?:for\s+)?(.+)$",
+                r"\b(?:google|internet|web|online)\s+(?:par|pe)\s+search\s+(?:karo|kar|kr|kro)\s+(.+)$",
+                r"\bsearch\s+(?:for\s+)?(.+)$",
+            )
+            for pattern in extraction_patterns:
+                match = re.search(pattern, message, flags=re.IGNORECASE)
+                if match:
+                    target = match.group(1).strip()
+                    target = re.sub(r"[.!?]+$", "", target).strip()
+                    if target:
+                        query = target
+                        break
 
         # The classifier can return an overly broad or unrelated query for
         # short breaking/current-news prompts. Keep explicit AI-news requests

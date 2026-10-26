@@ -350,6 +350,34 @@ def test_fresh_information_question_forces_web_search():
     assert routed["requires_tool"] is True
 
 
+def test_explicit_general_web_search_does_not_require_freshness_words():
+    service = make_service_without_llm()
+    cases = (
+        ("Search the web for Python asyncio documentation", "Python asyncio documentation"),
+        ("Internet pe search karo LangGraph tutorials", "LangGraph tutorials"),
+        ("Search for vector database comparisons", "vector database comparisons"),
+    )
+
+    for message, expected_query in cases:
+        routed = service._force_fresh_web_research(
+            message=message,
+            result={
+                "intent": "chat",
+                "query": None,
+                "web_action": None,
+                "web_topic": None,
+                "web_time_range": None,
+                "requires_tool": False,
+            },
+        )
+
+        assert routed["intent"] == "web"
+        assert routed["web_action"] == "search"
+        assert routed["web_topic"] == "general"
+        assert routed["query"] == expected_query
+        assert routed["requires_tool"] is True
+
+
 def test_fresh_news_request_forces_news_day_search():
     service = make_service_without_llm()
 

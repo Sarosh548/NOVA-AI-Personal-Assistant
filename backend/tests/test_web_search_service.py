@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import services.web_search_service as web_search_module
 from services.web_search_service import (
     WebSearchService,
 )
@@ -24,15 +25,20 @@ class FakeResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
-def test_web_search_requires_a_search_provider():
+def test_web_search_requires_a_search_provider(monkeypatch):
     service = WebSearchService(
         api_key="",
         searxng_endpoint="",
     )
+    monkeypatch.setattr(
+        service,
+        "_request_brave_search",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("Brave unavailable")),
+    )
 
     with pytest.raises(
         RuntimeError,
-        match="TAVILY_API_KEY or SEARXNG_URL",
+        match="temporarily unavailable",
     ):
         service.search(query="latest AI news")
 
@@ -46,6 +52,96 @@ def test_production_does_not_default_to_container_loopback_searxng(monkeypatch):
     # In cloud, 127.0.0.1 points at NOVA itself unless a search container
     # really runs beside it. Let news fall back to Google News RSS instead.
     assert service.searxng_endpoint == ""
+
+
+class FakeBytesResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, *_args):
+        return self.body
+
+
+def test_brave_html_search_parses_title_snippet_and_direct_source_url(monkeypatch):
+    body = b'''<!doctype html><html><body>
+      <div class="snippet svelte-x" data-pos="0" data-type="web">
+        <div class="result-content">
+          <a href="https://academy.langchain.com/courses/intro-to-langgraph">
+            <div class="title search-snippet-title" title="Introduction to LangGraph - Python">Introduction to LangGraph - Python</div>
+          </a>
+          <div class="generic-snippet"><div class="content">Learn LangGraph for building reliable agent workflows.</div></div>
+        </div>
+      </div>
+    </body></html>'''
+    observed = {}
+
+    def fake_urlopen(request, timeout):
+        observed["url"] = request.full_url
+        observed["timeout"] = timeout
+        return FakeBytesResponse(body)
+
+    monkeypatch.setattr(web_search_module, "urlopen", fake_urlopen)
+    service = WebSearchService(api_key="", searxng_endpoint="")
+
+    payload = service._request_brave_search(
+        query="LangGraph tutorials",
+        time_range=None,
+    )
+
+    assert payload["results"] == [{
+        "title": "Introduction to LangGraph - Python",
+        "url": "https://academy.langchain.com/courses/intro-to-langgraph",
+        "content": "Learn LangGraph for building reliable agent workflows.",
+        "score": None,
+        "published_date": None,
+    }]
+    assert "q=LangGraph+tutorials" in observed["url"]
+    assert "source=web" in observed["url"]
+    assert observed["timeout"] <= 3
+
+
+def test_cricbuzz_live_scores_are_preferred_and_completed_matches_are_rejected(monkeypatch):
+    page = b'''<html><body>
+      <a href="/live-cricket-scores/123/pak-eng-live" class="w-full bg-cbWhite flex flex-col p-3 gap-1" title="Pakistan vs England, 1st ODI">
+        <span>Pakistan</span><span>PAK</span><span>241-4</span>
+        <span>England</span><span>ENG</span><span>199-2</span><span>LIVE</span>
+      </a>
+      <a href="/live-cricket-scores/122/pak-eng-old" class="w-full bg-cbWhite flex flex-col p-3 gap-1" title="Pakistan vs England, Previous ODI - PAK won">
+        <span>Pakistan</span><span>PAK</span><span>228-9</span><span>PAK won</span>
+      </a>
+      <a href="/live-cricket-scores/111/inda-nza-stumps" class="w-full bg-cbWhite flex flex-col p-3 gap-1" title="India A vs New Zealand A, Test - Stumps">
+        <span>India A</span><span>INDA</span><span>488-8</span>
+        <span>New Zealand A</span><span>NZA</span><span>317</span><span>Day 3: Stumps</span>
+      </a>
+    </body></html>'''
+    monkeypatch.setattr(
+        web_search_module,
+        "urlopen",
+        lambda _request, timeout: FakeBytesResponse(page),
+    )
+    service = WebSearchService(api_key="", searxng_endpoint="")
+
+    results = service.search(
+        query="Cricket ka score batao",
+        topic="general",
+    )
+
+    assert len(results) == 1
+    assert results[0]["url"] == "https://www.cricbuzz.com/live-cricket-scores/123/pak-eng-live"
+    assert "241-4" in results[0]["content"]
+    assert "just now" in results[0]["content"]
+
+
+def test_live_cricket_score_intent_recognizes_roman_urdu():
+    assert WebSearchService._is_live_cricket_score_query("Cricket ka score batao")
+    assert WebSearchService._is_live_cricket_score_query("Aaj cricket mein match ho raha hai?")
+    assert WebSearchService._is_live_sports_query("Pakistan ka score batao")
 
 
 def test_live_sports_freshness_filter_rejects_stale_undated_and_future_results():
@@ -204,7 +300,7 @@ def test_live_sports_provider_timeouts_are_bounded(monkeypatch):
     service._request_searxng(query=query, topic="general", time_range="day")
     service._request_google_news_rss(query=query, time_range="day")
 
-    assert [timeout for _url, timeout in observed] == [5, 4, 4]
+    assert [timeout for _url, timeout in observed] == [2.5, 2.5, 2.5]
 
 
 def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
@@ -247,6 +343,9 @@ def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
 @pytest.mark.parametrize("tavily_mode", ["unavailable", "empty"])
 def test_live_sports_search_falls_back_quickly_to_google_news_rss(monkeypatch, tavily_mode):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    # This test verifies the legacy RSS fallback; current cricket scorecards
+    # are covered by the direct scoreboard test below.
+    monkeypatch.setattr(service, "_request_cricbuzz_live_scores", lambda *_args: None)
     rss_calls = []
     now = datetime.now(timezone.utc)
 
@@ -349,7 +448,7 @@ def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
     assert "format=json" in captured["url"]
     assert "categories=news" in captured["url"]
     assert "time_range=day" in captured["url"]
-    assert captured["timeout"] == 10
+    assert captured["timeout"] == 2.5
 
     assert results == [
         {
@@ -410,7 +509,7 @@ def test_web_search_normalizes_provider_results(
     )
 
     assert captured["authorization"] == "Bearer tvly-test"
-    assert captured["timeout"] == 10
+    assert captured["timeout"] == 2.5
     assert captured["body"] == {
         "query": "latest AI news",
         "search_depth": "basic",
