@@ -2188,11 +2188,21 @@ Return the full schema with null for absent values:
         # Calendar event creation is a state-changing action. Do not leave a
         # clear request to probabilistic intent classification, which previously
         # returned intent=chat and let realtime voice narrate a fake success.
-        calendar_write_negated = re.search(
-            r"\b(?:create|add|make|schedule|book|edit|update|delete)\b"
-            r"(?:\s+(?:or|and|ya|aur)\s+(?:create|add|make|schedule|book|edit|update|delete)\b)?"
-            r".{0,40}\b(?:mat|nahi|nahin)\s+(?:kar\w*|do|karo|karna)\b",
-            normalized,
+        calendar_write_negated = bool(
+            re.search(
+                r"\b(?:do\s+not|don't|dont|never|should\s+not|shouldn't|must\s+not)\s+"
+                r"(?:create|add|make|schedule|book|edit|update|modify|delete)\b"
+                r"(?:\s+(?:or|and)\s+(?:create|add|make|schedule|book|edit|update|modify|delete)\b)?",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+            or re.search(
+                r"\b(?:create|add|make|schedule|book|edit|update|delete)\b"
+                r"(?:\s+(?:or|and|ya|aur)\s+(?:create|add|make|schedule|book|edit|update|delete)\b)?"
+                r".{0,40}\b(?:mat|nahi|nahin)\s+(?:kar\w*|do|karo|karna)\b",
+                normalized,
+                flags=re.IGNORECASE,
+            )
         )
         calendar_write_requested = (
             re.search(r"\b(?:calendar|event|meeting|appointment)\b", normalized)

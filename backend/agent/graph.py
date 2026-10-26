@@ -4215,9 +4215,41 @@ def agent_node(state: NOVAState) -> NOVAState:
         }
 
     if understanding.get("clarification_required") is True:
-        clarification_response = (
-            "Who is 'him' (name or email), and should I send it by email?"
-        )
+        intent_name = str(understanding.get("intent") or "").strip().lower()
+        action_name = str(
+            understanding.get("calendar_action")
+            or understanding.get("email_action")
+            or understanding.get("action")
+            or ""
+        ).strip().lower()
+
+        if intent_name == "calendar":
+            if action_name == "create":
+                clarification_response = (
+                    "I can help create the Calendar event, but I need the event title "
+                    "and exact date/time first. I haven't created or changed anything."
+                )
+            elif action_name in {"update", "delete"}:
+                clarification_response = (
+                    "Which Calendar event should I change? Please provide its title or "
+                    "date. I haven't changed anything."
+                )
+            else:
+                clarification_response = (
+                    "I need a little more detail about the Calendar request. "
+                    "I haven't changed anything."
+                )
+        elif intent_name == "email" or (
+            intent_name == "action" and action_name == "send"
+        ):
+            clarification_response = (
+                "Who is 'him' (name or email), and should I send it by email?"
+            )
+        else:
+            clarification_response = (
+                "I need a little more detail before proceeding. No action has been taken."
+            )
+
         response_delta_callback = state.get(
             "response_delta_callback"
         )
