@@ -132,6 +132,32 @@ def test_search_rejects_unrelated_headline_lists_as_article_excerpt(monkeypatch)
     assert "DeepSeek" not in results[0]["content"]
 
 
+def test_search_trims_social_follow_widget_from_article_snippet(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    title = "1Password will now let AI agents log in to accounts for you without ever needing to see your password | TechRadar"
+    noisy_content = (
+        "Grok Bot and Meta Muse are among the first AI agents to get rollout over the coming days, "
+        "while ChatGPT Work, Dots and Claude Duet are just listed as coming soon. "
+        "Google logo on a black background next to text reading 'Click to follow TechRadar' "
+        "Google logo on a black background next to text reading 'Click to follow TechRadar' "
+        "Follow TechRadar on Google."
+    )
+    monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": [{
+        "title": title,
+        "url": "https://example.com/1password-ai-agents",
+        "content": noisy_content,
+        "score": 0.9,
+    }]})
+
+    results = service.search(query="latest AI news", topic="general")
+
+    assert len(results) == 1
+    assert "Grok Bot and Meta Muse" in results[0]["content"]
+    assert "Google logo" not in results[0]["content"]
+    assert "Click to follow" not in results[0]["content"]
+    assert "Follow TechRadar on Google" not in results[0]["content"]
+
+
 def test_search_preserves_clean_article_snippet(monkeypatch):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
     content = "OpenAI announced a new model with improved reasoning and lower inference latency today."

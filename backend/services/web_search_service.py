@@ -406,7 +406,7 @@ class WebSearchService:
             r"no spam|unsubscribe any time|up next|homevideos|quick reads|live tv|"
             r"skip to content|skip to main content|first published:|sign up for our newsletter|"
             r"subscribe to our newsletter|all rights reserved|cookie settings|privacy policy|"
-            r"terms of use)\b"
+            r"terms of use|click to follow|google logo|follow [a-z0-9 ]{1,50} on google|follow us on)\b"
         )
         marker = noise_markers.search(text)
         if marker:
