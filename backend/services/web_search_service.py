@@ -379,13 +379,27 @@ class WebSearchService:
             return str(title or "").strip()[:max_length]
 
         normalized_title = " ".join(str(title or "").split())
+        title_pattern = None
+        title_match = None
         if normalized_title:
             title_pattern = r"\s+".join(re.escape(part) for part in normalized_title.split())
-            match = re.search(title_pattern, text, flags=re.IGNORECASE)
-            if match and match.start() >= 100:
+            title_match = re.search(title_pattern, text, flags=re.IGNORECASE)
+            if title_match and title_match.start() >= 100:
                 # Long prefixes before the actual headline are usually publisher
                 # taglines, menus, breadcrumbs, or subscribe prompts.
-                text = text[match.start():]
+                text = text[title_match.start():]
+                title_match = re.search(title_pattern, text, flags=re.IGNORECASE)
+
+        # Google News and some publisher snippets append several unrelated
+        # headlines in a markdown-like list. Do not pass those headlines off as
+        # the article excerpt; use the source title when there is no article text.
+        related_headline = re.search(r"(?:^|\s)#{2,6}\s+", text)
+        if related_headline:
+            if related_headline.start() < 180 and not (
+                title_match and title_match.start() <= 180
+            ):
+                return normalized_title[:max_length]
+            text = text[:related_headline.start()].strip()
 
         noise_markers = re.compile(
             r"(?i)\b(?:advertisement|advertisements|sponsored content|subscribe now|"
@@ -396,7 +410,18 @@ class WebSearchService:
         )
         marker = noise_markers.search(text)
         if marker:
-            text = text[:marker.start()]
+            excerpt = text[:marker.start()].strip()
+            title_terms = {
+                term for term in re.findall(r"[a-z0-9]+", normalized_title.lower())
+                if len(term) >= 4 and term not in {
+                    "amid", "latest", "recent", "news", "this", "that", "with", "from",
+                    "into", "over", "after", "their", "model", "models", "update", "updates",
+                }
+            }
+            excerpt_terms = set(re.findall(r"[a-z0-9]+", excerpt.lower()))
+            if marker.start() < 220 and not (title_terms & excerpt_terms):
+                return normalized_title[:max_length]
+            text = excerpt
 
         text = re.sub(r"(?i)^\s*(?:tags?\s*[:#-].*?)?\s*", "", text)
         text = " ".join(text.split()).strip(" -|:;·•")

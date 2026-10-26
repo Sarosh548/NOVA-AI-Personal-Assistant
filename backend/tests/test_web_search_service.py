@@ -96,6 +96,42 @@ def test_search_cleans_scraped_page_chrome_from_result_snippets(monkeypatch):
     assert len(results[0]["content"]) <= 900
 
 
+def test_search_uses_title_when_snippet_is_only_publisher_promotion(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    title = "Amid rising cyber threats, Moonshot AI limits hacking capabilities in latest model"
+    monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": [{
+        "title": title,
+        "url": "https://example.com/moonshot-ai-news",
+        "content": "Global stories. Indian perspective. Zero noise. Subscribe Now. No Spam. Unsubscribe Any Time.",
+        "score": 0.9,
+    }]})
+
+    results = service.search(query="latest AI news", topic="general")
+
+    assert results[0]["content"] == title
+
+
+def test_search_rejects_unrelated_headline_lists_as_article_excerpt(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    title = "Watch Moonshot's Latest AI Upgrade Takes on Top-Tier US Models - Bloomberg"
+    related_headlines = (
+        "### DeepSeek Nears $12B Funding Round Ahead of Potential IPO "
+        "### China Stocks Dip As Soft Travel Data Drags on Sentiment "
+        "### China Rejects Claims the Yuan Is Undervalued"
+    )
+    monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": [{
+        "title": title,
+        "url": "https://example.com/moonshot-video",
+        "content": related_headlines,
+        "score": 0.7,
+    }]})
+
+    results = service.search(query="latest AI news", topic="general")
+
+    assert results[0]["content"] == title
+    assert "DeepSeek" not in results[0]["content"]
+
+
 def test_search_preserves_clean_article_snippet(monkeypatch):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
     content = "OpenAI announced a new model with improved reasoning and lower inference latency today."
