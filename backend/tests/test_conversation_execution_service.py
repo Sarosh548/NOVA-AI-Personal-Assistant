@@ -1760,3 +1760,54 @@ def test_calendar_confirmation_context_recognizes_devanagari_voice_reply():
         "यस कर दो।",
         history=history,
     )
+
+
+def test_saved_profile_question_wording_is_routed_to_profile_memory():
+    assert ConversationExecutionService._profile_memory_query_type(
+        "Read-only QA: what name do you have saved for me? Use the stored memory only."
+    ) == "name"
+    assert ConversationExecutionService._profile_memory_query_type(
+        "Read-only QA: what do you remember about my NOVA project?"
+    ) == "profile"
+
+
+def test_persisted_task_list_response_answers_active_task_count():
+    result = {
+        "success": True,
+        "tool": "task",
+        "action": "list",
+        "error": None,
+        "result": {
+            "tasks": [
+                {"title": "A", "status": "pending", "priority": "low"},
+                {"title": "B", "status": "completed", "priority": "medium"},
+                {"title": "C", "status": "in_progress", "priority": "high"},
+            ]
+        },
+    }
+    response = _format_persisted_task_list_response(
+        result,
+        user_message="Read-only QA: tell me the count of active tasks.",
+    )
+    assert response == "Aapki saved task list mein 2 active tasks hain."
+
+    result["result"]["tasks"] = []
+    assert _format_persisted_task_list_response(
+        result,
+        user_message="Read-only QA: tell me the count of active tasks.",
+    ) == "Aapki saved task list mein 0 active tasks hain."
+
+
+def test_saved_knowledge_questions_bypass_fast_chat_path():
+    message = (
+        "What exact QA sample value is stored in NOVA QA TEMP 20261026? "
+        "Please include the source title."
+    )
+    assert not ConversationExecutionService._is_fast_conversation(
+        message,
+        history=[],
+    )
+    assert not ConversationExecutionService._is_fast_conversation(
+        "What does my private knowledge say about LangGraph?",
+        history=[],
+    )

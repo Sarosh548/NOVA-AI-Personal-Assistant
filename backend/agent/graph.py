@@ -3078,6 +3078,65 @@ def _get_knowledge_retrieval(
         )
 
     if not matches:
+        # Long questions can score lower than the normal threshold even when
+        # the user names the exact document. Retry focused title/content queries.
+        cleaned_query = re.sub(
+            r"^(?:(?:read[- ]only\s+)?qa(?:[- ]only)?|for\s+qa(?:\s+only)?|"
+            r"(?:qa|test(?:ing)?)\s+only)\s*[:,-]\s*",
+            "",
+            user_message,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned_query = cleaned_query.split("?", 1)[0].strip(" \t\r\n\"'“”")
+
+        fallback_queries: list[str] = []
+        title_match = re.search(
+            r"\b(?:in|from|inside|within)\s+(?:the\s+)?(?:document\s+)?"
+            r"[\"'“”]?(?P<title>[A-Za-z0-9][A-Za-z0-9 _-]{2,100}?)"
+            r"(?:[\"'“”])?(?=[?.!,;:]|$)",
+            cleaned_query,
+            flags=re.IGNORECASE,
+        )
+        if title_match:
+            fallback_queries.append(title_match.group("title").strip())
+        if cleaned_query:
+            fallback_queries.append(cleaned_query)
+
+        focused_query = re.sub(
+            r"\b(?:please|include|cite|provide|show|tell|me|what|who|where|when|"
+            r"how|which|exact|sample|value|code|is|are|was|were|stored|saved|"
+            r"recorded|in|from|inside|within|the|a|an|my|private|knowledge|"
+            r"document|source|title|for|about|find|retrieve|look|up)\b",
+            " ",
+            cleaned_query,
+            flags=re.IGNORECASE,
+        )
+        focused_query = " ".join(focused_query.split()).strip(" ?!.,;:")
+        if focused_query:
+            fallback_queries.append(focused_query)
+
+        attempted: set[str] = set()
+        for fallback_query in fallback_queries:
+            normalized_query = fallback_query.casefold()
+            if not fallback_query or normalized_query in attempted:
+                continue
+            attempted.add(normalized_query)
+            try:
+                fallback_matches = knowledge_service.search(
+                    user_id=state.get("user_id", "user-001"),
+                    query=fallback_query,
+                    threshold=0.45,
+                    limit=8,
+                    rerank=True,
+                    candidate_limit=DEFAULT_RERANK_CANDIDATE_LIMIT,
+                )
+            except Exception:
+                continue
+            if fallback_matches:
+                matches = fallback_matches
+                break
+
+    if not matches:
         return (
             DEFAULT_KNOWLEDGE_CONTEXT,
             [],

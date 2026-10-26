@@ -2403,3 +2403,69 @@ def test_voice_style_composed_email_without_with_and_with_instruction_routes_det
     assert result["subject"] == "Nova voice email retest 2"
     assert result["body"] == "this is a fresh voice test after the fix."
     assert result["requires_tool"] is True
+
+
+def test_qa_prefixed_task_list_and_relative_reminder_route_deterministically():
+    service = make_service_without_llm()
+
+    task_result = service.analyze(
+        message=(
+            "Read-only QA: list my current NOVA tasks and tell me the count "
+            "of active tasks. Do not create, complete, or change any task."
+        ),
+        history=[],
+    )
+    assert task_result["intent"] == "task"
+    assert task_result["task_action"] == "list"
+    assert task_result["requires_tool"] is True
+
+    reminder_result = service.analyze(
+        message=(
+            "For QA: create a temporary reminder for 15 minutes from now "
+            "titled NOVA QA TEMP REMINDER 2026-10-26. This is only a test."
+        ),
+        history=[],
+    )
+    assert reminder_result["intent"] == "reminder"
+    assert reminder_result["reminder_action"] == "create"
+    assert reminder_result["requires_tool"] is True
+    assert reminder_result["task"] == "NOVA QA TEMP REMINDER 2026-10-26"
+    assert reminder_result["scheduled_at"]
+
+
+def test_temporary_low_priority_task_with_named_title_routes_deterministically():
+    service = make_service_without_llm()
+    message = (
+        "Create a temporary low-priority task named NOVA QA TEMP 2026-10-26 "
+        "with no due date. This is a QA-only test and should be removed after verification."
+    )
+    result = service.analyze(message=message, history=[])
+
+    assert result["intent"] == "task"
+    assert result["task_action"] == "create"
+    assert result["task"] == "NOVA QA TEMP 2026-10-26"
+    assert result["priority"] == "low"
+    assert result["scheduled_at"] is None
+    assert result["requires_tool"] is True
+
+
+def test_affirmative_temporary_task_follow_up_resolves_from_history():
+    service = make_service_without_llm()
+    request = (
+        "Create a temporary low-priority task named NOVA QA TEMP 2026-10-26 "
+        "with no due date. This is a QA-only test and should be removed after verification."
+    )
+    history = [
+        {"role": "user", "content": request},
+        {"role": "assistant", "content": "Would you like me to create that task?"},
+    ]
+
+    result = service.analyze(
+        message="Yes, create that temporary QA task now, then report its ID and status.",
+        history=history,
+    )
+    assert result["intent"] == "task"
+    assert result["task_action"] == "create"
+    assert result["task"] == "NOVA QA TEMP 2026-10-26"
+    assert result["priority"] == "low"
+    assert result["requires_tool"] is True

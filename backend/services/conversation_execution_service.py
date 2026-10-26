@@ -98,12 +98,31 @@ def _format_persisted_task_list_response(tool_result, user_message=None):
     if not isinstance(payload, dict) or not isinstance(payload.get("tasks"), list):
         return None
     tasks = payload["tasks"]
+    message = str(user_message or "").lower()
+    asks_active_count = bool(
+        re.search(
+            r"\b(?:how many|count|number of|total)\b.{0,100}\bactive tasks?\b"
+            r"|\bactive tasks?\b.{0,100}\b(?:count|how many|number)\b",
+            message,
+        )
+    )
     if not tasks:
+        if asks_active_count:
+            return "Aapki saved task list mein 0 active tasks hain."
         response = "Aapki saved task list mein abhi koi task nahi mila."
-        message = str(user_message or "").lower()
         if re.search(r"\b(?:verify|check|confirm)(?:\s+karo)?\b|वेरीफाई|वेरिफाई|चेक|जांच|जाँच|जांचो|जाँचो", message):
             response += " Is liye requested task saved list mein verify nahi hua."
         return response
+
+    if asks_active_count:
+        active_statuses = {"pending", "in_progress", "in-progress", "active"}
+        active_count = sum(
+            1
+            for task in tasks
+            if isinstance(task, dict)
+            and str(task.get("status") or "").strip().lower() in active_statuses
+        )
+        return f"Aapki saved task list mein {active_count} active tasks hain."
 
     lines = [f"Aapki saved task list mein total {len(tasks)} tasks hain:"]
     for task in tasks[:12]:
@@ -892,6 +911,19 @@ class ConversationExecutionService:
         if not normalized or len(normalized) > 800:
             return False
 
+        # Saved-document questions need the full graph's user-scoped knowledge
+        # retrieval; the fast companion path injects memory only.
+        saved_knowledge_query = re.search(
+            r"\b(?:private knowledge|knowledge base|saved knowledge|saved notes?|"
+            r"saved documents?|document contents?|source title|document title)\b"
+            r"|\b(?:stored|saved|recorded|contained)\s+in\s+"
+            r"[a-z0-9][a-z0-9 _-]{2,100}\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if saved_knowledge_query:
+            return False
+
         # Explicit requests to play media must always reach the full action
         # graph. The compact chat path previously missed polite Roman Urdu
         # verbs ("chalayen") and mixed-script Gemini transcripts ("चलाना").
@@ -1174,9 +1206,14 @@ class ConversationExecutionService:
         name_patterns = (
             r"\bwhat(?:\s+is|'s)\s+my\s+name\b",
             r"\bwho am i\b",
+            r"\bwhat\s+name\s+do\s+you\s+have\s+(?:saved|stored|remembered)(?:\s+for me)?\b",
+            r"\bwhat\s+name\s+(?:have you|did you)\s+(?:saved|stored|remembered)\b",
+            r"\bwhat\s+(?:name|first name)\s+(?:have you|did you)\s+(?:saved|stored|remembered)\b",
+            r"\bwhat did you (?:save|store|remember) as my name\b",
+            r"\b(?:saved|stored|remembered) name for me\b",
             r"\bmera naam kya(?: hai)?\b",
             r"\u0645\u06cc\u0631\u0627\s+\u0646\u0627\u0645\s+\u06a9\u06cc\u0627",
-            r"\u092e\u0947\u0930\u093e\s+\u0928\u093e\u092e\s+\u0915\u094d\u092f\u093e",
+            r"\u092e\u0947\u0930\u093e\s+\u0928\u093e\u092e\s+\u0915\u094d\u092f\u0627",
         )
         if any(re.search(pattern, normalized, re.IGNORECASE) for pattern in name_patterns):
             return "name"
@@ -1184,6 +1221,11 @@ class ConversationExecutionService:
         profile_patterns = (
             r"\bwhat do you know about me\b",
             r"\bwhat are my (?:goals|preferences|projects|interests)\b",
+            r"\bwhat do you remember about (?:me|my\b)",
+            r"\bwhat have i told you about\b",
+            r"\bwhat (?:have you|did you) (?:saved?|stored?|remembered?) about\b",
+            r"\bwhat (?:have you|did you) (?:saved?|stored?) (?:for|about) me\b",
+            r"\bwhat (?:is|does) (?:saved|stored) in my (?:memory|memories|profile)\b",
             r"\bapko mere bare mein kya pata\b",
             r"\u0622\u067e\s+\u06a9\u0648\s+\u0645\u06cc\u0631\u06d2\s+\u0628\u0627\u0631\u06d2\s+\u0645\u06cc\u06ba\s+\u06a9\u06cc\u0627\s+\u067e\u062a\u06c1",
             r"\u0906\u092a\u0915\u094b\s+\u092e\u0947\u0930\u0947\s+\u092c\u093e\u0930\u0947\s+\u092e\u0947\u0902\s+\u0915\u094d\u092f\u093e\s+\u092a\u0924\u093e",
