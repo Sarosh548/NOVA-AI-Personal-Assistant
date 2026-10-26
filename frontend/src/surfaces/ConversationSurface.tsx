@@ -603,6 +603,8 @@ export function ConversationSurface() {
 
     cancelVoiceTyping()
     setCreatingConversation(true)
+    // Invalidate any post-response state refresh still running for the old thread.
+    messageLoadRequestRef.current += 1
     setEditingId(null)
     setRetryPayload(null)
     clearError()
@@ -660,15 +662,29 @@ export function ConversationSurface() {
       setActiveId(result.conversation_id)
       setMessages((current) => [...current, { role: "assistant", content: result.response }])
       setAssistantMeta(result)
-      await refreshConversations()
-
-      try {
-        setConversationState(await getConversationState(result.conversation_id))
-      } catch {
-        setConversationState(null)
-      }
-
       setRetryPayload(null)
+
+      // The user-visible turn is complete as soon as /chat returns. Do not keep
+      // the composer disabled while ancillary list/state refreshes are pending.
+      setSending(false)
+
+      const stateRequestId = messageLoadRequestRef.current + 1
+      messageLoadRequestRef.current = stateRequestId
+
+      void refreshConversations().catch((err: unknown) => {
+        console.warn("Conversation list refresh after chat response failed.", err)
+      })
+      void getConversationState(result.conversation_id)
+        .then((snapshot) => {
+          if (messageLoadRequestRef.current === stateRequestId) {
+            setConversationState(snapshot)
+          }
+        })
+        .catch(() => {
+          if (messageLoadRequestRef.current === stateRequestId) {
+            setConversationState(null)
+          }
+        })
     } catch (err) {
       setRetryPayload(payload)
       setError(formatApiError(err, "NOVA could not complete that message."))

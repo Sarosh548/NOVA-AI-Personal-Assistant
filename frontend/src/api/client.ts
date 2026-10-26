@@ -79,6 +79,7 @@ async function parseErrorDetail(response: Response): Promise<string> {
 async function performRequest<T>(
   path: string,
   options: RequestInit,
+  timeoutMs?: number,
 ): Promise<T> {
   let url: string
 
@@ -109,17 +110,45 @@ async function performRequest<T>(
   }
 
   let response: Response
+  const controller = timeoutMs && timeoutMs > 0 ? new AbortController() : null
+  let timedOut = false
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+  const externalSignal = options.signal
+  const abortFromExternalSignal = () => controller?.abort(externalSignal?.reason)
+
+  if (controller && timeoutMs) {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, timeoutMs)
+    if (externalSignal?.aborted) {
+      controller.abort(externalSignal.reason)
+    } else {
+      externalSignal?.addEventListener("abort", abortFromExternalSignal, { once: true })
+    }
+  }
 
   try {
     response = await fetch(url, {
       ...options,
       headers,
+      ...(controller ? { signal: controller.signal } : {}),
     })
   } catch {
+    if (timedOut) {
+      throw new ApiRequestError(
+        0,
+        "NOVA took too long to respond. Check the conversation before retrying; the same request ID is reused safely.",
+      )
+    }
+
     throw new ApiRequestError(
       0,
       "NOVA could not reach the service. Check your connection and try again.",
     )
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
+    externalSignal?.removeEventListener("abort", abortFromExternalSignal)
   }
 
   if (!response.ok) {
@@ -139,8 +168,9 @@ async function performRequest<T>(
 export async function apiRequest<T>(
   path: string,
   options: RequestInit = {},
+  timeoutMs?: number,
 ): Promise<T> {
-  return performRequest(path, options)
+  return performRequest(path, options, timeoutMs)
 }
 
 async function rotateAccessSession(): Promise<TokenResponse> {
@@ -185,11 +215,12 @@ export async function refreshAccessToken(): Promise<TokenResponse> {
 export async function apiRequestWithRefresh<T>(
   path: string,
   options: RequestInit = {},
+  timeoutMs?: number,
 ): Promise<T> {
   const accessTokenAtRequestStart = getAccessToken()
 
   try {
-    return await performRequest<T>(path, options)
+    return await performRequest<T>(path, options, timeoutMs)
   } catch (error) {
     if (
       !(error instanceof ApiRequestError) ||
@@ -211,10 +242,10 @@ export async function apiRequestWithRefresh<T>(
       latestAccessToken &&
       latestAccessToken !== accessTokenAtRequestStart
     ) {
-      return performRequest<T>(path, options)
+      return performRequest<T>(path, options, timeoutMs)
     }
 
     await refreshAccessToken()
-    return performRequest<T>(path, options)
+    return performRequest<T>(path, options, timeoutMs)
   }
 }
