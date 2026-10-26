@@ -68,6 +68,49 @@ class FakeBytesResponse:
         return self.body
 
 
+def test_search_cleans_scraped_page_chrome_from_result_snippets(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    title = "Amid rising cyber threats, Moonshot AI limits hacking capabilities in latest model"
+    noisy_content = (
+        "Global stories. Indian perspective. Zero noise. Subscribe Now. No Spam. "
+        "Unsubscribe Any Time. Tags Artificial Intelligence cybersecurity "
+        "First Published: Oct 26, 2026. Home Tech "
+        + title
+        + " Advertisement Advertisement Up Next HomeVideosFirst AIQuick ReadsLive TV"
+    )
+    monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": [{
+        "title": title,
+        "url": "https://example.com/moonshot-ai-news",
+        "content": noisy_content,
+        "score": 0.9,
+        "published_date": "2026-10-26T08:46:25Z",
+    }]})
+
+    results = service.search(query="latest AI news", topic="general")
+
+    assert len(results) == 1
+    assert "Moonshot AI limits hacking capabilities" in results[0]["content"]
+    assert not any(marker in results[0]["content"].lower() for marker in (
+        "advertisement", "subscribe now", "unsubscribe any time", "homevideos", "quick reads",
+    ))
+    assert len(results[0]["content"]) <= 900
+
+
+def test_search_preserves_clean_article_snippet(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    content = "OpenAI announced a new model with improved reasoning and lower inference latency today."
+    monkeypatch.setattr(service, "_request_tavily", lambda _payload: {"results": [{
+        "title": "OpenAI announces a new model",
+        "url": "https://example.com/openai-model",
+        "content": content,
+        "score": 0.8,
+    }]})
+
+    results = service.search(query="OpenAI new model", topic="general")
+
+    assert results[0]["content"] == content
+
+
 def test_brave_html_search_parses_title_snippet_and_direct_source_url(monkeypatch):
     body = b'''<!doctype html><html><body>
       <div class="snippet svelte-x" data-pos="0" data-type="web">

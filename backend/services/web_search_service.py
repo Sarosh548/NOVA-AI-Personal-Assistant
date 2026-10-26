@@ -360,6 +360,55 @@ class WebSearchService:
         return normalized
 
     @staticmethod
+    def _clean_result_content(content: str, *, title: str, max_length: int = 900) -> str:
+        """Remove common scraped-page chrome before snippets reach NOVA's answer model.
+
+        Search providers sometimes return page text instead of a true snippet,
+        including subscription prompts, navigation menus, ad labels and related
+        links. Keep a short, title-anchored excerpt when that chrome is present.
+        """
+        text = unescape(str(content or ""))
+        text = re.sub(
+            r"(?is)<(script|style|noscript|svg|nav|footer|header|aside)[^>]*>.*?</\1>",
+            " ",
+            text,
+        )
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = " ".join(text.split())
+        if not text:
+            return str(title or "").strip()[:max_length]
+
+        normalized_title = " ".join(str(title or "").split())
+        if normalized_title:
+            title_pattern = r"\s+".join(re.escape(part) for part in normalized_title.split())
+            match = re.search(title_pattern, text, flags=re.IGNORECASE)
+            if match and match.start() >= 100:
+                # Long prefixes before the actual headline are usually publisher
+                # taglines, menus, breadcrumbs, or subscribe prompts.
+                text = text[match.start():]
+
+        noise_markers = re.compile(
+            r"(?i)\b(?:advertisement|advertisements|sponsored content|subscribe now|"
+            r"no spam|unsubscribe any time|up next|homevideos|quick reads|live tv|"
+            r"skip to content|skip to main content|first published:|sign up for our newsletter|"
+            r"subscribe to our newsletter|all rights reserved|cookie settings|privacy policy|"
+            r"terms of use)\b"
+        )
+        marker = noise_markers.search(text)
+        if marker:
+            text = text[:marker.start()]
+
+        text = re.sub(r"(?i)^\s*(?:tags?\s*[:#-].*?)?\s*", "", text)
+        text = " ".join(text.split()).strip(" -|:;·•")
+        if not text:
+            text = normalized_title
+
+        if len(text) > max_length:
+            boundary = max(text.rfind(".", 0, max_length), text.rfind("!", 0, max_length), text.rfind("?", 0, max_length))
+            text = text[:boundary + 1] if boundary >= int(max_length * 0.55) else text[:max_length].rstrip()
+        return text[:max_length].strip()
+
+    @staticmethod
     def _normalize_max_results(max_results: int) -> int:
         if max_results < 1 or max_results > MAX_MAX_RESULTS:
             raise ValueError(
@@ -1569,6 +1618,9 @@ class WebSearchService:
                 content = str(raw.get("content") or "").strip()
                 if not title or not url or not content:
                     continue
+                content = self._clean_result_content(content, title=title)
+                if not content:
+                    content = title
                 short_or_metadata_only = (
                     content.lower().startswith("source:")
                     or len(content) < 180
