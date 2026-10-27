@@ -1256,17 +1256,51 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
             .strip(" .!?;:")
         )
 
+    # If labels are followed by quoted values, honor the quotes as field
+    # boundaries. Instructions that follow the closing quote belong to the
+    # request, not to the email body being sent.
+    quoted_subject = re.search(
+        r"\\bsubject(?:\\s+line)?\\s*(?:(?:is|hai|hona\\s+chahiye|hona\\s+chahie|should\\s+be|would\\s+be)\\s+|[:=]\\s*)?\\s*"
+        r"(?:(?P<quote>[\"'])(?P<value>.*?)(?P=quote)|“(?P<curly_value>.*?)”)",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    quoted_body = re.search(
+        r"\\b(?:email\\s+)?body\\s*(?:(?:is|hai|should\\s+be|hona\\s+chahiye)\\s+|[:=]\\s*)?\\s*"
+        r"(?:(?P<quote>[\"'])(?P<value>.*?)(?P=quote)|“(?P<curly_value>.*?)”)",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    quoted_subject_value = (
+        (quoted_subject.group("value") or quoted_subject.group("curly_value") or "").strip()
+        if quoted_subject
+        else None
+    )
+    quoted_body_value = (
+        (quoted_body.group("value") or quoted_body.group("curly_value") or "").strip()
+        if quoted_body
+        else None
+    )
+
     combined = re.search(
-        r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be)\s+|[:=]\s*)?"
-        r"(?P<subject>.+?)(?:\s+(?:and|aur)\s+|,\s*)(?:the\s+)?body"
-        r"(?:\s+mein)?(?:\s+(?:is|hai|likhna\s+hai|should\s+be|hona\s+chahiye))?\s*[:=]?\s*"
-        r"(?P<body>.+?)\s*[.!?]*$",
+        r"\\bsubject(?:\\s+line)?\\s*(?:(?:is|hai|hona\\s+chahiye|hona\\s+chahie|should\\s+be|would\\s+be)\\s+|[:=]\\s*)?"
+        r"(?P<subject>.+?)(?:\\s+(?:and|aur)\\s+|,\\s*)(?:the\\s+)?body"
+        r"(?:\\s+mein)?(?:\\s+(?:is|hai|likhna\\s+hai|should\\s+be|hona\\s+chahiye))?\\s*[:=]?\\s*"
+        r"(?P<body>.+?)\\s*[.!?]*$",
         source,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if combined:
-        subject = clean(combined.group("subject"))
-        body = clean(combined.group("body"))
+        subject = (
+            quoted_subject_value
+            if quoted_subject_value is not None
+            else clean(combined.group("subject"))
+        )
+        body = (
+            quoted_body_value
+            if quoted_body_value is not None
+            else clean(combined.group("body"))
+        )
         return subject or None, body or None
 
     subject_match = re.search(
@@ -1283,6 +1317,10 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
     )
     subject = clean(subject_match.group("value")) if subject_match else None
     body = clean(body_match.group("value")) if body_match else None
+    if quoted_subject_value is not None:
+        subject = quoted_subject_value
+    if quoted_body_value is not None:
+        body = quoted_body_value
     return subject or None, body or None
 
 
