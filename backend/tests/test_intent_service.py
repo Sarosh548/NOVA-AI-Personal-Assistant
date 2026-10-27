@@ -2521,3 +2521,52 @@ def test_deterministic_email_list_supports_numbered_most_recent_gmail_messages()
     assert result["max_results"] == 3
     assert result["include_body"] is False
     assert result["requires_tool"] is True
+
+
+def test_deterministic_reminder_create_parses_named_title_and_explicit_day_month_datetime():
+    service = make_service_without_llm()
+    message = (
+        "Create NOVA-LIVE-QA-271027 reminder for "
+        "28 Oct 2026 10:30 AM Pakistan time."
+    )
+
+    result = service.analyze(message=message, history=[])
+
+    assert result["intent"] == "reminder"
+    assert result["reminder_action"] == "create"
+    assert result["task"] == "NOVA-LIVE-QA-271027 reminder"
+    assert result["requires_tool"] is True
+    assert result.get("clarification_required") is False
+    parsed = datetime.fromisoformat(result["scheduled_at"])
+    assert parsed.isoformat(timespec="seconds") == "2026-10-28T10:30:00+05:00"
+    assert result["time"] == "28 Oct 2026 10:30 AM"
+
+
+def test_deterministic_reminder_create_parses_iso_date_and_clock_time():
+    service = make_service_without_llm()
+
+    result = service.analyze(
+        message="Set a reminder to review NOVA on 2026-10-28 at 10:45 AM PKT.",
+        history=[],
+    )
+
+    assert result["intent"] == "reminder"
+    assert result["task"] == "review NOVA"
+    assert result["scheduled_at"] == "2026-10-28T10:45:00+05:00"
+    assert result["requires_tool"] is True
+
+
+def test_deterministic_reminder_without_time_asks_for_clarification_instead_of_calling_tool():
+    service = make_service_without_llm()
+
+    result = service.analyze(
+        message="Create a reminder to review NOVA.",
+        history=[],
+    )
+
+    assert result["intent"] == "reminder"
+    assert result["reminder_action"] == "create"
+    assert result["task"] == "review NOVA"
+    assert result["scheduled_at"] is None
+    assert result["requires_tool"] is False
+    assert result["clarification_required"] is True
