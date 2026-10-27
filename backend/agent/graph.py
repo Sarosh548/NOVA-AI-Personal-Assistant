@@ -1260,13 +1260,13 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
     # boundaries. Instructions that follow the closing quote belong to the
     # request, not to the email body being sent.
     quoted_subject = re.search(
-        r"\\bsubject(?:\\s+line)?\\s*(?:(?:is|hai|hona\\s+chahiye|hona\\s+chahie|should\\s+be|would\\s+be)\\s+|[:=]\\s*)?\\s*"
+        r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be)\s+|[:=]\s*)?\s*"
         r"(?:(?P<quote>[\"'])(?P<value>.*?)(?P=quote)|“(?P<curly_value>.*?)”)",
         source,
         flags=re.IGNORECASE | re.DOTALL,
     )
     quoted_body = re.search(
-        r"\\b(?:email\\s+)?body\\s*(?:(?:is|hai|should\\s+be|hona\\s+chahiye)\\s+|[:=]\\s*)?\\s*"
+        r"\b(?:email\s+)?body\s*(?:(?:is|hai|should\s+be|hona\s+chahiye)\s+|[:=]\s*)?\s*"
         r"(?:(?P<quote>[\"'])(?P<value>.*?)(?P=quote)|“(?P<curly_value>.*?)”)",
         source,
         flags=re.IGNORECASE | re.DOTALL,
@@ -1283,10 +1283,10 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
     )
 
     combined = re.search(
-        r"\\bsubject(?:\\s+line)?\\s*(?:(?:is|hai|hona\\s+chahiye|hona\\s+chahie|should\\s+be|would\\s+be)\\s+|[:=]\\s*)?"
-        r"(?P<subject>.+?)(?:\\s+(?:and|aur)\\s+|,\\s*)(?:the\\s+)?body"
-        r"(?:\\s+mein)?(?:\\s+(?:is|hai|likhna\\s+hai|should\\s+be|hona\\s+chahiye))?\\s*[:=]?\\s*"
-        r"(?P<body>.+?)\\s*[.!?]*$",
+        r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be)\s+|[:=]\s*)?"
+        r"(?P<subject>.+?)(?:\s+(?:and|aur)\s+|,\s*)(?:the\s+)?body"
+        r"(?:\s+mein)?(?:\s+(?:is|hai|likhna\s+hai|should\s+be|hona\s+chahiye))?\s*[:=]?\s*"
+        r"(?P<body>.+?)\s*[.!?]*$",
         source,
         flags=re.IGNORECASE | re.DOTALL,
     )
