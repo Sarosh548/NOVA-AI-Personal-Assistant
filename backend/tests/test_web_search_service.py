@@ -445,6 +445,9 @@ def test_live_sports_provider_timeouts_are_bounded(monkeypatch):
 
 def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
     service = WebSearchService(api_key="", searxng_endpoint="")
+    fresh_published_date = (
+        datetime.now(timezone.utc) - timedelta(hours=2)
+    ).isoformat()
 
     def fail_searxng(*, query, topic, time_range):
         raise RuntimeError("SearXNG unavailable")
@@ -456,7 +459,7 @@ def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
                     "title": "OpenAI announces a new AI model",
                     "url": "https://news.google.com/rss/articles/CBMiFreshAINews",
                     "content": "OpenAI announced a new AI model today.",
-                    "published_date": "2026-10-25T17:00:00Z",
+                    "published_date": fresh_published_date,
                 }
             ]
         }
