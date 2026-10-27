@@ -46,6 +46,9 @@ const permissionActions: Permission["action"][] = [
   "delete",
 ]
 
+const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+const GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+
 function formatDate(value: string | null): string {
   if (!value) return "—"
   const date = parseApiDateTime(value)
@@ -80,6 +83,12 @@ export function ControlCenterSurface() {
     | { kind: "workflow"; id: number; title: string }
     | null
   >(null)
+
+  const gmailScopes = new Set(
+    (googleMailStatus?.scopes ?? "").split(/\s+/).filter(Boolean),
+  )
+  const gmailCanSend = gmailScopes.has(GMAIL_SEND_SCOPE)
+  const gmailCanRead = gmailScopes.has(GMAIL_READ_SCOPE)
 
   const load = useCallback(async () => {
     if (!user) return
@@ -549,13 +558,34 @@ export function ControlCenterSurface() {
                     <h2>Send from your own Gmail account.</h2>
                     <p>Connect Google once. NOVA will use that mailbox for emails you approve, to any valid recipient.</p>
                   </div>
-                  <span className={googleMailStatus?.connected ? "status-pill status-completed" : "status-pill"}>
-                    {googleMailStatus?.connected ? "Connected" : "Not connected"}
+                  <span
+                    className={
+                      googleMailStatus?.connected && gmailCanSend && gmailCanRead
+                        ? "status-pill status-completed"
+                        : googleMailStatus?.connected
+                          ? "status-pill status-pending"
+                          : "status-pill"
+                    }
+                  >
+                    {!googleMailStatus?.connected
+                      ? "Not connected"
+                      : gmailCanSend && gmailCanRead
+                        ? "Inbox + send ready"
+                        : gmailCanSend
+                          ? "Send only · read access needed"
+                          : gmailCanRead
+                            ? "Inbox read only"
+                            : "Permissions need review"}
                   </span>
                 </div>
                 {googleMailStatus?.connected ? (
                   <p className="resource-hint" role="status">
-                    Sending as <strong>{googleMailStatus.email}</strong>. Access is stored encrypted and can be revoked here.
+                    {gmailCanSend ? "Sending as " : "Connected account: "}
+                    <strong>{googleMailStatus.email}</strong>.
+                    {gmailCanRead
+                      ? " Inbox read access is enabled."
+                      : " Inbox reading is not authorized yet. Reconnect Gmail and approve the read-only permission to enable inbox summaries."}{" "}
+                    Access is stored encrypted and can be revoked here.
                   </p>
                 ) : (
                   <p className="resource-hint" role="status">
@@ -566,9 +596,25 @@ export function ControlCenterSurface() {
                 )}
                 <div className="resource-actions">
                   {googleMailStatus?.connected ? (
-                    <button className="danger-action compact" type="button" disabled={working} onClick={() => void removeGoogleMailConnection()}>
-                      Disconnect Gmail
-                    </button>
+                    <>
+                      {(!gmailCanRead || !gmailCanSend) && (
+                        <button
+                          className="primary-action compact"
+                          type="button"
+                          disabled={working || !googleMailStatus?.configured}
+                          onClick={() => void connectGoogleMail()}
+                        >
+                          {gmailCanRead
+                            ? "Enable Gmail sending"
+                            : gmailCanSend
+                              ? "Enable inbox reading"
+                              : "Reconnect Gmail permissions"}
+                        </button>
+                      )}
+                      <button className="danger-action compact" type="button" disabled={working} onClick={() => void removeGoogleMailConnection()}>
+                        Disconnect Gmail
+                      </button>
+                    </>
                   ) : (
                     <button className="primary-action compact" type="button" disabled={working || !googleMailStatus?.configured} onClick={() => void connectGoogleMail()}>
                       Connect Gmail
