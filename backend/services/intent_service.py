@@ -518,6 +518,18 @@ Return the full schema with null for absent values:
                 }:
                     return reference
 
+            title_match = re.search(
+                r"\b(?:titled|named|called)\s+[\x60\"']?(.+?)[\x60\"']?(?=\s*[.!?]|$)",
+                content,
+                flags=re.IGNORECASE,
+            )
+            if title_match:
+                reference = title_match.group(1).strip()
+                reference = reference.strip(chr(96) + "\"'“” ")
+                reference = re.sub(r"[.!?]+$", "", reference).strip()
+                if reference:
+                    return reference
+
             match = re.search(
                 r"\bremind\s+me\b.*?\bto\s+(.+)$",
                 content,
@@ -2298,6 +2310,132 @@ Return the full schema with null for absent values:
             flags=re.IGNORECASE,
         ).strip()
         normalized = original_message.lower()
+
+        # Resolve short follow-ups against the latest created item before
+        # relying on an LLM classifier. The reference must come from user
+        # history; a pronoun alone is never enough to execute an action.
+        indirect_action_match = re.match(
+            r"^(?:please\s+)?(?P<verb>start|complete|finish|cancel|delete|remove|update|move|reschedule)\s+"
+            r"(?P<object>it|that|this|that\s+task|this\s+task|that\s+reminder|this\s+reminder|"
+            r"(?:my|the)\s+(?:previous\s+)?(?:task|reminder))"
+            r"(?P<tail>(?:\s+.*)?)\s*[.!?]*$",
+            original_message,
+            flags=re.IGNORECASE,
+        )
+        if indirect_action_match and history:
+            verb = indirect_action_match.group("verb").lower()
+            latest_kind = None
+            latest_reference = None
+            latest_source_message = None
+
+            for history_item in reversed(history):
+                if str(history_item.get("role", "")).casefold() != "user":
+                    continue
+                history_message = str(history_item.get("content") or "").strip()
+                if not history_message:
+                    continue
+
+                task_reference = self._extract_recent_task_creation_reference(
+                    [history_item]
+                )
+                if task_reference:
+                    latest_kind = "task"
+                    latest_reference = task_reference
+                    latest_source_message = history_message
+                    break
+
+                reminder_reference = self._extract_recent_reminder_creation_reference(
+                    [history_item]
+                )
+                if reminder_reference:
+                    latest_kind = "reminder"
+                    latest_reference = reminder_reference
+                    latest_source_message = history_message
+                    break
+
+            if latest_kind and latest_reference:
+                action = (
+                    "complete" if verb == "finish"
+                    else "delete" if verb in {"remove"}
+                    else "update" if verb in {"move", "reschedule"}
+                    else verb
+                )
+                time_update_match = re.search(
+                    r"\b(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+                    r"(?P<ampm>a\.?m\.?|p\.?m\.?)(?!\w)",
+                    original_message,
+                    flags=re.IGNORECASE,
+                )
+
+                # "start" only applies to tasks. Time-of-day changes normally
+                # refer to reminders; other verbs follow the latest created item.
+                if verb == "start" and latest_kind != "task":
+                    latest_kind = None
+                elif time_update_match and latest_kind == "task" and verb in {"update", "move", "reschedule"}:
+                    latest_kind = "task"
+
+                if latest_kind == "task":
+                    if action == "update" and not time_update_match and not re.search(
+                        r"\b(?:low|medium|high)\s+priority\b", original_message, re.IGNORECASE
+                    ):
+                        result["intent"] = "task"
+                        result["task_action"] = "update"
+                        result["task_reference"] = latest_reference
+                        result["task"] = None
+                        result["requires_tool"] = False
+                        result["clarification_required"] = True
+                        return result
+
+                    result["intent"] = "task"
+                    result["task_action"] = action
+                    result["task_reference"] = latest_reference
+                    result["task"] = None
+                    result["requires_tool"] = True
+                    result["clarification_required"] = False
+                    return result
+
+                if latest_kind == "reminder":
+                    result["intent"] = "reminder"
+                    result["reminder_action"] = action
+                    result["reminder_reference"] = latest_reference
+                    result["task"] = None
+
+                    if action == "update":
+                        if time_update_match:
+                            prior_schedule, _, _ = _parse_deterministic_reminder_schedule(
+                                latest_source_message or ""
+                            )
+                            if prior_schedule:
+                                try:
+                                    existing_datetime = datetime.fromisoformat(prior_schedule)
+                                    hour = int(time_update_match.group("hour"))
+                                    minute = int(time_update_match.group("minute") or "0")
+                                    meridiem = time_update_match.group("ampm").lower().replace(".", "")
+                                    if not (1 <= hour <= 12 and 0 <= minute <= 59):
+                                        raise ValueError("Invalid reminder time.")
+                                    hour = (0 if hour == 12 else hour) if meridiem == "am" else (12 if hour == 12 else hour + 12)
+                                    updated_datetime = existing_datetime.replace(
+                                        hour=hour,
+                                        minute=minute,
+                                        second=0,
+                                        microsecond=0,
+                                    )
+                                    result["scheduled_at"] = updated_datetime.isoformat(timespec="seconds")
+                                    result["time"] = time_update_match.group(0)
+                                    result["requires_tool"] = True
+                                    result["clarification_required"] = False
+                                    return result
+                                except ValueError:
+                                    pass
+
+                        result["requires_tool"] = False
+                        result["clarification_required"] = True
+                        return result
+
+                    result["requires_tool"] = True
+                    result["clarification_required"] = False
+                    return result
+
 
         # Calendar event creation is a state-changing action. Do not leave a
         # clear request to probabilistic intent classification, which previously
