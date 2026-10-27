@@ -11,6 +11,7 @@ from services.conversation_execution_service import (
     _format_persisted_task_list_response,
     _format_persisted_reminder_list_response,
     _format_failed_read_action_response,
+    _simple_arithmetic_response,
 )
 from services.execution_context import (
     ExecutionContext,
@@ -1938,3 +1939,64 @@ def test_saved_knowledge_questions_bypass_fast_chat_path():
         "What does my private knowledge say about LangGraph?",
         history=[],
     )
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Calculate 17 * 6. Reply with only the number.", "102"),
+        ("What is 7 plus 8?", "15"),
+        ("Compute (8 + 4) / 3.", "4"),
+        ("Calculate 17 times 6.", "102"),
+        ("What is 7 divided by 2?", "3.5"),
+    ],
+)
+def test_simple_arithmetic_response_is_deterministic(message, expected):
+    assert _simple_arithmetic_response(message) == expected
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Calculate 17 * 6 and email the result to me.",
+        "Calculate 1 / 0.",
+        "What is the latest cricket score for 17?",
+        "Calculate __import__('os').system('whoami')",
+    ],
+)
+def test_simple_arithmetic_response_rejects_ambiguous_or_unsafe_requests(message):
+    assert _simple_arithmetic_response(message) is None
+
+
+def test_execute_message_answers_simple_arithmetic_without_llm_guessing():
+    service, conversation, execution, llm, _memory = _service()
+
+    result = service.execute_message(
+        user_id="user-1",
+        message="Calculate 17 * 6. Reply with only the number.",
+    )
+
+    assert result["response"] == "102"
+    assert execution.calls == []
+    assert llm.companion_calls == []
+    assert conversation.saved_messages[-2:] == [
+        ("user-1", 42, "user", "Calculate 17 * 6. Reply with only the number."),
+        ("user-1", 42, "assistant", "102"),
+    ]
+
+
+def test_execute_voice_message_answers_simple_arithmetic_without_llm_guessing():
+    service, conversation, execution, llm, _memory = _service()
+
+    result = service.execute_voice_message(
+        user_id="user-1",
+        message="Calculate 17 * 6.",
+    )
+
+    assert result["response"] == "102"
+    assert execution.calls == []
+    assert llm.voice_calls == []
+    assert conversation.saved_messages[-2:] == [
+        ("user-1", 42, "user", "Calculate 17 * 6."),
+        ("user-1", 42, "assistant", "102"),
+    ]
+
