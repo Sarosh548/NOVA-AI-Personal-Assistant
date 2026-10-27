@@ -250,7 +250,7 @@ def _is_calendar_list_request(
 
     read_patterns = (
         # e.g. "Show my next calendar event and its date/time."
-        r"^(?:please )?(?:show|list|check|fetch|retrieve|look up|pull up|get|find) "
+        r"^(?:please )?(?:(?:tell|inform) me|show|list|check|fetch|retrieve|look up|pull up|get|find) "
         r"(?:me )?(?:my )?(?:(?:next|upcoming) )?(?:google )?"
         r"calendar (?:event|events|schedule|appointments)\b",
         # e.g. "What is my next calendar event?"
@@ -3429,7 +3429,8 @@ def _deterministic_requested_web_bullets(
 
     match = re.search(
         r"\bexactly\s+(one|two|three|four|five|1|2|3|4|5)\s+"
-        r"(?:concise\s+)?bullet points?\b",
+        r"(?:(?:concise\s+)?bullet points?|(?:news\s+)?headlines?|"
+        r"news stories|stories|results)\b",
         user_message,
         flags=re.IGNORECASE,
     )
