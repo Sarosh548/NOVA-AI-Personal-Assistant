@@ -20,6 +20,138 @@ MODEL_NAME = "openai/gpt-oss-20b"
 USER_TIMEZONE = "Asia/Karachi"
 
 
+def _parse_deterministic_reminder_schedule(
+    message: str,
+) -> tuple[str | None, str | None, tuple[int, int] | None]:
+    """Parse an explicit local reminder date/time without inventing missing fields."""
+    text = " ".join(str(message or "").split())
+    if not text:
+        return None, None, None
+
+    timezone = ZoneInfo(USER_TIMEZONE)
+    now = datetime.now(timezone)
+    date_match = None
+    target_date = None
+
+    month_pattern = (
+        r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+        r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+        r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    )
+    date_patterns = (
+        (
+            r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b",
+            "iso",
+        ),
+        (
+            rf"\b(?P<day>\d{{1,2}})\s+(?P<month>{month_pattern})\s+"
+            r"(?P<year>\d{4})\b",
+            "day_first",
+        ),
+        (
+            rf"\b(?P<month>{month_pattern})\s+(?P<day>\d{{1,2}})"
+            r"(?:st|nd|rd|th)?[,]?\s+(?P<year>\d{4})\b",
+            "month_first",
+        ),
+    )
+
+    date_kind = None
+    for pattern, kind in date_patterns:
+        candidate = re.search(pattern, text, flags=re.IGNORECASE)
+        if candidate:
+            date_match = candidate
+            date_kind = kind
+            break
+
+    if date_match is not None:
+        try:
+            if date_kind == "iso":
+                target_date = date(
+                    int(date_match.group("year")),
+                    int(date_match.group("month")),
+                    int(date_match.group("day")),
+                )
+            else:
+                month_text = date_match.group("month").lower().rstrip(".")
+                month_number = {
+                    "jan": 1, "january": 1,
+                    "feb": 2, "february": 2,
+                    "mar": 3, "march": 3,
+                    "apr": 4, "april": 4,
+                    "may": 5,
+                    "jun": 6, "june": 6,
+                    "jul": 7, "july": 7,
+                    "aug": 8, "august": 8,
+                    "sep": 9, "sept": 9, "september": 9,
+                    "oct": 10, "october": 10,
+                    "nov": 11, "november": 11,
+                    "dec": 12, "december": 12,
+                }[month_text]
+                target_date = date(
+                    int(date_match.group("year")),
+                    month_number,
+                    int(date_match.group("day")),
+                )
+        except (KeyError, ValueError):
+            return None, None, None
+    else:
+        relative_date = re.search(
+            r"\b(today|tomorrow)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if relative_date is None:
+            return None, None, None
+        target_date = now.date() + timedelta(
+            days=1 if relative_date.group(1).lower() == "tomorrow" else 0
+        )
+        date_match = relative_date
+
+    clock_pattern = (
+        r"\b(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+        r"(?P<ampm>a\.?m\.?|p\.?m\.?)(?!\w)"
+    )
+    clock_match = re.search(
+        clock_pattern,
+        text,
+        flags=re.IGNORECASE,
+    )
+    if clock_match is None:
+        return None, None, None
+
+    hour = int(clock_match.group("hour"))
+    minute = int(clock_match.group("minute") or "0")
+    meridiem = clock_match.group("ampm").lower().replace(".", "")
+    if not (1 <= hour <= 12 and 0 <= minute <= 59):
+        return None, None, None
+
+    if meridiem == "am":
+        hour = 0 if hour == 12 else hour
+    else:
+        hour = 12 if hour == 12 else hour + 12
+
+    try:
+        scheduled = datetime(
+            target_date.year,
+            target_date.month,
+            target_date.day,
+            hour,
+            minute,
+            tzinfo=timezone,
+        )
+    except ValueError:
+        return None, None, None
+
+    start = min(date_match.start(), clock_match.start())
+    end = max(date_match.end(), clock_match.end())
+    return (
+        scheduled.isoformat(timespec="seconds"),
+        text[start:end],
+        (start, end),
+    )
+
+
+
 class IntentService:
     def __init__(
         self,
@@ -2755,7 +2887,7 @@ Return the full schema with null for absent values:
 
         reminder_command = re.match(
             r"^(?:please\s+)?(?:remind me(?:\s+to)?|set\s+(?:a\s+)?reminder|"
-            r"(?:create|make|add)\s+(?:a\s+)?(?:temporary\s+)?reminder)\b",
+            r"(?:create|make|add)\s+(?:(?:a|an|the|temporary)\s+)?(?:.+?\s+)?reminder)\b",
             normalized,
             flags=re.IGNORECASE,
         )
@@ -2792,23 +2924,24 @@ Return the full schema with null for absent values:
                     + original_message[relative_time_match.end():]
                 )
             else:
-                time_match = re.search(
-                    r"\b(today|tomorrow)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
-                    original_message,
-                    flags=re.IGNORECASE,
-                )
-                if time_match:
-                    result["time"] = time_match.group(0)
-                    result["scheduled_at"] = self._deterministic_scheduled_at(
-                        day_expression=time_match.group(1).lower(),
-                        hour_text=time_match.group(2),
-                        minute_text=time_match.group(3),
-                        meridiem=time_match.group(4).lower(),
-                    )
+                (
+                    scheduled_at,
+                    schedule_expression,
+                    schedule_span,
+                ) = _parse_deterministic_reminder_schedule(original_message)
+                if scheduled_at and schedule_expression and schedule_span:
+                    result["time"] = schedule_expression
+                    result["scheduled_at"] = scheduled_at
                     remainder = (
-                        original_message[:time_match.start()]
+                        original_message[:schedule_span[0]]
                         + " "
-                        + original_message[time_match.end():]
+                        + original_message[schedule_span[1]:]
+                    )
+                    remainder = re.sub(
+                        r"\b(?:Pakistan\s+time|PKT|Asia/Karachi(?:\s+timezone)?)\b",
+                        "",
+                        remainder,
+                        flags=re.IGNORECASE,
                     )
 
             title_match = re.search(
@@ -2818,6 +2951,25 @@ Return the full schema with null for absent values:
             )
             if title_match:
                 result["task"] = title_match.group("title").strip().strip("\"'").rstrip(" .,!?:;")
+
+            if result["task"] is None:
+                named_reminder_match = re.search(
+                    r"^(?:please\s+)?(?:create|make|add)\s+"
+                    r"(?P<title>.+?\s+reminder)\s+(?:for|on|at)\b",
+                    original_message,
+                    flags=re.IGNORECASE,
+                )
+                if named_reminder_match:
+                    candidate_title = named_reminder_match.group("title").strip().strip("\"' ")
+                    if candidate_title.casefold() not in {
+                        "a reminder",
+                        "an reminder",
+                        "the reminder",
+                        "temporary reminder",
+                        "a temporary reminder",
+                        "the temporary reminder",
+                    }:
+                        result["task"] = candidate_title
 
             if result["task"] is None:
                 content_match = re.search(
@@ -2837,6 +2989,14 @@ Return the full schema with null for absent values:
                     flags=re.IGNORECASE,
                 ).strip(" .")
                 result["task"] = cleaned or None
+
+            if not result.get("task") or not result.get("scheduled_at"):
+                # Missing fields should ask a follow-up question instead of
+                # executing a guaranteed-to-fail reminder tool call.
+                result["requires_tool"] = False
+                result["clarification_required"] = True
+            else:
+                result["clarification_required"] = False
 
             return result
 
