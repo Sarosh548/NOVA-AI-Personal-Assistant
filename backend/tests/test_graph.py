@@ -3972,7 +3972,7 @@ def test_email_with_explicit_approval_gate_prepares_exact_preview_without_sendin
     assert draft["email_draft_missing"] is None
     assert draft["to"] == "saroshqais1@gmail.com"
     assert draft["subject"] == "NOVA LIVE QA 271027"
-    assert draft["body"] == "This is a controlled NOVA delivery test"
+    assert draft["body"] == "This is a controlled NOVA delivery test."
     # A ready draft enters NOVA's formal approval workflow; parsing it does
     # not call the email provider or send a message.
     assert draft["email_action"] == "send"
