@@ -3428,20 +3428,34 @@ def _deterministic_requested_web_bullets(
         return None
 
     match = re.search(
-        r"\bexactly\s+(one|two|three|four|five|1|2|3|4|5)\s+"
-        r"(?:(?:concise\s+)?bullet points?|(?:news\s+)?headlines?|"
-        r"news stories|stories|results)\b",
+        r"\\bexactly\\s+(one|two|three|four|five|1|2|3|4|5)\\s+"
+        r"(?:(?:concise\\s+)?bullet points?|(?:news\\s+)?headlines?|"
+        r"news stories|stories|results)\\b",
         user_message,
         flags=re.IGNORECASE,
     )
-    if match is None:
-        return None
-
-    if not re.search(
-        r"\b(?:each\s+with\s+(?:a\s+)?source\s+link|source\s+links?)\b",
+    explicit_count = match is not None
+    source_requested = re.search(
+        r"\\b(?:sources?|citations?|source\\s+links?)\\b",
         user_message,
         flags=re.IGNORECASE,
+    ) is not None
+    publication_dates_requested = re.search(
+        r"\\b(?:publication|published|publishing)\\s+dates?\\b|"
+        r"\\bdates?\\s+of\\s+publication\\b",
+        user_message,
+        flags=re.IGNORECASE,
+    ) is not None
+
+    # For an ordinary request for sources and publication dates, return the
+    # retrieved title/URL/date records directly. This prevents the response
+    # model from emitting malformed placeholder links such as
+    # "[Web Source 2](https://publisher.com" instead of the canonical URL.
+    if not explicit_count and not (
+        source_requested and publication_dates_requested
     ):
+        return None
+    if not source_requested:
         return None
 
     counts = {
@@ -3451,9 +3465,13 @@ def _deterministic_requested_web_bullets(
         "four": 4,
         "five": 5,
     }
-    requested_count = counts.get(
-        match.group(1).lower(),
-        int(match.group(1)) if match.group(1).isdigit() else 0,
+    requested_count = (
+        counts.get(
+            match.group(1).lower(),
+            int(match.group(1)) if match.group(1).isdigit() else 0,
+        )
+        if explicit_count and match is not None
+        else 5
     )
     raw_results = tool_result["result"].get("results")
     if not isinstance(raw_results, list):
@@ -3489,14 +3507,18 @@ def _deterministic_requested_web_bullets(
                     published_at = None
             if published_at is not None:
                 date_label = published_at.strftime("%d %b %Y").lstrip("0")
+        if publication_dates_requested and not date_label:
+            date_label = "publication date not provided"
 
         selected.append((title, url, date_label))
         seen_urls.add(url)
         if len(selected) >= requested_count:
             break
 
-    # Never invent a missing source just to satisfy a requested item count.
-    if len(selected) != requested_count:
+    # Never invent a missing source just to satisfy an explicit item count.
+    if explicit_count and len(selected) != requested_count:
+        return None
+    if not selected:
         return None
 
     return "\n".join(
