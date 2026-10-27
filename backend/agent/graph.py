@@ -3428,21 +3428,21 @@ def _deterministic_requested_web_bullets(
         return None
 
     match = re.search(
-        r"\\bexactly\\s+(one|two|three|four|five|1|2|3|4|5)\\s+"
-        r"(?:(?:concise\\s+)?bullet points?|(?:news\\s+)?headlines?|"
-        r"news stories|stories|results)\\b",
+        r"\bexactly\s+(one|two|three|four|five|1|2|3|4|5)\s+"
+        r"(?:(?:concise\s+)?bullet points?|(?:news\s+)?headlines?|"
+        r"news stories|stories|results)\b",
         user_message,
         flags=re.IGNORECASE,
     )
     explicit_count = match is not None
     source_requested = re.search(
-        r"\\b(?:sources?|citations?|source\\s+links?)\\b",
+        r"\b(?:sources?|citations?|source\s+links?)\b",
         user_message,
         flags=re.IGNORECASE,
     ) is not None
     publication_dates_requested = re.search(
-        r"\\b(?:publication|published|publishing)\\s+dates?\\b|"
-        r"\\bdates?\\s+of\\s+publication\\b",
+        r"\b(?:publication|published|publishing)\s+dates?\b|"
+        r"\bdates?\s+of\s+publication\b",
         user_message,
         flags=re.IGNORECASE,
     ) is not None
