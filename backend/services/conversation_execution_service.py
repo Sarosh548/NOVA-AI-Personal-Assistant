@@ -125,6 +125,13 @@ def _simple_arithmetic_response(message: str) -> str | None:
         return None
 
     expression_and_suffix = text[prefix.end():]
+    # Avoid interpreting common ISO/US dates as subtraction or division.
+    if re.fullmatch(
+        r"(?:\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}[-/]\\d{1,2}[-/]\\d{4})[?.!]?",
+        expression_and_suffix.strip(),
+    ):
+        return None
+
     expression_and_suffix = re.sub(
         r"\b(?:multiplied\s+by|multiply\s+by|times)\b",
         "*",
