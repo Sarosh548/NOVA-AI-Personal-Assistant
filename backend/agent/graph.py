@@ -237,7 +237,15 @@ def _is_calendar_list_request(
         "move ",
         "change ",
     )
-    if any(marker in normalized for marker in write_markers):
+    # Ignore explicit negative safety instructions when detecting write intent.
+    # For example, "show my next event; do not create, edit, or delete anything"
+    # is still a read-only lookup, not a calendar mutation request.
+    write_intent_text = re.split(
+        r"\\b(?:do not|don't|dont|never)\\b",
+        normalized,
+        maxsplit=1,
+    )[0]
+    if any(marker in write_intent_text for marker in write_markers):
         return False
 
     read_patterns = (
