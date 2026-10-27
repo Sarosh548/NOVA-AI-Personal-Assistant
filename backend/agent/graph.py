@@ -4321,6 +4321,7 @@ def agent_node(state: NOVAState) -> NOVAState:
         action_name = str(
             understanding.get("calendar_action")
             or understanding.get("email_action")
+            or understanding.get("reminder_action")
             or understanding.get("action")
             or ""
         ).strip().lower()
@@ -4340,6 +4341,21 @@ def agent_node(state: NOVAState) -> NOVAState:
                 clarification_response = (
                     "I need a little more detail about the Calendar request. "
                     "I haven't changed anything."
+                )
+        elif intent_name == "reminder" and action_name == "create":
+            if not understanding.get("scheduled_at"):
+                clarification_response = (
+                    "What date and time should I set for this reminder? "
+                    "I haven't created it."
+                )
+            elif not understanding.get("task"):
+                clarification_response = (
+                    "What should I remind you about? I haven't created anything."
+                )
+            else:
+                clarification_response = (
+                    "I need a little more detail before proceeding. "
+                    "I haven't created the reminder."
                 )
         elif intent_name == "email" or (
             intent_name == "action" and action_name == "send"
