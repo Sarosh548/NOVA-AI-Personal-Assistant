@@ -3952,3 +3952,29 @@ def test_agent_node_asks_for_reminder_update_time_without_executing_tool():
         "I haven't changed the reminder."
     )
     assert result["tool_result"]["success"] is False
+
+
+def test_email_with_explicit_approval_gate_prepares_exact_preview_without_sending():
+    from agent import graph
+
+    message = (
+        'Prepare an email to saroshqais1@gmail.com with subject "NOVA LIVE QA 271027" '
+        'and body "This is a controlled NOVA delivery test." '
+        "Do not send until I explicitly approve after checking."
+    )
+
+    assert graph._is_email_send_request(message) is True
+
+    draft = graph._resolve_email_draft_follow_up(message, history=[])
+
+    assert draft is not None
+    assert draft["email_draft_status"] == "ready"
+    assert draft["email_draft_missing"] is None
+    assert draft["to"] == "saroshqais1@gmail.com"
+    assert draft["subject"] == "NOVA LIVE QA 271027"
+    assert draft["body"] == "This is a controlled NOVA delivery test"
+    # A ready draft enters NOVA's formal approval workflow; parsing it does
+    # not call the email provider or send a message.
+    assert draft["email_action"] == "send"
+    assert draft["requires_tool"] is True
+    assert graph._has_explicit_email_approval_gate(message) is True
