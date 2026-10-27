@@ -2903,7 +2903,6 @@ Return the full schema with null for absent values:
                 original_message,
                 flags=re.IGNORECASE,
             )
-            time_match = None
             remainder = original_message
             if relative_time_match:
                 amount = int(relative_time_match.group("amount"))
@@ -2961,13 +2960,13 @@ Return the full schema with null for absent values:
 
             if result["task"] is None:
                 named_reminder_match = re.search(
-                    r"^(?:please\s+)?(?:create|make|add)\s+"
-                    r"(?P<title>.+?\s+reminder)\s+(?:for|on|at)\b",
+                    r"^(?:please\s+)?(?:create|make|add)\s+[\x60\"']?"
+                    r"(?P<title>.+?\s+reminder)[\x60\"']?\s+(?:for|on|at)\b",
                     original_message,
                     flags=re.IGNORECASE,
                 )
                 if named_reminder_match:
-                    candidate_title = named_reminder_match.group("title").strip().strip("\"' ")
+                    candidate_title = named_reminder_match.group("title").strip().strip(chr(96) + "\"' ")
                     if candidate_title.casefold() not in {
                         "a reminder",
                         "an reminder",
