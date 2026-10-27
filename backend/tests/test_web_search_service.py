@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -444,6 +445,9 @@ def test_live_sports_provider_timeouts_are_bounded(monkeypatch):
 
 def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
     service = WebSearchService(api_key="", searxng_endpoint="")
+    fresh_published_date = (
+        datetime.now(timezone.utc) - timedelta(hours=2)
+    ).isoformat()
 
     def fail_searxng(*, query, topic, time_range):
         raise RuntimeError("SearXNG unavailable")
@@ -455,7 +459,7 @@ def test_fresh_ai_news_avoids_serial_google_news_url_resolution(monkeypatch):
                     "title": "OpenAI announces a new AI model",
                     "url": "https://news.google.com/rss/articles/CBMiFreshAINews",
                     "content": "OpenAI announced a new AI model today.",
-                    "published_date": "2026-10-25T17:00:00Z",
+                    "published_date": fresh_published_date,
                 }
             ]
         }
@@ -673,7 +677,7 @@ def test_web_search_normalizes_provider_results(
     ]
 
 
-def test_web_search_uses_google_news_rss_when_news_providers_are_unavailable(monkeypatch):
+def test_web_search_uses_google_news_rss_when_news_providers_are_unavailable(monkeypatch, caplog):
     service = WebSearchService(api_key="", searxng_endpoint="")
     pub_date = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
@@ -690,12 +694,15 @@ def test_web_search_uses_google_news_rss_when_news_providers_are_unavailable(mon
         lambda request, timeout: FakeRSSResponse(),
     )
 
-    results = service.search(
-        query="latest AI voice assistant developments",
-        topic="news",
-        time_range="day",
-    )
+    with caplog.at_level(logging.INFO, logger="services.web_search_service"):
+        results = service.search(
+            query="latest AI voice assistant developments",
+            topic="news",
+            time_range="day",
+        )
 
+    assert "SearXNG is not configured; using Google News RSS fallback." in caplog.text
+    assert "SearXNG search failed" not in caplog.text
     assert results == [{
         "title": "AI voice assistant update",
         "url": "https://example.com/voice",
