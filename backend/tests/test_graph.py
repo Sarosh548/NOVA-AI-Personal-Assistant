@@ -1055,10 +1055,19 @@ def test_understanding_node_bypasses_llm_for_natural_calendar_list_requests(
             30,
         ),
         (
+            "Show my next calendar event and its date/time. Do not create, edit, or delete anything.",
+            30,
+        ),
+        (
             "Use my connected Google Calendar integration to retrieve my events for the next 7 days, read-only.",
             7,
         ),
     )
+
+    # A positive write request must never be swallowed by the read-only route.
+    assert graph._is_calendar_list_request(
+        "Show my next calendar event and delete it."
+    ) is False
 
     for message, expected_days in cases:
         result = understanding_node(
