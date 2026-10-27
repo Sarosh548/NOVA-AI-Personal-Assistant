@@ -763,6 +763,51 @@ def test_deterministic_requested_web_bullets_obeys_exact_count_and_links():
     assert "Third Result" not in response
 
 
+def test_deterministic_requested_web_headlines_honors_exact_count_and_dates():
+    user_message = (
+        "Search the web for recent AI news published in the last 7 days. "
+        "Give me exactly two headlines, publication dates, and direct source links. "
+        "Do not add a third item."
+    )
+    tool_result = {
+        "success": True,
+        "tool": "web",
+        "action": "search",
+        "result": {
+            "results": [
+                {
+                    "title": "AI reading assistants expand",
+                    "url": "https://example.com/ai-reading",
+                    "published_date": "Tue, 27 Oct 2026 09:00:08 GMT",
+                },
+                {
+                    "title": "New AI model announced",
+                    "url": "https://example.com/new-ai-model",
+                    "published_date": "Tue, 27 Oct 2026 09:22:22 GMT",
+                },
+                {
+                    "title": "Unrelated market update must be excluded",
+                    "url": "https://example.com/market-update",
+                    "published_date": "Tue, 27 Oct 2026 10:00:00 GMT",
+                },
+            ]
+        },
+    }
+
+    response = graph._deterministic_requested_web_bullets(
+        user_message,
+        tool_result,
+    )
+
+    assert response == (
+        "- [AI reading assistants expand](https://example.com/ai-reading) — 27 Oct 2026\n"
+        "- [New AI model announced](https://example.com/new-ai-model) — 27 Oct 2026"
+    )
+    assert response.count("\n") == 1
+    assert "market update" not in response.lower()
+
+
+
 def test_deterministic_requested_web_bullets_include_publication_dates():
     response = graph._deterministic_requested_web_bullets(
         "Give exactly two concise bullet points, each with a source link.",
@@ -1056,6 +1101,10 @@ def test_understanding_node_bypasses_llm_for_natural_calendar_list_requests(
         ),
         (
             "Show my next calendar event and its date/time. Do not create, edit, or delete anything.",
+            30,
+        ),
+        (
+            "Tell me my next calendar event with its date and local time. Read only; do not create, edit, or delete any event.",
             30,
         ),
         (
@@ -3978,3 +4027,48 @@ def test_email_with_explicit_approval_gate_prepares_exact_preview_without_sendin
     assert draft["email_action"] == "send"
     assert draft["requires_tool"] is True
     assert graph._has_explicit_email_approval_gate(message) is True
+
+
+def test_deterministic_requested_web_sources_and_dates_without_exact_count():
+    user_message = (
+        "Search the live web for the latest AI news. "
+        "Give me sources and publication dates."
+    )
+    tool_result = {
+        "success": True,
+        "tool": "web",
+        "action": "search",
+        "result": {
+            "results": [
+                {
+                    "title": "OpenAI Model Update",
+                    "url": "https://example.com/openai-model",
+                    "published_date": "Tue, 27 Oct 2026 09:22:22 GMT",
+                },
+                {
+                    "title": "AI Research Update",
+                    "url": "https://example.com/ai-research",
+                    "published_date": "2026-10-27T05:01:13Z",
+                },
+                {
+                    "title": "AI Research Note",
+                    "url": "https://example.com/ai-note",
+                },
+            ]
+        },
+    }
+
+    response = graph._deterministic_requested_web_bullets(
+        user_message,
+        tool_result,
+    )
+
+    assert response == (
+        "- [OpenAI Model Update](https://example.com/openai-model) — 27 Oct 2026\n"
+        "- [AI Research Update](https://example.com/ai-research) — 27 Oct 2026\n"
+        "- [AI Research Note](https://example.com/ai-note) — publication date not provided"
+    )
+    assert "[Web Source" not in response
+    assert "https://example.com/openai-model)" in response
+
+
