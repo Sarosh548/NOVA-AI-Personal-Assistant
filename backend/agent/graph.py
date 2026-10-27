@@ -180,19 +180,18 @@ def _is_calendar_list_request(
     message: str,
 ) -> bool:
     """
-    Detect common read-only Google Calendar lookup requests
-    deterministically.
+    Detect read-only Google Calendar lookup requests deterministically.
 
-    These requests must not depend on the LLM intent classifier,
-    especially when Calendar is disconnected or the LLM provider
-    is temporarily unavailable.
+    Keep common natural-language lookup variants out of the general LLM
+    classifier. That avoids false "not authorized" answers for an already
+    connected Calendar integration when the wording is not an exact phrase.
     """
 
     normalized = " ".join(
         message.strip().lower().split()
     )
 
-    if not normalized or len(normalized) > 300:
+    if not normalized or len(normalized) > 500:
         return False
 
     normalized = (
@@ -220,13 +219,53 @@ def _is_calendar_list_request(
         "check my calendar tomorrow",
     }
 
-    return normalized in exact_phrases
+    if normalized in exact_phrases:
+        return True
+
+    # Do not route requests that ask to mutate the calendar through this
+    # read-only branch, even if they also contain words like "show" or "list".
+    write_markers = (
+        "create ",
+        "schedule ",
+        "reschedule ",
+        "add ",
+        "delete ",
+        "remove ",
+        "cancel ",
+        "update ",
+        "edit ",
+        "move ",
+        "change ",
+    )
+    if any(marker in normalized for marker in write_markers):
+        return False
+
+    read_patterns = (
+        # e.g. "Show my next calendar event and its date/time."
+        r"^(?:please )?(?:show|list|check|fetch|retrieve|look up|pull up|get|find) "
+        r"(?:me )?(?:my )?(?:(?:next|upcoming) )?(?:google )?"
+        r"calendar (?:event|events|schedule|appointments)\b",
+        # e.g. "What is my next calendar event?"
+        r"^(?:what(?:s| is) )?(?:my )?(?:(?:next|upcoming) )?"
+        r"calendar (?:event|events)\b",
+        # e.g. "What events do I have on my calendar?"
+        r"^(?:what|which) (?:events?|appointments?) "
+        r"(?:do i have|are on) (?:on )?my calendar\b",
+        # e.g. "Use my connected Google Calendar integration to retrieve my events..."
+        r"^use my connected google calendar integration to "
+        r"(?:retrieve|fetch|list|show|get) (?:my )?(?:calendar )?events?\b",
+    )
+
+    return any(
+        re.search(pattern, normalized)
+        for pattern in read_patterns
+    )
 
 
 def _calendar_list_time_window(
     message: str,
 ) -> tuple[str | None, str | None]:
-    """Return a deterministic local-day Calendar window when requested."""
+    """Return an explicit or default upcoming Calendar window in Asia/Karachi."""
 
     normalized = " ".join(
         message.strip().lower().split()
@@ -258,7 +297,24 @@ def _calendar_list_time_window(
         start = today_start + timedelta(days=1)
         end = start + timedelta(days=1)
     else:
-        return None, None
+        days_match = re.search(
+            r"\bnext\s+(\d{1,3})\s+days?\b",
+            normalized,
+        )
+        if days_match:
+            days = int(days_match.group(1))
+            if days < 1 or days > 365:
+                return None, None
+            start = now
+            end = now + timedelta(days=days)
+        elif "next week" in normalized or "coming week" in normalized:
+            start = now
+            end = now + timedelta(days=7)
+        else:
+            # "Next event" and unqualified calendar lookups mean upcoming,
+            # not historical events. Keep this bounded like the Calendar UI.
+            start = now
+            end = now + timedelta(days=30)
 
     return start.isoformat(), end.isoformat()
 
@@ -1200,6 +1256,32 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
             .strip(" .!?;:")
         )
 
+    # If labels are followed by quoted values, honor the quotes as field
+    # boundaries. Instructions that follow the closing quote belong to the
+    # request, not to the email body being sent.
+    quoted_subject = re.search(
+        r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be)\s+|[:=]\s*)?\s*"
+        r"(?:(?P<quote>[\"'])(?P<value>.*?)(?P=quote)|“(?P<curly_value>.*?)”)",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    quoted_body = re.search(
+        r"\b(?:email\s+)?body\s*(?:(?:is|hai|should\s+be|hona\s+chahiye)\s+|[:=]\s*)?\s*"
+        r"(?:(?P<quote>[\"'])(?P<value>.*?)(?P=quote)|“(?P<curly_value>.*?)”)",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    quoted_subject_value = (
+        (quoted_subject.group("value") or quoted_subject.group("curly_value") or "").strip()
+        if quoted_subject
+        else None
+    )
+    quoted_body_value = (
+        (quoted_body.group("value") or quoted_body.group("curly_value") or "").strip()
+        if quoted_body
+        else None
+    )
+
     combined = re.search(
         r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be)\s+|[:=]\s*)?"
         r"(?P<subject>.+?)(?:\s+(?:and|aur)\s+|,\s*)(?:the\s+)?body"
@@ -1209,8 +1291,16 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
         flags=re.IGNORECASE | re.DOTALL,
     )
     if combined:
-        subject = clean(combined.group("subject"))
-        body = clean(combined.group("body"))
+        subject = (
+            quoted_subject_value
+            if quoted_subject_value is not None
+            else clean(combined.group("subject"))
+        )
+        body = (
+            quoted_body_value
+            if quoted_body_value is not None
+            else clean(combined.group("body"))
+        )
         return subject or None, body or None
 
     subject_match = re.search(
@@ -1227,6 +1317,10 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
     )
     subject = clean(subject_match.group("value")) if subject_match else None
     body = clean(body_match.group("value")) if body_match else None
+    if quoted_subject_value is not None:
+        subject = quoted_subject_value
+    if quoted_body_value is not None:
+        body = quoted_body_value
     return subject or None, body or None
 
 
@@ -3864,7 +3958,7 @@ def _calendar_empty_response(
     ):
         return None
 
-    return "I don't see any calendar events scheduled for that day."
+    return "I don't see any calendar events in the requested time window."
 
 
 def _calendar_connection_status(

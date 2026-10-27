@@ -1,5 +1,5 @@
 from agent import graph
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import services.llm_service as llm_module
 from services.execution_context import ExecutionContext
@@ -1030,6 +1030,62 @@ def test_understanding_node_bypasses_llm_for_connected_calendar_list(
     assert end - start == timedelta(days=1)
 
 
+def test_understanding_node_bypasses_llm_for_natural_calendar_list_requests(
+    monkeypatch,
+):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "Recognized Calendar list requests must not call the LLM."
+        )
+
+    monkeypatch.setattr(
+        graph,
+        "_calendar_connection_status",
+        lambda user_id: True,
+    )
+    monkeypatch.setattr(
+        graph.intent_service,
+        "analyze",
+        fail_if_called,
+    )
+
+    cases = (
+        (
+            "Show my next calendar event and its date/time.",
+            30,
+        ),
+        (
+            "Use my connected Google Calendar integration to retrieve my events for the next 7 days, read-only.",
+            7,
+        ),
+    )
+
+    for message, expected_days in cases:
+        result = understanding_node(
+            {
+                "user_id": "user-001",
+                "conversation_id": 1,
+                "user_message": message,
+                "history": [],
+            }
+        )
+
+        understanding = result["understanding"]
+
+        assert understanding["intent"] == "calendar"
+        assert understanding["calendar_action"] == "list"
+        assert understanding["requires_tool"] is True
+        assert understanding["time_min"] is not None
+        assert understanding["time_max"] is not None
+
+        start = datetime.fromisoformat(understanding["time_min"])
+        end = datetime.fromisoformat(understanding["time_max"])
+
+        assert start.utcoffset() is not None
+        assert end.utcoffset() is not None
+        assert end - start == timedelta(days=expected_days)
+
+
 def test_understanding_node_bypasses_llm_for_disconnected_calendar_write(monkeypatch):
     calls = []
 
@@ -1350,7 +1406,7 @@ def test_agent_node_handles_empty_calendar_without_llm(monkeypatch):
     result = graph.agent_node(state)
 
     assert result["response"] == (
-        "I don't see any calendar events scheduled for that day."
+        "I don't see any calendar events in the requested time window."
     )
 
 
@@ -3678,6 +3734,21 @@ def test_complete_email_request_preserves_requested_subject_and_body():
     assert result["to"] == "saroshqais1@gmail.com"
     assert result["subject"] == "Update test"
     assert result["body"] == "Test successful"
+
+
+def test_quoted_email_body_excludes_instructions_after_closing_quote():
+    from agent import graph
+
+    message = (
+        'Send an email to saroshqais1@gmail.com with subject "NOVA send-flow smoke test" '
+        'and body "This message must not be sent in this test." '
+        'Do not send before my approval; show the formal approval preview.'
+    )
+
+    subject, body = graph._parse_email_subject_body_fields(message)
+
+    assert subject == "NOVA send-flow smoke test"
+    assert body == "This message must not be sent in this test."
 
 
 def test_pending_email_list_confirmation_never_renders_outbound_send_preview():
