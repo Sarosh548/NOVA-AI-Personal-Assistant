@@ -3879,3 +3879,39 @@ def test_agent_node_uses_calendar_specific_clarification():
     assert "calendar event" in result["response"].lower()
     assert "email" not in result["response"].lower()
     assert "haven't created or changed anything" in result["response"].lower()
+
+
+def test_agent_node_asks_for_reminder_time_without_executing_tool():
+    state = {
+        "user_id": "user-001",
+        "conversation_id": 1,
+        "user_message": "Create a reminder to review NOVA.",
+        "history": [],
+        "understanding": {
+            "intent": "reminder",
+            "reminder_action": "create",
+            "task": "review NOVA",
+            "scheduled_at": None,
+            "clarification_required": True,
+            "requires_tool": False,
+        },
+        "plan": {"requires_tool": False},
+        "permission": {
+            "allowed": False,
+            "requires_confirmation": False,
+        },
+        "confirmation": dict(graph.DEFAULT_CONFIRMATION),
+        "tool_result": dict(graph.DEFAULT_TOOL_RESULT),
+        "workflow_result": dict(graph.DEFAULT_WORKFLOW_RESULT),
+        "memory_context": "",
+        "execution_context": ExecutionContext.interactive(),
+        "response": "",
+    }
+
+    result = graph.agent_node(state)
+
+    assert result["response"] == (
+        "What date and time should I set for this reminder? "
+        "I haven't created it."
+    )
+    assert result["tool_result"]["success"] is False
