@@ -2316,9 +2316,8 @@ Return the full schema with null for absent values:
         # history; a pronoun alone is never enough to execute an action.
         indirect_action_match = re.match(
             r"^(?:please\s+)?(?P<verb>start|complete|finish|cancel|delete|remove|update|move|reschedule)\s+"
-            r"(?P<object>it|that|this|that\s+task|this\s+task|that\s+reminder|this\s+reminder|"
-            r"(?:my|the)\s+(?:previous\s+)?(?:task|reminder))"
-            r"(?P<tail>(?:\s+.*)?)\s*[.!?]*$",
+            r"(?P<object>that\s+task|this\s+task|that\s+reminder|this\s+reminder|it|that|this)\b"
+            r"(?P<tail>(?:\s+(?:to|at|on|with)\s+.*)?)\s*[.!?]*$",
             original_message,
             flags=re.IGNORECASE,
         )
@@ -2375,9 +2374,16 @@ Return the full schema with null for absent values:
                     latest_kind = "task"
 
                 if latest_kind == "task":
-                    if action == "update" and not time_update_match and not re.search(
-                        r"\b(?:low|medium|high)\s+priority\b", original_message, re.IGNORECASE
-                    ):
+                    priority_match = re.search(
+                        r"\b(?P<priority>low|medium|high)\s+priority\b",
+                        original_message,
+                        flags=re.IGNORECASE,
+                    )
+                    schedule_match = _parse_deterministic_reminder_schedule(
+                        original_message
+                    ) if action == "update" else (None, None, None)
+
+                    if action == "update" and not priority_match and not schedule_match[0]:
                         result["intent"] = "task"
                         result["task_action"] = "update"
                         result["task_reference"] = latest_reference
@@ -2390,6 +2396,11 @@ Return the full schema with null for absent values:
                     result["task_action"] = action
                     result["task_reference"] = latest_reference
                     result["task"] = None
+                    if priority_match:
+                        result["priority"] = priority_match.group("priority").lower()
+                    if schedule_match[0]:
+                        result["scheduled_at"] = schedule_match[0]
+                        result["time"] = schedule_match[1]
                     result["requires_tool"] = True
                     result["clarification_required"] = False
                     return result
