@@ -1237,11 +1237,14 @@ export function GeminiLiveVoiceSurface({
           console.debug("[NOVA Gemini Live] server event", Object.keys(message))
           handleServerMessage(message)
         } catch (messageError) {
+          // An async Blob decode from an old socket must never tear down a newer session.
+          if (socketRef.current !== socket) return
           console.error("[NOVA Gemini Live] failed to process a server event", messageError)
-          setError("NOVA received an unreadable Gemini Live event. Check the browser console for the event stage.")
+          setError("NOVA received an unreadable Gemini Live event. Retrying the voice session.")
           intentionalCloseRef.current = true
           releaseConnection()
           setState("disconnected")
+          scheduleAutomaticReconnect("Gemini Live event processing failed.")
         }
       }
 
