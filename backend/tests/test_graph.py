@@ -3927,3 +3927,47 @@ def test_agent_node_uses_calendar_specific_clarification():
     assert "calendar event" in result["response"].lower()
     assert "email" not in result["response"].lower()
     assert "haven't created or changed anything" in result["response"].lower()
+
+
+def test_deterministic_requested_web_sources_and_dates_without_exact_count():
+    user_message = (
+        "Search the live web for the latest AI news. "
+        "Give me sources and publication dates."
+    )
+    tool_result = {
+        "success": True,
+        "tool": "web",
+        "action": "search",
+        "result": {
+            "results": [
+                {
+                    "title": "OpenAI Model Update",
+                    "url": "https://example.com/openai-model",
+                    "published_date": "Tue, 27 Oct 2026 09:22:22 GMT",
+                },
+                {
+                    "title": "AI Research Update",
+                    "url": "https://example.com/ai-research",
+                    "published_date": "2026-10-27T05:01:13Z",
+                },
+                {
+                    "title": "AI Research Note",
+                    "url": "https://example.com/ai-note",
+                },
+            ]
+        },
+    }
+
+    response = graph._deterministic_requested_web_bullets(
+        user_message,
+        tool_result,
+    )
+
+    assert response == (
+        "- [OpenAI Model Update](https://example.com/openai-model) — 27 Oct 2026\n"
+        "- [AI Research Update](https://example.com/ai-research) — 27 Oct 2026\n"
+        "- [AI Research Note](https://example.com/ai-note) — publication date not provided"
+    )
+    assert "[Web Source" not in response
+    assert "https://example.com/openai-model)" in response
+
