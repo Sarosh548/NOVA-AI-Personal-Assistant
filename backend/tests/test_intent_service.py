@@ -2571,3 +2571,65 @@ def test_deterministic_reminder_without_time_asks_for_clarification_instead_of_c
     assert result["scheduled_at"] is None
     assert result["requires_tool"] is False
     assert result["clarification_required"] is True
+
+
+def test_indirect_task_action_resolves_named_task_from_recent_history():
+    service = make_service_without_llm()
+    history = [
+        {
+            "role": "user",
+            "content": "Create a medium priority task named NOVA-LIVE-QA-271027 task.",
+        },
+        {
+            "role": "assistant",
+            "content": "Created the task.",
+        },
+        {
+            "role": "user",
+            "content": "List my tasks.",
+        },
+        {
+            "role": "assistant",
+            "content": "NOVA-LIVE-QA-271027 task is pending.",
+        },
+    ]
+
+    result = service._resolve_recent_context_reference(
+        message="start it",
+        history=history,
+        result={
+            "intent": "task",
+            "task_action": "start",
+            "task_reference": None,
+            "task": None,
+        },
+    )
+
+    assert result["task_reference"] == "NOVA-LIVE-QA-271027 task"
+    assert result["task"] is None
+
+
+def test_indirect_reminder_action_resolves_named_reminder_from_recent_history():
+    service = make_service_without_llm()
+    message = (
+        "Create " + chr(96) + "NOVA-LIVE-QA-271027 reminder" + chr(96)
+        + " for 28 Oct 2026 10:30 AM Pakistan time."
+    )
+    history = [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": "I prepared the reminder."},
+    ]
+
+    result = service._resolve_recent_context_reference(
+        message="update it to 10:45 AM",
+        history=history,
+        result={
+            "intent": "reminder",
+            "reminder_action": "update",
+            "reminder_reference": None,
+            "task": None,
+        },
+    )
+
+    assert result["reminder_reference"] == "NOVA-LIVE-QA-271027 reminder"
+    assert result["task"] is None
