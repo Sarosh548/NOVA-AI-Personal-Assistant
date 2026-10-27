@@ -437,21 +437,20 @@ Return the full schema with null for absent values:
         self,
         history: list[dict],
     ) -> str | None:
-        """
-        Find the most recent user message that clearly
-        created a task and extract its task title.
-
-        Example:
-
-            "Create a high priority task to practice FastAPI
-             for my AI Engineer interview."
-
-        returns:
-
-            "practice FastAPI for my AI Engineer interview"
-        """
-
+        """Extract the actual title from a recent task-creation request."""
         task_creation_patterns = (
+            # Named titles and exact-title phrasing are used by voice QA and
+            # must resolve to the title that was persisted, preserving case.
+            r"\b(?:create|add|make)\s+(?:a\s+)?"
+            r"(?:(?:high|medium|low)[ -]priority\s+)?task\s+"
+            r"(?:named|called|titled)\s+(.+?)"
+            r"(?=\s+(?:with|and|due|priority)\b|[.!?]*$)",
+
+            r"\b(?:create|add|make)\s+(?:a\s+)?"
+            r"(?:(?:high|medium|low)[ -]priority\s+)?task\s+"
+            r"with\s+(?:the\s+)?(?:exact\s+)?title\s+(?:is\s+)?(.+?)"
+            r"(?=\s+(?:with|and|due|priority)\b|[.!?]*$)",
+
             r"\bcreate\s+(?:a\s+)?(?:high\s+|medium\s+|low\s+)?"
             r"priority\s+task\s+to\s+(.+)$",
 
@@ -469,32 +468,18 @@ Return the full schema with null for absent values:
             if item.get("role") != "user":
                 continue
 
-            content = str(
-                item.get("content", "")
-            ).strip()
-
+            content = str(item.get("content", "")).strip()
             if not content:
                 continue
 
-            normalized = content.lower()
-
             for pattern in task_creation_patterns:
-                match = re.search(
-                    pattern,
-                    normalized,
-                )
-
+                match = re.search(pattern, content, flags=re.IGNORECASE)
                 if not match:
                     continue
 
                 reference = match.group(1).strip()
-
-                reference = re.sub(
-                    r"[.!?]+$",
-                    "",
-                    reference,
-                ).strip()
-
+                reference = reference.strip(chr(96) + "\"'“” ")
+                reference = re.sub(r"[.!?]+$", "", reference).strip()
                 if reference:
                     return reference
 
@@ -504,48 +489,45 @@ Return the full schema with null for absent values:
         self,
         history: list[dict],
     ) -> str | None:
-        """
-        Find the most recent user message that clearly
-        created a reminder and extract its content/title.
-
-        Example:
-
-            "Remind me tomorrow at 6 PM to practice Python
-             decorators."
-
-        returns:
-
-            "practice Python decorators"
-        """
-
+        """Resolve a recent reminder creation to its persisted title/content."""
         for item in reversed(history):
             if item.get("role") != "user":
                 continue
 
-            content = str(
-                item.get("content", "")
-            ).strip()
-
+            content = str(item.get("content", "")).strip()
             if not content:
                 continue
+
+            named_match = re.search(
+                r"\b(?:create|make|add)\s+[\x60\"']?"
+                r"(?P<title>.+?\s+reminder)[\x60\"']?\s+(?:for|on|at)\b",
+                content,
+                flags=re.IGNORECASE,
+            )
+            if named_match:
+                reference = named_match.group("title").strip()
+                reference = reference.strip(chr(96) + "\"'“” ")
+                reference = re.sub(r"[.!?]+$", "", reference).strip()
+                if reference and reference.casefold() not in {
+                    "a reminder",
+                    "an reminder",
+                    "the reminder",
+                    "temporary reminder",
+                    "a temporary reminder",
+                    "the temporary reminder",
+                }:
+                    return reference
 
             match = re.search(
                 r"\bremind\s+me\b.*?\bto\s+(.+)$",
                 content,
                 flags=re.IGNORECASE,
             )
-
             if not match:
                 continue
 
             reference = match.group(1).strip()
-
-            reference = re.sub(
-                r"[.!?]+$",
-                "",
-                reference,
-            ).strip()
-
+            reference = re.sub(r"[.!?]+$", "", reference).strip()
             if reference:
                 return reference
 
