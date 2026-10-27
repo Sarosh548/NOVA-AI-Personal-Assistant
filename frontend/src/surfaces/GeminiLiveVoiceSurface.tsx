@@ -45,6 +45,9 @@ type GeminiMessage = Record<string, any>
 
 const INPUT_RATE = 16000
 const OUTPUT_RATE = 24000
+const MAX_AUTOMATIC_RECONNECT_ATTEMPTS = 2
+const AUTOMATIC_RECONNECT_DELAYS_MS = [1_000, 2_500] as const
+const CONNECTION_STABILITY_WINDOW_MS = 30_000
 
 const PCM_WORKLET_SOURCE = [
   "class NovaGeminiPcmProcessor extends AudioWorkletProcessor {",
@@ -391,6 +394,11 @@ export function GeminiLiveVoiceSurface({
   const connectedRef = useRef(false)
   const connectingRef = useRef(false)
   const intentionalCloseRef = useRef(false)
+  const connectRef = useRef<(automatic?: boolean) => Promise<void>>(async () => undefined)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const stableConnectionTimerRef = useRef<number | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+  const reconnectCancelledRef = useRef(false)
   const suppressPlaybackRef = useRef(false)
   const voiceLanguageRef = useRef(voiceLanguage)
   voiceLanguageRef.current = voiceLanguage
@@ -447,6 +455,10 @@ export function GeminiLiveVoiceSurface({
       window.clearTimeout(setupTimeoutRef.current)
       setupTimeoutRef.current = null
     }
+    if (stableConnectionTimerRef.current !== null) {
+      window.clearTimeout(stableConnectionTimerRef.current)
+      stableConnectionTimerRef.current = null
+    }
 
     const socket = socketRef.current
     socketRef.current = null
@@ -484,6 +496,59 @@ export function GeminiLiveVoiceSurface({
     setConnected(false)
     setAudioState("idle")
   }, [stopPlayback])
+
+  const scheduleAutomaticReconnect = useCallback((reason: string) => {
+    if (reconnectCancelledRef.current) return
+
+    if (!navigator.onLine) {
+      setError("Internet connection is unavailable. NOVA will reconnect when it returns.")
+      setState("disconnected")
+      return
+    }
+
+    if (reconnectAttemptsRef.current >= MAX_AUTOMATIC_RECONNECT_ATTEMPTS) {
+      setError(
+        reason
+        + " Automatic reconnect stopped after "
+        + MAX_AUTOMATIC_RECONNECT_ATTEMPTS
+        + " attempts. Tap the orb to reconnect manually.",
+      )
+      setState("disconnected")
+      return
+    }
+
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+    }
+
+    const attempt = reconnectAttemptsRef.current + 1
+    reconnectAttemptsRef.current = attempt
+    const delay = AUTOMATIC_RECONNECT_DELAYS_MS[attempt - 1]
+      ?? AUTOMATIC_RECONNECT_DELAYS_MS[AUTOMATIC_RECONNECT_DELAYS_MS.length - 1]
+
+    setError(
+      reason
+      + " Retrying voice in "
+      + Math.ceil(delay / 1_000)
+      + "s (attempt "
+      + attempt
+      + " of "
+      + MAX_AUTOMATIC_RECONNECT_ATTEMPTS
+      + ").",
+    )
+    setState("connecting")
+
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      if (reconnectCancelledRef.current) return
+      if (!navigator.onLine) {
+        setState("disconnected")
+        setError("Internet connection is unavailable. NOVA will reconnect when it returns.")
+        return
+      }
+      void connectRef.current(true)
+    }, delay)
+  }, [])
 
   const persistTurn = useCallback(() => {
     const turn = activeTurnRef.current
@@ -744,6 +809,13 @@ export function GeminiLiveVoiceSurface({
       console.info("[NOVA Gemini Live] session setup completed")
       connectedRef.current = true
       connectingRef.current = false
+      if (stableConnectionTimerRef.current !== null) {
+        window.clearTimeout(stableConnectionTimerRef.current)
+      }
+      stableConnectionTimerRef.current = window.setTimeout(() => {
+        stableConnectionTimerRef.current = null
+        if (connectedRef.current) reconnectAttemptsRef.current = 0
+      }, CONNECTION_STABILITY_WINDOW_MS)
       setConnected(true)
       setState("ready")
       setAudioState("idle")
@@ -970,6 +1042,9 @@ export function GeminiLiveVoiceSurface({
       const providerMessage = typeof providerError.message === "string"
         ? providerError.message.trim().replace(/\s+/gu, " ").slice(0, 180)
         : ""
+      const permanentProviderError = /RESOURCE_EXHAUSTED|429|UNAUTHENTICATED|PERMISSION_DENIED|INVALID_ARGUMENT|quota|rate limit|unauthenticated|permission denied|invalid api key|not configured/i
+        .test(code + " " + providerMessage)
+      reconnectCancelledRef.current = permanentProviderError
       console.error("[NOVA Gemini Live] server rejected the session", {
         code,
         message: providerMessage,
@@ -989,11 +1064,23 @@ export function GeminiLiveVoiceSurface({
       setState("disconnected")
       intentionalCloseRef.current = true
       releaseConnection()
+      if (!permanentProviderError) {
+        scheduleAutomaticReconnect("Gemini Live ended unexpectedly.")
+      }
     }
-  }, [persistTurn, releaseConnection, routeUndelegatedAction, sendToolCall, startSearchProgress, stopPlayback])
+  }, [persistTurn, releaseConnection, routeUndelegatedAction, scheduleAutomaticReconnect, sendToolCall, startSearchProgress, stopPlayback])
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (automatic = false) => {
     if (connectingRef.current || connectedRef.current) return
+    if (automatic && reconnectCancelledRef.current) return
+    if (!automatic) {
+      reconnectCancelledRef.current = false
+      reconnectAttemptsRef.current = 0
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+    }
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === "undefined") {
       setState("disconnected")
       setError("This browser does not support the realtime microphone audio required by Gemini Live.")
@@ -1084,6 +1171,7 @@ export function GeminiLiveVoiceSurface({
         intentionalCloseRef.current = true
         releaseConnection()
         setState("disconnected")
+        scheduleAutomaticReconnect("Gemini Live setup timed out.")
       }, 12000)
 
       worklet.port.onmessage = (event: MessageEvent) => {
@@ -1166,6 +1254,7 @@ export function GeminiLiveVoiceSurface({
         intentionalCloseRef.current = true
         releaseConnection()
         setState("disconnected")
+        scheduleAutomaticReconnect("Gemini Live WebSocket transport failed.")
       }
 
       socket.onclose = (event) => {
@@ -1182,31 +1271,54 @@ export function GeminiLiveVoiceSurface({
         connectedRef.current = false
         connectingRef.current = false
         setConnected(false)
-        if (!errorRef.current) {
-          setError(
-            "Gemini Live WebSocket closed before NOVA finished connecting (code "
-            + event.code
-            + (event.reason ? ": " + event.reason.slice(0, 120) : "")
-            + ").",
-          )
+        const closeDescription = "Gemini Live WebSocket closed before NOVA finished connecting (code "
+          + event.code
+          + (event.reason ? ": " + event.reason.slice(0, 120) : "")
+          + ")."
+        const retryableClose = event.code !== 1008
+          || /expir|session|lifetime|temporar|unavailable/i.test(event.reason)
+        if (!retryableClose) {
+          reconnectCancelledRef.current = true
+          setError(closeDescription + " Reconnect manually after checking the session configuration.")
+        } else if (!errorRef.current) {
+          setError(closeDescription)
         }
         releaseConnection()
         setState("disconnected")
+        if (retryableClose) scheduleAutomaticReconnect(closeDescription)
       }
     } catch (connectError) {
       const mediaError = connectError instanceof DOMException
         && (connectError.name === "NotAllowedError" || connectError.name === "PermissionDeniedError")
       if (mediaError) setMicrophonePermission("denied")
-      setError(readableError(connectError, "NOVA could not start Gemini Live voice. Check microphone permission and try again."))
+      const message = readableError(connectError, "NOVA could not start Gemini Live voice. Check microphone permission and try again.")
+      setError(message)
       intentionalCloseRef.current = true
       releaseConnection()
       setState("disconnected")
+      const errorName = connectError instanceof Error ? connectError.name : ""
+      const retryableSetupError = !mediaError
+        && !["NotFoundError", "SecurityError"].includes(errorName)
+        && !/\b(429|quota|rate limit|unauthenticated|unauthorized|forbidden|permission denied|not configured|invalid api key|model access|billing)\b/i.test(message)
+      if (retryableSetupError) {
+        scheduleAutomaticReconnect("Gemini Live could not finish connecting.")
+      } else {
+        reconnectCancelledRef.current = true
+      }
     } finally {
       connectingRef.current = false
     }
-  }, [handleServerMessage, releaseConnection])
+  }, [handleServerMessage, releaseConnection, scheduleAutomaticReconnect])
+
+  connectRef.current = connect
 
   const stopSession = useCallback(() => {
+    reconnectCancelledRef.current = true
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+    reconnectAttemptsRef.current = 0
     intentionalCloseRef.current = true
     releaseConnection()
     setError(null)
@@ -1223,13 +1335,46 @@ export function GeminiLiveVoiceSurface({
   }, [stopPlayback])
 
   useEffect(() => {
-    const onOnline = () => setError(null)
-    const onOffline = () => setError("Internet connection is unavailable.")
+    const onOnline = () => {
+      setError(null)
+      if (
+        reconnectCancelledRef.current
+        || connectedRef.current
+        || connectingRef.current
+        || stateRef.current !== "disconnected"
+      ) return
+
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      reconnectAttemptsRef.current = 0
+      setState("connecting")
+      reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null
+        if (!reconnectCancelledRef.current && navigator.onLine) {
+          void connectRef.current(true)
+        }
+      }, 250)
+    }
+    const onOffline = () => {
+      setError("Internet connection is unavailable. NOVA will reconnect when it returns.")
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      if (!connectedRef.current) setState("disconnected")
+    }
     window.addEventListener("online", onOnline)
     window.addEventListener("offline", onOffline)
     return () => {
       window.removeEventListener("online", onOnline)
       window.removeEventListener("offline", onOffline)
+      reconnectCancelledRef.current = true
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
       intentionalCloseRef.current = true
       releaseConnection()
     }
