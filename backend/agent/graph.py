@@ -4357,6 +4357,22 @@ def agent_node(state: NOVAState) -> NOVAState:
                     "I need a little more detail before proceeding. "
                     "I haven't created the reminder."
                 )
+        elif intent_name == "reminder" and action_name == "update":
+            if not understanding.get("scheduled_at") and not understanding.get("task"):
+                clarification_response = (
+                    "What time or reminder title should I change? "
+                    "I haven't changed the reminder."
+                )
+            elif not understanding.get("scheduled_at"):
+                clarification_response = (
+                    "What new date and time should I use? "
+                    "I haven't changed the reminder."
+                )
+            else:
+                clarification_response = (
+                    "I need a little more detail before proceeding. "
+                    "I haven't changed the reminder."
+                )
         elif intent_name == "email" or (
             intent_name == "action" and action_name == "send"
         ):
