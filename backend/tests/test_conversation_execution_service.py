@@ -1940,6 +1940,7 @@ def test_saved_knowledge_questions_bypass_fast_chat_path():
         history=[],
     )
 
+
 @pytest.mark.parametrize(
     ("message", "expected"),
     [
@@ -1960,6 +1961,8 @@ def test_simple_arithmetic_response_is_deterministic(message, expected):
         "Calculate 17 * 6 and email the result to me.",
         "Calculate 1 / 0.",
         "What is the latest cricket score for 17?",
+        "What is 2026-10-27?",
+        "What is 12/31/2026?",
         "Calculate __import__('os').system('whoami')",
     ],
 )
