@@ -2633,3 +2633,78 @@ def test_indirect_reminder_action_resolves_named_reminder_from_recent_history():
 
     assert result["reminder_reference"] == "NOVA-LIVE-QA-271027 reminder"
     assert result["task"] is None
+
+
+def test_deterministic_task_follow_up_routes_named_task_without_llm():
+    service = make_service_without_llm()
+
+    class UnexpectedLLMCall:
+        def create(self, **kwargs):
+            raise AssertionError("A named task follow-up must not depend on the LLM.")
+
+    service.client = SimpleNamespace(chat=SimpleNamespace(completions=UnexpectedLLMCall()))
+    history = [
+        {"role": "user", "content": "Create a medium priority task named NOVA-LIVE-QA-271027 task."},
+        {"role": "assistant", "content": "Created the task."},
+        {"role": "user", "content": "List my tasks."},
+        {"role": "assistant", "content": "NOVA-LIVE-QA-271027 task is pending."},
+    ]
+
+    for message, expected_action in (("start it", "start"), ("complete it", "complete")):
+        result = service.analyze(message=message, history=history)
+        assert result["intent"] == "task"
+        assert result["task_action"] == expected_action
+        assert result["task_reference"] == "NOVA-LIVE-QA-271027 task"
+        assert result["requires_tool"] is True
+        assert result.get("llm_provider_unavailable") is None
+
+
+def test_deterministic_reminder_time_update_preserves_existing_date_without_llm():
+    service = make_service_without_llm()
+
+    class UnexpectedLLMCall:
+        def create(self, **kwargs):
+            raise AssertionError("A named reminder follow-up must not depend on the LLM.")
+
+    service.client = SimpleNamespace(chat=SimpleNamespace(completions=UnexpectedLLMCall()))
+    message = (
+        "Create " + chr(96) + "NOVA-LIVE-QA-271027 reminder" + chr(96)
+        + " for 28 Oct 2026 10:30 AM Pakistan time."
+    )
+    history = [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": "Created reminder for 28 Oct 2026 at 10:30 AM."},
+    ]
+
+    result = service.analyze(message="update it to 10:45 AM", history=history)
+
+    assert result["intent"] == "reminder"
+    assert result["reminder_action"] == "update"
+    assert result["reminder_reference"] == "NOVA-LIVE-QA-271027 reminder"
+    assert result["scheduled_at"] == "2026-10-28T10:45:00+05:00"
+    assert result["requires_tool"] is True
+
+
+def test_deterministic_reminder_cancel_resolves_named_reminder_without_llm():
+    service = make_service_without_llm()
+
+    class UnexpectedLLMCall:
+        def create(self, **kwargs):
+            raise AssertionError("A named reminder follow-up must not depend on the LLM.")
+
+    service.client = SimpleNamespace(chat=SimpleNamespace(completions=UnexpectedLLMCall()))
+    message = (
+        "Create " + chr(96) + "NOVA-LIVE-QA-271027 reminder" + chr(96)
+        + " for 28 Oct 2026 10:30 AM Pakistan time."
+    )
+    history = [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": "Created reminder for 28 Oct 2026 at 10:30 AM."},
+    ]
+
+    result = service.analyze(message="cancel it", history=history)
+
+    assert result["intent"] == "reminder"
+    assert result["reminder_action"] == "cancel"
+    assert result["reminder_reference"] == "NOVA-LIVE-QA-271027 reminder"
+    assert result["requires_tool"] is True
