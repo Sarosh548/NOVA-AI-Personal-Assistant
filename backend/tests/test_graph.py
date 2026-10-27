@@ -3736,6 +3736,21 @@ def test_complete_email_request_preserves_requested_subject_and_body():
     assert result["body"] == "Test successful"
 
 
+def test_quoted_email_body_excludes_instructions_after_closing_quote():
+    from agent import graph
+
+    message = (
+        'Send an email to saroshqais1@gmail.com with subject "NOVA send-flow smoke test" '
+        'and body "This message must not be sent in this test." '
+        'Do not send before my approval; show the formal approval preview.'
+    )
+
+    subject, body = graph._parse_email_subject_body_fields(message)
+
+    assert subject == "NOVA send-flow smoke test"
+    assert body == "This message must not be sent in this test."
+
+
 def test_pending_email_list_confirmation_never_renders_outbound_send_preview():
     from agent import graph
 
