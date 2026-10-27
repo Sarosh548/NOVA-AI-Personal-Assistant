@@ -1141,6 +1141,21 @@ def memory_node(state: NOVAState) -> NOVAState:
     }
 
 
+def _has_explicit_email_approval_gate(message: str) -> bool:
+    """Return true when sending is explicitly conditional on user approval."""
+    normalized = " ".join(str(message or "").lower().replace("’", "'").split())
+    return re.search(
+        r"\b(?:until|before|unless|after|once)\s+"
+        r"(?:(?:i|you|we)\s+)?(?:explicitly\s+)?"
+        r"(?:approve|approval|confirm|confirmation|say\s+(?:yes|approved?))\b"
+        r"|\b(?:until|before|unless|after|once)\s+my\s+(?:approval|confirmation)\b"
+        r"|\bwithout\s+(?:my\s+)?approval\b"
+        r"|\bask\s+for\s+(?:my\s+)?approval\b",
+        normalized,
+        flags=re.IGNORECASE,
+    ) is not None
+
+
 def _is_email_send_request(message: str) -> bool:
     """Recognize outbound email intent, not explanations about how email works."""
     normalized = " ".join(str(message or "").lower().replace("’", "'").split())
@@ -1158,8 +1173,8 @@ def _is_email_send_request(message: str) -> bool:
     ):
         return False
 
-    # A prohibition must never create a draft/send flow just because it says
-    # both "email" and "send".
+    # An absolute prohibition is a chat-only draft, but a request explicitly
+    # conditioned on user approval should reach the formal confirmation flow.
     if re.search(
         r"\b(?:don't|dont|do not|never|not)\b.{0,50}\b(?:send|bhej\w*)\b"
         r"|\bsend\s+mat\s+(?:kar\w*|bhej\w*)\b|\bmat\s+bhej\w*"
@@ -1167,7 +1182,7 @@ def _is_email_send_request(message: str) -> bool:
         r"|\u0645\u062a\s+\u0628\u06be\u06cc\u062c\w*",
         normalized,
         flags=re.IGNORECASE,
-    ):
+    ) and not _has_explicit_email_approval_gate(normalized):
         return False
 
     has_email = re.search(
@@ -1368,14 +1383,20 @@ def _resolve_email_draft_follow_up(
         r"|\bsend\s+mat\s+(?:kar\w*|bhej\w*)\b|\bmat\s+bhej\w*",
         request_message.lower().replace("’", "'"),
         flags=re.IGNORECASE,
-    ):
+    ) and not _has_explicit_email_approval_gate(request_message):
         return None
-    if request_index == len(messages) - 1 and re.search(
-        rf"\bto\s+[<\[]?{address_pattern}[>\]]?",
-        request_message,
-        flags=re.IGNORECASE,
-    ) and _quoted_email_body(request_message):
-        # Existing one-turn email parsing already handles complete requests.
+    if (
+        request_index == len(messages) - 1
+        and re.search(
+            rf"\bto\s+[<\[]?{address_pattern}[>\]]?",
+            request_message,
+            flags=re.IGNORECASE,
+        )
+        and _quoted_email_body(request_message)
+        and not _has_explicit_email_approval_gate(request_message)
+    ):
+        # Existing one-turn send parsing handles requests with no explicit
+        # approval gate. Gated requests must preserve the preview/approval UI.
         return None
 
     # Do not revive a cancelled draft or a request for which the assistant
@@ -4321,6 +4342,7 @@ def agent_node(state: NOVAState) -> NOVAState:
         action_name = str(
             understanding.get("calendar_action")
             or understanding.get("email_action")
+            or understanding.get("reminder_action")
             or understanding.get("action")
             or ""
         ).strip().lower()
@@ -4340,6 +4362,37 @@ def agent_node(state: NOVAState) -> NOVAState:
                 clarification_response = (
                     "I need a little more detail about the Calendar request. "
                     "I haven't changed anything."
+                )
+        elif intent_name == "reminder" and action_name == "create":
+            if not understanding.get("scheduled_at"):
+                clarification_response = (
+                    "What date and time should I set for this reminder? "
+                    "I haven't created it."
+                )
+            elif not understanding.get("task"):
+                clarification_response = (
+                    "What should I remind you about? I haven't created anything."
+                )
+            else:
+                clarification_response = (
+                    "I need a little more detail before proceeding. "
+                    "I haven't created the reminder."
+                )
+        elif intent_name == "reminder" and action_name == "update":
+            if not understanding.get("scheduled_at") and not understanding.get("task"):
+                clarification_response = (
+                    "What time or reminder title should I change? "
+                    "I haven't changed the reminder."
+                )
+            elif not understanding.get("scheduled_at"):
+                clarification_response = (
+                    "What new date and time should I use? "
+                    "I haven't changed the reminder."
+                )
+            else:
+                clarification_response = (
+                    "I need a little more detail before proceeding. "
+                    "I haven't changed the reminder."
                 )
         elif intent_name == "email" or (
             intent_name == "action" and action_name == "send"
