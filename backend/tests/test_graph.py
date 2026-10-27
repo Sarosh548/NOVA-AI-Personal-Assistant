@@ -800,10 +800,10 @@ def test_deterministic_requested_web_headlines_honors_exact_count_and_dates():
     )
 
     assert response == (
-        "- [AI reading assistants expand](https://example.com/ai-reading) — 27 Oct 2026\\n"
+        "- [AI reading assistants expand](https://example.com/ai-reading) — 27 Oct 2026\n"
         "- [New AI model announced](https://example.com/new-ai-model) — 27 Oct 2026"
     )
-    assert response.count("\\n") == 1
+    assert response.count("\n") == 1
     assert "market update" not in response.lower()
 
 
