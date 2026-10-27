@@ -2527,8 +2527,8 @@ def test_deterministic_email_list_supports_numbered_most_recent_gmail_messages()
 def test_deterministic_reminder_create_parses_named_title_and_explicit_day_month_datetime():
     service = make_service_without_llm()
     message = (
-        "Create NOVA-LIVE-QA-271027 reminder for "
-        "28 Oct 2026 10:30 AM Pakistan time."
+        "Create " + chr(96) + "NOVA-LIVE-QA-271027 reminder" + chr(96)
+        + " for 28 Oct 2026 10:30 AM Pakistan time."
     )
 
     result = service.analyze(message=message, history=[])
