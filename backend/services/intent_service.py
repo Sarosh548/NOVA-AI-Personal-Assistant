@@ -2943,6 +2943,13 @@ Return the full schema with null for absent values:
                         remainder,
                         flags=re.IGNORECASE,
                     )
+                    remainder = re.sub(
+                        r"\b(?:for|on|at)\s*[.!?]*\s*$",
+                        "",
+                        remainder,
+                        flags=re.IGNORECASE,
+                    ).strip()
+                    remainder = re.sub(r"\s*[.!?]+\s*$", "", remainder).strip()
 
             title_match = re.search(
                 r"\b(?:titled|named|called)\s+[\"']?(?P<title>.+?)[\"']?(?=[.!?]|$)",
