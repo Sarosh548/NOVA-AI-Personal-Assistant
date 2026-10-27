@@ -1958,10 +1958,15 @@ class WebSearchService:
                 if response is None and (normalized_topic == "news" or is_live_sports_query):
                     # Preserve the date-aware news and live-sports route. General
                     # web search must not turn into a news-only feed by default.
-                    logger.warning(
-                        "SearXNG search failed; trying Google News RSS fallback: %s",
-                        type(exc).__name__,
-                    )
+                    if self.searxng_endpoint:
+                        logger.warning(
+                            "SearXNG search failed; trying Google News RSS fallback: %s",
+                            type(exc).__name__,
+                        )
+                    else:
+                        logger.info(
+                            "SearXNG is not configured; using Google News RSS fallback."
+                        )
                     provider = "rss"
                     response = None
                     last_error: Exception | None = None
@@ -1986,10 +1991,15 @@ class WebSearchService:
                             raise last_error from exc
                         response = {"results": []}
                 elif response is None:
-                    logger.warning(
-                        "SearXNG search failed; trying Brave web-search fallback: %s",
-                        type(exc).__name__,
-                    )
+                    if self.searxng_endpoint:
+                        logger.warning(
+                            "SearXNG search failed; trying Brave web-search fallback: %s",
+                            type(exc).__name__,
+                        )
+                    else:
+                        logger.info(
+                            "SearXNG is not configured; trying Brave web-search fallback."
+                        )
                     try:
                         response = self._request_brave_search(
                             query=normalized_query,
