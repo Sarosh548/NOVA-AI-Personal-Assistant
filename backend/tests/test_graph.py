@@ -3915,3 +3915,40 @@ def test_agent_node_asks_for_reminder_time_without_executing_tool():
         "I haven't created it."
     )
     assert result["tool_result"]["success"] is False
+
+
+def test_agent_node_asks_for_reminder_update_time_without_executing_tool():
+    state = {
+        "user_id": "user-001",
+        "conversation_id": 1,
+        "user_message": "update it",
+        "history": [],
+        "understanding": {
+            "intent": "reminder",
+            "reminder_action": "update",
+            "reminder_reference": "NOVA-LIVE-QA-271027 reminder",
+            "task": None,
+            "scheduled_at": None,
+            "clarification_required": True,
+            "requires_tool": False,
+        },
+        "plan": {"requires_tool": False},
+        "permission": {
+            "allowed": False,
+            "requires_confirmation": False,
+        },
+        "confirmation": dict(graph.DEFAULT_CONFIRMATION),
+        "tool_result": dict(graph.DEFAULT_TOOL_RESULT),
+        "workflow_result": dict(graph.DEFAULT_WORKFLOW_RESULT),
+        "memory_context": "",
+        "execution_context": ExecutionContext.interactive(),
+        "response": "",
+    }
+
+    result = graph.agent_node(state)
+
+    assert result["response"] == (
+        "What time or reminder title should I change? "
+        "I haven't changed the reminder."
+    )
+    assert result["tool_result"]["success"] is False
