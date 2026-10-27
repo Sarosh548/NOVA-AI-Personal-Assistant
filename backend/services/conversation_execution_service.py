@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import logging
+import math
 import re
 from difflib import SequenceMatcher
 from collections.abc import Callable
@@ -42,6 +44,144 @@ PRIVATE_KNOWLEDGE_SEARCH_PREFIXES = (
 )
 
 PRIVATE_KNOWLEDGE_SEARCH_FALLBACK_THRESHOLD = 0.45
+
+_ARITHMETIC_REQUEST_PREFIX = re.compile(
+    r"^(?:please\s+)?(?:calculate|compute|evaluate|solve|what\s+is|what's|whats|how\s+much\s+is)\s+",
+    re.IGNORECASE,
+)
+_ARITHMETIC_RESPONSE_SUFFIX = re.compile(
+    r"^(?:(?:[.!?,;:]\s*)?(?:(?:and\s+)?(?:please\s+)?"
+    r"(?:reply|answer|respond|write|return|show|give|output|just|only|exactly|"
+    r"no\s+explanation|without\s+explanation)\b.{0,160})?)?$",
+    re.IGNORECASE,
+)
+
+
+def _evaluate_simple_arithmetic(node: ast.AST) -> int | float | None:
+    """Evaluate only small, explicit arithmetic ASTs; never execute Python code."""
+    if isinstance(node, ast.Expression):
+        return _evaluate_simple_arithmetic(node.body)
+
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if type(value) not in (int, float) or abs(value) > 1_000_000_000:
+            return None
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
+
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        operand = _evaluate_simple_arithmetic(node.operand)
+        if operand is None:
+            return None
+        result = operand if isinstance(node.op, ast.UAdd) else -operand
+        return result if abs(result) <= 1_000_000_000_000 else None
+
+    if not isinstance(node, ast.BinOp):
+        return None
+
+    left = _evaluate_simple_arithmetic(node.left)
+    right = _evaluate_simple_arithmetic(node.right)
+    if left is None or right is None:
+        return None
+
+    try:
+        if isinstance(node.op, ast.Add):
+            result = left + right
+        elif isinstance(node.op, ast.Sub):
+            result = left - right
+        elif isinstance(node.op, ast.Mult):
+            result = left * right
+        elif isinstance(node.op, ast.Div):
+            result = left / right
+        elif isinstance(node.op, ast.FloorDiv):
+            result = left // right
+        elif isinstance(node.op, ast.Mod):
+            result = left % right
+        elif isinstance(node.op, ast.Pow):
+            if abs(right) > 10 or abs(left) > 1_000_000:
+                return None
+            result = left ** right
+        else:
+            return None
+    except (ArithmeticError, ValueError):
+        return None
+
+    if isinstance(result, complex) or abs(result) > 1_000_000_000_000:
+        return None
+    if isinstance(result, float) and not math.isfinite(result):
+        return None
+    return result
+
+
+def _simple_arithmetic_response(message: str) -> str | None:
+    """Resolve a narrowly phrased calculator question without relying on an LLM guess."""
+    text = " ".join(str(message).strip().split())
+    if not text or len(text) > 320:
+        return None
+
+    prefix = _ARITHMETIC_REQUEST_PREFIX.match(text)
+    if prefix is None:
+        return None
+
+    expression_and_suffix = text[prefix.end():]
+    # Avoid interpreting common ISO/US dates as subtraction or division.
+    if re.fullmatch(
+        r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})[?.!]?",
+        expression_and_suffix.strip(),
+    ):
+        return None
+
+    expression_and_suffix = re.sub(
+        r"\b(?:multiplied\s+by|multiply\s+by|times)\b",
+        "*",
+        expression_and_suffix,
+        flags=re.IGNORECASE,
+    )
+    expression_and_suffix = re.sub(
+        r"\b(?:divided\s+by|divide\s+by|over)\b",
+        "/",
+        expression_and_suffix,
+        flags=re.IGNORECASE,
+    )
+    expression_and_suffix = re.sub(r"\bplus\b", "+", expression_and_suffix, flags=re.IGNORECASE)
+    expression_and_suffix = re.sub(r"\bminus\b", "-", expression_and_suffix, flags=re.IGNORECASE)
+    expression_and_suffix = re.sub(
+        r"(?<=\d)\s*[xX]\s*(?=\d)",
+        "*",
+        expression_and_suffix,
+    )
+    expression_and_suffix = expression_and_suffix.replace("×", "*").replace("÷", "/")
+    expression_and_suffix = expression_and_suffix.replace("^", "**")
+
+    match = re.match(r"\s*([0-9(][0-9\s().+\-*/%]*)", expression_and_suffix)
+    if match is None:
+        return None
+
+    expression = match.group(1).strip()
+    suffix = expression_and_suffix[match.end():].strip()
+    if suffix and _ARITHMETIC_RESPONSE_SUFFIX.fullmatch(suffix) is None:
+        return None
+    if len(expression) > 120 or not re.search(r"[+\-*/%]", expression):
+        return None
+
+    try:
+        syntax = ast.parse(expression, mode="eval")
+    except (SyntaxError, ValueError):
+        return None
+
+    if sum(1 for _ in ast.walk(syntax)) > 31:
+        return None
+
+    result = _evaluate_simple_arithmetic(syntax)
+    if result is None:
+        return None
+    if isinstance(result, float):
+        if result.is_integer():
+            return str(int(result))
+        return format(result, ".12g")
+    return str(result)
+
 
 _MEMORY_CANDIDATE_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
@@ -1709,15 +1849,19 @@ class ConversationExecutionService:
                 "conversation_id": conversation_id,
             }
 
-        is_fast_candidate = self._is_fast_conversation(
+        arithmetic_response = _simple_arithmetic_response(user_message)
+        is_fast_candidate = arithmetic_response is not None or self._is_fast_conversation(
             user_message,
             history=history,
         )
         if (
             not is_fast_candidate
-            or self._has_pending_confirmation(
-                user_id=user_id,
-                conversation_id=conversation_id,
+            or (
+                arithmetic_response is None
+                and self._has_pending_confirmation(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                )
             )
         ):
             return self.execute_message(
@@ -1730,43 +1874,48 @@ class ConversationExecutionService:
                 defer_memory_extraction=True,
             )
 
-        memory_context = self._conversation_memory_context(
-            user_id=user_id,
-            message=user_message,
-        )
-
-        response_parts: list[str] = []
-
-        try:
-            stream = self.llm_service.generate_voice_response_stream(
-                message=user_message,
-                history=history,
-                memory_context=memory_context,
-            )
-
-            for delta in stream:
-                if (
-                    is_execution_current is not None
-                    and not is_execution_current()
-                ):
-                    return {
-                        "cancelled": True,
-                        "conversation_id": conversation_id,
-                    }
-
-                response_parts.append(delta)
-                if on_response_delta is not None:
-                    on_response_delta(delta)
-
-            response = "".join(response_parts).strip()
-
-        except Exception as exc:
-            if not is_llm_provider_error(exc):
-                raise
-
-            response = LLM_PROVIDER_UNAVAILABLE_RESPONSE
+        if arithmetic_response is not None:
+            response = arithmetic_response
             if on_response_delta is not None:
                 on_response_delta(response)
+        else:
+            memory_context = self._conversation_memory_context(
+                user_id=user_id,
+                message=user_message,
+            )
+
+            response_parts: list[str] = []
+
+            try:
+                stream = self.llm_service.generate_voice_response_stream(
+                    message=user_message,
+                    history=history,
+                    memory_context=memory_context,
+                )
+
+                for delta in stream:
+                    if (
+                        is_execution_current is not None
+                        and not is_execution_current()
+                    ):
+                        return {
+                            "cancelled": True,
+                            "conversation_id": conversation_id,
+                        }
+
+                    response_parts.append(delta)
+                    if on_response_delta is not None:
+                        on_response_delta(delta)
+
+                response = "".join(response_parts).strip()
+
+            except Exception as exc:
+                if not is_llm_provider_error(exc):
+                    raise
+
+                response = LLM_PROVIDER_UNAVAILABLE_RESPONSE
+                if on_response_delta is not None:
+                    on_response_delta(response)
 
         if (
             is_execution_current is not None
@@ -1910,12 +2059,15 @@ class ConversationExecutionService:
                 "web_sources": [],
             }
 
-        is_fast_candidate = (
-            resolved_context.is_interactive
-            and not resolved_context.is_voice
-            and self._is_fast_conversation(
-                user_message,
-                history=history,
+        arithmetic_response = _simple_arithmetic_response(user_message)
+        is_fast_candidate = resolved_context.is_interactive and (
+            arithmetic_response is not None
+            or (
+                not resolved_context.is_voice
+                and self._is_fast_conversation(
+                    user_message,
+                    history=history,
+                )
             )
         )
         is_private_knowledge_candidate = (
@@ -1927,7 +2079,10 @@ class ConversationExecutionService:
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
-            if is_fast_candidate or is_private_knowledge_candidate
+            if (
+                arithmetic_response is None
+                and (is_fast_candidate or is_private_knowledge_candidate)
+            )
             else False
         )
 
@@ -2010,29 +2165,34 @@ class ConversationExecutionService:
             }
 
         if not has_pending_confirmation and is_fast_candidate:
-            memory_context = self._conversation_memory_context(
-                user_id=user_id,
-                message=user_message,
-            )
-
-            try:
-                response = self.llm_service.generate_companion_response(
+            if arithmetic_response is not None:
+                response = arithmetic_response
+                if on_response_delta is not None:
+                    on_response_delta(response)
+            else:
+                memory_context = self._conversation_memory_context(
+                    user_id=user_id,
                     message=user_message,
-                    history=history,
-                    memory_context=memory_context,
                 )
-            except Exception as exc:
-                if not is_llm_provider_error(exc):
-                    logger.exception(
-                        "Fast conversation response generation failed."
-                    )
-                    raise
 
-                logger.warning(
-                    "Fast conversation provider unavailable: %s",
-                    type(exc).__name__,
-                )
-                response = LLM_PROVIDER_UNAVAILABLE_RESPONSE
+                try:
+                    response = self.llm_service.generate_companion_response(
+                        message=user_message,
+                        history=history,
+                        memory_context=memory_context,
+                    )
+                except Exception as exc:
+                    if not is_llm_provider_error(exc):
+                        logger.exception(
+                            "Fast conversation response generation failed."
+                        )
+                        raise
+
+                    logger.warning(
+                        "Fast conversation provider unavailable: %s",
+                        type(exc).__name__,
+                    )
+                    response = LLM_PROVIDER_UNAVAILABLE_RESPONSE
 
             if (
                 is_execution_current is not None

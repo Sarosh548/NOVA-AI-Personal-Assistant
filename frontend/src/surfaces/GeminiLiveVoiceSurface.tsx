@@ -238,6 +238,10 @@ function shouldRouteToNova(message: string): boolean {
   const normalized = message.trim().toLowerCase()
   if (!normalized) return false
 
+  const explicitCalculation = /\b(?:calculate|compute|evaluate|solve|what(?:'s|\s+is)|how much is)\b/u.test(normalized)
+  const numericExpression = /\d+(?:\.\d+)?\s*(?:[()+\-*\/%×÷^]|\b(?:plus|minus|times|multiplied\s+by|divided\s+by|over)\b)\s*\d/u.test(normalized)
+  if (explicitCalculation && numericExpression) return true
+
   if (/\b(?:https?:\/\/|www\.)/u.test(normalized)) return true
   if (/\b(?:search|look up|research|google search|find out|browse the web)\b/u.test(normalized)) return true
 
