@@ -321,6 +321,53 @@ def test_requested_web_source_links_format_pakistan_time_without_utc_date_rollov
     assert "(published: 28 Oct 2026, 01:00 AM PKT)" in response
 
 
+def test_requested_ai_news_reports_when_fewer_fresh_sources_than_requested():
+    response = _append_requested_web_sources(
+        "- One dated AI story.",
+        (
+            "Search the web for the latest AI news from today. Give exactly 3 distinct "
+            "news items, each with publication date in Pakistan time and a direct source link."
+        ),
+        {
+            "success": True,
+            "tool": "web",
+            "action": "search",
+            "result": {
+                "results": [
+                    {
+                        "title": "One dated AI story",
+                        "url": "https://example.com/ai-today",
+                        "published_date": "2026-10-28T01:00:00+05:00",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert "I could verify only 1 qualifying AI-news item for today, out of 3 requested." in response
+    assert "I won't pad the list with older or unrelated stories." in response
+    assert "https://example.com/ai-today" in response
+
+
+def test_requested_ai_news_reports_zero_qualifying_sources():
+    response = _append_requested_web_sources(
+        "The older article is not a qualifying result.",
+        (
+            "Search for the latest AI news today. Give exactly 3 distinct news items "
+            "with source links. Exclude stories from before today."
+        ),
+        {
+            "success": True,
+            "tool": "web",
+            "action": "search",
+            "result": {"results": []},
+        },
+    )
+
+    assert "I could verify only 0 qualifying AI-news items for today, out of 3 requested." in response
+    assert "I won't pad the list with older or unrelated stories." in response
+
+
 def test_web_sources_are_not_appended_when_not_requested():
     response = _append_requested_web_sources(
         "Here is a general answer.",
