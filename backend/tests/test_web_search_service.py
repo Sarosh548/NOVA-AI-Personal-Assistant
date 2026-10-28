@@ -600,7 +600,7 @@ def test_web_search_falls_back_to_searxng_when_tavily_is_unavailable(
             "url": "https://example.com/voice",
             "content": "Fresh live result.",
             "score": 0.87,
-            "published_date": fresh_date,
+            "published_date": WebSearchService._normalize_publication_timestamp(fresh_date),
         }
     ]
 
@@ -672,7 +672,7 @@ def test_web_search_normalizes_provider_results(
             "url": "https://example.com/ai",
             "content": "Fresh AI information.",
             "score": 0.91,
-            "published_date": fresh_date,
+            "published_date": WebSearchService._normalize_publication_timestamp(fresh_date),
         }
     ]
 
@@ -708,7 +708,7 @@ def test_web_search_uses_google_news_rss_when_news_providers_are_unavailable(mon
         "url": "https://example.com/voice",
         "content": "Source: Example News Fresh AI voice assistant update.",
         "score": None,
-        "published_date": pub_date,
+        "published_date": WebSearchService._normalize_publication_timestamp(pub_date),
     }]
 
 
@@ -1066,7 +1066,9 @@ def test_web_search_falls_back_from_empty_news_to_general_search(
         ("latest AI voice assistants", "general", "day"),
     ]
     assert results[0]["title"] == "Current AI Voice Assistant Update"
-    assert results[0]["published_date"].startswith(datetime.now(timezone.utc).date().isoformat())
+    published_at = WebSearchService._publication_datetime(results[0])
+    assert published_at is not None
+    assert abs((published_at - datetime.now(timezone.utc)).total_seconds()) < 10
 
 
 def test_empty_google_news_rss_retries_without_filter_without_reusing_failed_searxng(
@@ -1454,6 +1456,18 @@ def test_voice_comparison_supplements_only_missing_recent_vendor_with_rss(monkey
     }
     assert any(item["url"] == "https://www.engadget.com/chatgpt-voice-2026-update/" for item in results)
     assert all(service._is_recently_published(item) for item in results)
+
+
+def test_publication_timestamp_normalizes_rfc822_and_iso_to_pakistan_time():
+    assert WebSearchService._normalize_publication_timestamp(
+        "Tue, 27 Oct 2026 20:00:00 GMT"
+    ) == "2026-10-28T01:00:00+05:00"
+    assert WebSearchService._normalize_publication_timestamp(
+        "2026-10-27T20:00:00Z"
+    ) == "2026-10-28T01:00:00+05:00"
+    assert WebSearchService._normalize_publication_timestamp(
+        "2026-10-28"
+    ) == "2026-10-28"
 
 
 def test_publication_date_extraction_only_uses_a_leading_explicit_date():
