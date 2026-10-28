@@ -1662,6 +1662,51 @@ def test_latest_ai_news_filters_unrelated_news_and_ranks_relevant_stories(monkey
     assert all(WebSearchService._matches_ai_news_query(item) for item in results)
 
 
+def test_today_ai_news_query_promotes_general_search_to_news_day_scope(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    now = datetime.now(timezone.utc)
+    fresh_date = (now - timedelta(hours=1)).isoformat()
+    stale_date = (now - timedelta(days=2)).isoformat()
+    captured = {}
+
+    def fake_tavily(payload):
+        captured.update(payload)
+        return {
+            "results": [
+                {
+                    "title": "AI model update announced today",
+                    "url": "https://example.com/fresh-ai-model",
+                    "content": "A new AI model update was announced today.",
+                    "published_date": fresh_date,
+                },
+                {
+                    "title": "OpenAI announces an AI model",
+                    "url": "https://example.com/stale-ai-model",
+                    "content": "OpenAI announced a new AI model.",
+                    "published_date": stale_date,
+                },
+                {
+                    "title": "Market rises after investors welcome a budget",
+                    "url": "https://example.com/unrelated-market-story",
+                    "content": "Markets rose on investor sentiment.",
+                    "published_date": fresh_date,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(service, "_request_tavily", fake_tavily)
+
+    results = service.search(
+        query="Search the web for the latest AI news from today",
+        topic="general",
+        max_results=5,
+    )
+
+    assert captured["topic"] == "news"
+    assert captured["time_range"] == "day"
+    assert [item["url"] for item in results] == ["https://example.com/fresh-ai-model"]
+
+
 def test_ai_news_query_filter_does_not_accept_generic_politics_just_because_results_are_fresh():
     assert WebSearchService._is_ai_news_query("latest AI news today") is True
     assert WebSearchService._is_ai_news_query("latest OpenAI news") is True
