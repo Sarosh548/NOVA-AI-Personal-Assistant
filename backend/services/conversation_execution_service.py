@@ -498,6 +498,7 @@ def _append_requested_web_sources(response, user_message, tool_result):
 
     seen_urls = set(re.findall(r"https?://[^\s<>]+", str(response or "")))
     source_lines = []
+    verified_source_urls = set()
     for item in results:
         if not isinstance(item, dict):
             continue
@@ -505,7 +506,8 @@ def _append_requested_web_sources(response, user_message, tool_result):
         url = str(item.get("url") or item.get("link") or "").strip()
         if not title or not (url.startswith("https://") or url.startswith("http://")):
             continue
-        if url in seen_urls:
+        verified_source_urls.add(url)
+        if url in seen_urls or len(source_lines) >= 5:
             continue
         published = str(item.get("published_date") or item.get("publishedDate") or "").strip()
         line = f"- {title[:180]} — {url}"
@@ -524,8 +526,28 @@ def _append_requested_web_sources(response, user_message, tool_result):
             line += f" (published: {published_label})"
         source_lines.append(line)
         seen_urls.add(url)
-        if len(source_lines) >= 5:
-            break
+
+    requested_count_match = re.search(
+        r"\\bexactly\\s+(\\d+)\\s+(?:distinct\\s+)?(?:news\\s+)?"
+        r"(?:items|stories|articles|sources|results)\\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+    requested_count = int(requested_count_match.group(1)) if requested_count_match else None
+    requests_fresh_ai_news = (
+        requested_count is not None
+        and bool(re.search(r"\\b(?:ai|artificial intelligence|machine learning|openai|chatgpt|gemini|llm)\\b", message))
+        and bool(re.search(r"\\b(?:latest|recent|current|today|right now|at the moment|live|now|aaj|abhi|filhal)\\b", message))
+    )
+    verified_source_count = len(verified_source_urls)
+
+    def shortfall_note() -> str:
+        count_label = "item" if verified_source_count == 1 else "items"
+        return (
+            f"I could verify only {verified_source_count} qualifying AI-news {count_label} "
+            f"for today, out of {requested_count} requested. I won't pad the list "
+            "with older or unrelated stories."
+        )
 
     if not source_lines:
         requests_fresh_sources = bool(
@@ -535,13 +557,19 @@ def _append_requested_web_sources(response, user_message, tool_result):
             )
         )
         if requests_fresh_sources:
-            return (
+            no_source_response = (
                 "I couldn't verify a fresh, dated source for this request just now. "
                 "The search returned no source within the requested freshness window, "
                 "so I won't present older articles as the latest update."
             )
+            if requests_fresh_ai_news and verified_source_count < requested_count:
+                no_source_response += "\\n\\n" + shortfall_note()
+            return no_source_response
         return response
-    return str(response or "").rstrip() + "\n\nSources (open links):\n" + "\n".join(source_lines)
+    final_response = str(response or "").rstrip() + "\\n\\nSources (open links):\\n" + "\\n".join(source_lines)
+    if requests_fresh_ai_news and verified_source_count < requested_count:
+        final_response += "\\n\\n" + shortfall_note()
+    return final_response
 
 
 def _clarify_chat_only_email_draft(response, user_message, tool_result):
