@@ -1659,7 +1659,7 @@ class WebSearchService:
         # to "general". Without this, a generic result set can bypass the
         # AI-news relevance filter and the day-scoped freshness check.
         requests_today = re.search(
-            r"\\b(?:today(?:['’]s)?|aaj)\\b",
+            r"\b(?:today(?:['’]s)?|aaj)\b",
             normalized_query,
             flags=re.IGNORECASE,
         ) is not None
