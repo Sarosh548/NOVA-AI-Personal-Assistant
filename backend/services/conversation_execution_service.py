@@ -528,16 +528,16 @@ def _append_requested_web_sources(response, user_message, tool_result):
         seen_urls.add(url)
 
     requested_count_match = re.search(
-        r"\\bexactly\\s+(\\d+)\\s+(?:distinct\\s+)?(?:news\\s+)?"
-        r"(?:items|stories|articles|sources|results)\\b",
+        r"\bexactly\s+(\d+)\s+(?:distinct\s+)?(?:news\s+)?
+        r"(?:items|stories|articles|sources|results)\b",
         message,
         flags=re.IGNORECASE,
     )
     requested_count = int(requested_count_match.group(1)) if requested_count_match else None
     requests_fresh_ai_news = (
         requested_count is not None
-        and bool(re.search(r"\\b(?:ai|artificial intelligence|machine learning|openai|chatgpt|gemini|llm)\\b", message))
-        and bool(re.search(r"\\b(?:latest|recent|current|today|right now|at the moment|live|now|aaj|abhi|filhal)\\b", message))
+        and bool(re.search(r"\b(?:ai|artificial intelligence|machine learning|openai|chatgpt|gemini|llm)\b", message))
+        and bool(re.search(r"\b(?:latest|recent|current|today|right now|at the moment|live|now|aaj|abhi|filhal)\b", message))
     )
     verified_source_count = len(verified_source_urls)
 
@@ -563,12 +563,12 @@ def _append_requested_web_sources(response, user_message, tool_result):
                 "so I won't present older articles as the latest update."
             )
             if requests_fresh_ai_news and verified_source_count < requested_count:
-                no_source_response += "\\n\\n" + shortfall_note()
+                no_source_response += "\n\n" + shortfall_note()
             return no_source_response
         return response
-    final_response = str(response or "").rstrip() + "\\n\\nSources (open links):\\n" + "\\n".join(source_lines)
+    final_response = str(response or "").rstrip() + "\n\nSources (open links):\n" + "\n".join(source_lines)
     if requests_fresh_ai_news and verified_source_count < requested_count:
-        final_response += "\\n\\n" + shortfall_note()
+        final_response += "\n\n" + shortfall_note()
     return final_response
 
 
