@@ -1340,7 +1340,7 @@ class WebSearchService:
         text = str(value or "").strip()
         if not text:
             return None
-        if re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", text):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
             return text
 
         try:
