@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 import re
@@ -1329,6 +1330,33 @@ class WebSearchService:
         return vendors
 
     @staticmethod
+    def _normalize_publication_timestamp(value: Any) -> str | None:
+        """Convert explicit provider timestamps to Pakistan time for user-facing results.
+
+        Date-only values remain date-only because a timezone conversion cannot
+        safely be applied without a time-of-day. Unknown formats are preserved,
+        never replaced with an inferred current date.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", text):
+            return text
+
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(text)
+            except (TypeError, ValueError, OverflowError):
+                return text[:100]
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        pakistan_timezone = timezone(timedelta(hours=5))
+        return parsed.astimezone(pakistan_timezone).isoformat(timespec="seconds")
+
+    @staticmethod
     def _publication_datetime(result: dict) -> datetime | None:
         """Parse an explicit provider publication date without inferring one."""
         value = result.get("published_date") or result.get("publishedDate")
@@ -1723,7 +1751,7 @@ class WebSearchService:
                 published = raw.get("published_date") or raw.get("publishedDate")
                 if not published:
                     published = self._publication_date_from_content(content)
-                published_text = str(published).strip()[:100] if published else None
+                published_text = self._normalize_publication_timestamp(published)
                 if rss and "news.google.com" in urlparse(url).netloc.lower():
                     resolved = (
                         self._resolve_google_news_article_url(url)
