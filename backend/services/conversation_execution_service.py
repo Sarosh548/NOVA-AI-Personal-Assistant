@@ -4,6 +4,7 @@ import ast
 import logging
 import math
 import re
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from collections.abc import Callable
 from typing import Any
@@ -509,7 +510,18 @@ def _append_requested_web_sources(response, user_message, tool_result):
         published = str(item.get("published_date") or item.get("publishedDate") or "").strip()
         line = f"- {title[:180]} — {url}"
         if published:
-            line += f" (published: {published[:40]})"
+            published_label = published[:40]
+            try:
+                published_at = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            except ValueError:
+                published_at = None
+            if (
+                published_at is not None
+                and published_at.tzinfo is not None
+                and published_at.utcoffset() == timedelta(hours=5)
+            ):
+                published_label = published_at.strftime("%d %b %Y, %I:%M %p PKT")
+            line += f" (published: {published_label})"
         source_lines.append(line)
         seen_urls.add(url)
         if len(source_lines) >= 5:
