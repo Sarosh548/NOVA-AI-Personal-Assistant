@@ -528,7 +528,7 @@ def _append_requested_web_sources(response, user_message, tool_result):
         seen_urls.add(url)
 
     requested_count_match = re.search(
-        r"\bexactly\s+(\d+)\s+(?:distinct\s+)?(?:news\s+)?
+        r"\bexactly\s+(\d+)\s+(?:distinct\s+)?(?:news\s+)?"
         r"(?:items|stories|articles|sources|results)\b",
         message,
         flags=re.IGNORECASE,
