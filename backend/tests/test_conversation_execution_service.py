@@ -298,6 +298,29 @@ def test_requested_web_source_links_include_only_real_retrieved_urls():
     assert "Sources (open links):" in response
 
 
+def test_requested_web_source_links_format_pakistan_time_without_utc_date_rollover():
+    response = _append_requested_web_sources(
+        "Here is one verified story.",
+        "Please include source links.",
+        {
+            "success": True,
+            "tool": "web",
+            "action": "search",
+            "result": {
+                "results": [
+                    {
+                        "title": "An AI news story",
+                        "url": "https://example.com/ai-news",
+                        "published_date": "2026-10-28T01:00:00+05:00",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert "(published: 28 Oct 2026, 01:00 AM PKT)" in response
+
+
 def test_web_sources_are_not_appended_when_not_requested():
     response = _append_requested_web_sources(
         "Here is a general answer.",
