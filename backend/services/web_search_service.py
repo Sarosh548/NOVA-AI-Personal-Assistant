@@ -1653,6 +1653,21 @@ class WebSearchService:
         is_openai_news = self._is_openai_news_query(normalized_query)
         is_ai_news = self._is_ai_news_query(normalized_query)
 
+        # "Today" is a stronger request than a general web search. Route an
+        # explicit today/current AI-news query through the news providers and
+        # their bounded freshness filter even when the caller defaulted topic
+        # to "general". Without this, a generic result set can bypass the
+        # AI-news relevance filter and the day-scoped freshness check.
+        requests_today = re.search(
+            r"\b(?:today(?:['’]s)?|aaj)\b",
+            normalized_query,
+            flags=re.IGNORECASE,
+        ) is not None
+        if is_ai_news and requests_today:
+            normalized_topic = "news"
+            if normalized_time_range is None:
+                normalized_time_range = "day"
+
         def fetch_scoped(provider: str, scoped_query: str) -> list[dict]:
             if provider == "rss":
                 response = self._request_google_news_rss(
