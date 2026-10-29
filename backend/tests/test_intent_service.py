@@ -2406,6 +2406,33 @@ def test_voice_style_composed_email_without_with_and_with_instruction_routes_det
     assert result["requires_tool"] is True
 
 
+def test_email_subject_message_prompt_keeps_control_instructions_out_of_fields():
+    service = make_service_without_llm()
+
+    class UnexpectedLLMCall:
+        def create(self, **kwargs):
+            raise AssertionError("Explicit email fields must be parsed deterministically.")
+
+    service.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=UnexpectedLLMCall())
+    )
+    message = (
+        "Send an email to saroshqais1@gmail.com subject NOVA test 29 Oct 2026 "
+        "message This is a test email from NOVA. Please repeat the recipient "
+        "address before asking my approval."
+    )
+
+    result = service.analyze(message=message, history=[])
+
+    assert result["intent"] == "email"
+    assert result["email_action"] == "send"
+    assert result["action"] == "send"
+    assert result["to"] == "saroshqais1@gmail.com"
+    assert result["subject"] == "NOVA test 29 Oct 2026"
+    assert result["body"] == "This is a test email from NOVA."
+    assert result["requires_tool"] is True
+
+
 def test_qa_prefixed_task_list_and_relative_reminder_route_deterministically():
     service = make_service_without_llm()
 

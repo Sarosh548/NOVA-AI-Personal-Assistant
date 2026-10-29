@@ -3809,6 +3809,37 @@ def test_quoted_email_body_excludes_instructions_after_closing_quote():
     assert body == "This message must not be sent in this test."
 
 
+def test_unquoted_subject_message_email_keeps_approval_instructions_out_of_fields():
+    from agent import graph
+
+    message = (
+        "Send an email to saroshqais1@gmail.com subject NOVA test 29 Oct 2026 "
+        "message This is a test email from NOVA. Please repeat the recipient "
+        "address before asking my approval."
+    )
+
+    subject, body = graph._parse_email_subject_body_fields(message)
+
+    assert subject == "NOVA test 29 Oct 2026"
+    assert body == "This is a test email from NOVA."
+
+
+def test_prepared_email_prompt_keeps_review_instructions_out_of_fields():
+    from agent import graph
+
+    message = (
+        "Prepare an email to saroshqais1@gmail.com. "
+        "Set the subject exactly to NOVA test 29 Oct 2026 and the body exactly to "
+        "This is a test email from NOVA. Show me the recipient, subject and body for review. "
+        "Wait for my explicit approval before sending."
+    )
+
+    subject, body = graph._parse_email_subject_body_fields(message)
+
+    assert subject == "NOVA test 29 Oct 2026"
+    assert body == "This is a test email from NOVA."
+
+
 def test_pending_email_list_confirmation_never_renders_outbound_send_preview():
     from agent import graph
 

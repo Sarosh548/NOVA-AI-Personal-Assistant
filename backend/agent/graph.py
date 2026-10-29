@@ -1305,11 +1305,50 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
         else None
     )
 
+    def clean_body(value: str, *, preserve_terminal_punctuation: bool = False) -> str:
+        # Keep punctuation that clearly belongs to a body sentence before a
+        # trailing NOVA control instruction; otherwise retain the existing
+        # behavior for conversational sentence-final punctuation.
+        if not preserve_terminal_punctuation:
+            return clean(value)
+        return str(value or "").strip().strip("\"'“”").strip()
+
+    def body_is_followed_by_control_instruction(match: re.Match[str]) -> bool:
+        suffix = source[match.end("body"):]
+        return bool(re.match(
+            r"\s+(?:please\s+repeat\s+(?:the\s+)?recipient(?:\s+address)?|show\s+me|display|present|wait\s+for|before\s+sending|after\s+i\s+approve|before\s+asking\s+(?:for\s+)?(?:my\s+)?approval|do\s+not\s+send|don['’]?t\s+send|never\s+send)\b",
+            suffix,
+            flags=re.IGNORECASE,
+        ))
+
+    message_combined = re.search(
+        r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be|exactly(?:\s+to)?)\s+|[:=]\s*)?"
+        r"(?P<subject>.+?)\s+(?:(?:and|aur)\s+)?(?:the\s+)?message(?:\s+(?:is|hai|exactly(?:\s+to)?))?\s*[:=]?\s*"
+        r"(?P<body>.+?)(?=\s+(?:please\s+repeat\s+(?:the\s+)?recipient(?:\s+address)?|show\s+me|display|present|wait\s+for|before\s+sending|after\s+i\s+approve|before\s+asking\s+(?:for\s+)?(?:my\s+)?approval|do\s+not\s+send|don['’]?t\s+send|never\s+send)\b|$)",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if message_combined:
+        subject = (
+            quoted_subject_value
+            if quoted_subject_value is not None
+            else clean(message_combined.group("subject"))
+        )
+        body = (
+            quoted_body_value
+            if quoted_body_value is not None
+            else clean_body(
+                message_combined.group("body"),
+                preserve_terminal_punctuation=body_is_followed_by_control_instruction(message_combined),
+            )
+        )
+        return subject or None, body or None
+
     combined = re.search(
-        r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be)\s+|[:=]\s*)?"
+        r"\bsubject(?:\s+line)?\s*(?:(?:is|hai|hona\s+chahiye|hona\s+chahie|should\s+be|would\s+be|exactly(?:\s+to)?)\s+|[:=]\s*)?"
         r"(?P<subject>.+?)(?:\s+(?:and|aur)\s+|,\s*)(?:the\s+)?body"
-        r"(?:\s+mein)?(?:\s+(?:is|hai|likhna\s+hai|should\s+be|hona\s+chahiye))?\s*[:=]?\s*"
-        r"(?P<body>.+?)\s*[.!?]*$",
+        r"(?:\s+mein)?(?:\s+(?:is|hai|likhna\s+hai|should\s+be|hona\s+chahiye|exactly(?:\s+to)?))?\s*[:=]?\s*"
+        r"(?P<body>.+?)(?=\s+(?:please\s+repeat\s+(?:the\s+)?recipient(?:\s+address)?|show\s+me|display|present|wait\s+for|before\s+sending|after\s+i\s+approve|before\s+asking\s+(?:for\s+)?(?:my\s+)?approval|do\s+not\s+send|don['’]?t\s+send|never\s+send)\b|$)",
         source,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -1322,7 +1361,10 @@ def _parse_email_subject_body_fields(message: str) -> tuple[str | None, str | No
         body = (
             quoted_body_value
             if quoted_body_value is not None
-            else clean(combined.group("body"))
+            else clean_body(
+                combined.group("body"),
+                preserve_terminal_punctuation=body_is_followed_by_control_instruction(combined),
+            )
         )
         return subject or None, body or None
 

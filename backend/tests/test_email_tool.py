@@ -98,6 +98,28 @@ def test_email_tool_requires_subject_and_body():
     assert missing_body["error"] == "Email body is missing."
 
 
+def test_email_tool_rejects_multiline_subject_before_provider_call():
+    delivery = FakeEmailDelivery()
+    notification_service = NotificationService()
+    notification_service.channel_registry.register("email", delivery)
+    router = ToolRouter(notification_service=notification_service)
+
+    result = router.execute(
+        intent="email",
+        user_id="user-001",
+        data={
+            "action": "send",
+            "to": "recipient@example.com",
+            "subject": "NOVA test\nBcc: unintended@example.com",
+            "body": "This is a test email.",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "Email subject must be a single line."
+    assert delivery.calls == []
+
+
 def test_email_tool_does_not_treat_failed_provider_status_as_success():
     class ProviderResultService:
         def __init__(self, status):
