@@ -887,6 +887,18 @@ class ToolRouter:
         cc = data.get("cc")
         bcc = data.get("bcc")
 
+        # Subject is written into an RFC email header. Reject line breaks
+        # before any provider call so a bad LLM/planner payload cannot produce
+        # a malformed header or an unintended message.
+        if "\r" in subject or "\n" in subject:
+            return {
+                "success": False,
+                "tool": "email",
+                "action": "send",
+                "result": None,
+                "error": "Email subject must be a single line.",
+            }
+
         if recipient_reference == "self" and to is None:
             to = self.notification_service.resolve_self_email_destination(
                 user_id=user_id,
