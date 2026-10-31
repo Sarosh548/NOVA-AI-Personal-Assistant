@@ -130,34 +130,43 @@ class ReminderScheduler:
                         reminder_id,
                     )
 
-                    self._record_activity_event(
+                    retry = self._schedule_failed_retry(
+                        reminder_id=reminder_id,
                         user_id=user_id,
-                        event_type=(
-                            "reminder_delivery_failed"
-                        ),
-                        status="failed",
-                        title=(
-                            "Reminder delivery failed: "
-                            f"{str(title)[:150]}"
-                        ),
-                        summary=(
-                            "NOVA could not deliver reminder "
-                            f"'{str(title)[:200]}'."
-                        ),
-                        metadata={
-                            "reminder_id": reminder_id,
-                            "reminder_time": (
-                                reminder.get(
-                                    "reminder_time"
-                                )
-                            ),
-                        },
-                    )
-
-                    self.reminder_service.mark_reminder_pending(
-                        reminder_id,
                         claim_token=claim_token,
                     )
+                    if retry and retry.get("status") == "failed":
+                        self._record_activity_event(
+                            user_id=user_id,
+                            event_type="reminder_delivery_failed",
+                            status="failed",
+                            title=(
+                                "Reminder delivery permanently failed: "
+                                f"{str(title)[:130]}"
+                            ),
+                            summary=(
+                                "NOVA stopped retrying reminder "
+                                f"'{str(title)[:180]}' after "
+                                f"{retry.get('attempt_count')} attempt(s)."
+                            ),
+                            metadata={
+                                "reminder_id": reminder_id,
+                                "reminder_time": reminder.get("reminder_time"),
+                                "attempt_count": retry.get("attempt_count"),
+                            },
+                        )
+                    elif retry:
+                        logger.warning(
+                            "Reminder %s retry scheduled for %s (attempt %s/%s).",
+                            reminder_id,
+                            retry.get("next_attempt_at"),
+                            retry.get("attempt_count"),
+                            getattr(
+                                self.reminder_service,
+                                "MAX_DELIVERY_ATTEMPTS",
+                                "bounded",
+                            ),
+                        )
 
                     continue
 
@@ -232,41 +241,40 @@ class ReminderScheduler:
                     reminder_id,
                 )
 
-                self._record_activity_event(
-                    user_id=user_id,
-                    event_type="reminder_delivery_failed",
-                    status="failed",
-                    title=(
-                        "Reminder processing failed: "
-                        f"{str(title)[:150]}"
-                    ),
-                    summary=(
-                        "NOVA could not process reminder "
-                        f"'{str(title)[:200]}'."
-                    ),
-                    metadata={
-                        "reminder_id": reminder_id,
-                        "error": str(exc),
-                        "reminder_time": (
-                            reminder.get(
-                                "reminder_time"
-                            )
-                        ),
-                    },
-                )
-
                 try:
-                    self.reminder_service.mark_reminder_pending(
-                        reminder_id,
+                    retry = self._schedule_failed_retry(
+                        reminder_id=reminder_id,
+                        user_id=user_id,
                         claim_token=claim_token,
                     )
                 except Exception:
+                    retry = None
                     logger.exception(
-                        "Could not return reminder %s to pending after "
-                        "processing failure.",
+                        "Could not schedule another attempt for reminder %s.",
                         reminder_id,
                     )
 
+                if retry and retry.get("status") == "failed":
+                    self._record_activity_event(
+                        user_id=user_id,
+                        event_type="reminder_delivery_failed",
+                        status="failed",
+                        title=(
+                            "Reminder processing permanently failed: "
+                            f"{str(title)[:125]}"
+                        ),
+                        summary=(
+                            "NOVA stopped retrying reminder "
+                            f"'{str(title)[:175]}' after "
+                            f"{retry.get('attempt_count')} attempt(s)."
+                        ),
+                        metadata={
+                            "reminder_id": reminder_id,
+                            "error": str(exc),
+                            "reminder_time": reminder.get("reminder_time"),
+                            "attempt_count": retry.get("attempt_count"),
+                        },
+                    )
     async def process_due_reminders(self) -> None:
         """
         Run the blocking reminder cycle outside the asyncio event loop.
@@ -274,6 +282,54 @@ class ReminderScheduler:
         await asyncio.to_thread(
             self._process_due_reminders_sync
         )
+
+    def _schedule_failed_retry(
+        self,
+        *,
+        reminder_id: int,
+        user_id: str,
+        claim_token: str,
+    ) -> dict | None:
+        """Schedule backoff, or stop immediately when email has no destination."""
+        permanent = False
+        destination_check = getattr(
+            self.notification_service,
+            "has_delivery_destination",
+            None,
+        )
+        if callable(destination_check):
+            try:
+                permanent = destination_check(user_id=user_id) is False
+            except Exception:
+                logger.exception(
+                    "Could not classify notification destination for user=%s.",
+                    user_id,
+                )
+
+        schedule_retry = getattr(
+            self.reminder_service,
+            "schedule_reminder_retry",
+            None,
+        )
+        if callable(schedule_retry):
+            return schedule_retry(
+                reminder_id,
+                claim_token=claim_token,
+                permanent=permanent,
+            )
+
+        # Compatibility for older test doubles/integrations.
+        mark_pending = getattr(
+            self.reminder_service,
+            "mark_reminder_pending",
+            None,
+        )
+        if callable(mark_pending) and mark_pending(
+            reminder_id,
+            claim_token=claim_token,
+        ):
+            return {"status": "pending"}
+        return None
 
     def _record_activity_event(
         self,

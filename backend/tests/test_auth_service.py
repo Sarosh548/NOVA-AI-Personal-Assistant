@@ -338,7 +338,60 @@ def test_rotate_session_replaces_refresh_token(
             session.commit()
 
 
-def test_reusing_rotated_refresh_token_is_rejected(
+def test_retrying_recently_rotated_refresh_token_recovers_active_session(
+    auth_service,
+    test_user,
+):
+    user, _ = test_user
+    user_session, old_refresh_token = auth_service.create_session(user.id)
+
+    try:
+        rotation_id = "a" * 64
+        rotated_session, first_new_token = auth_service.rotate_session(
+            old_refresh_token,
+            rotation_id=rotation_id,
+        )
+        recovered_session, recovered_token = auth_service.rotate_session(
+            old_refresh_token,
+            rotation_id=rotation_id,
+        )
+
+        assert rotated_session.id == user_session.id
+        assert recovered_session.id == user_session.id
+        assert recovered_token == first_new_token
+        assert auth_service.get_session_by_refresh_token(
+            recovered_token
+        ) is not None
+
+        persisted = auth_service.get_session(user_session.id)
+        assert persisted is not None
+        assert persisted.revoked_at is None
+    finally:
+        with Session(engine) as session:
+            session.delete(session.get(UserSession, user_session.id))
+            session.commit()
+
+
+def test_replaying_old_refresh_token_with_wrong_rotation_id_is_rejected(
+    auth_service,
+    test_user,
+):
+    user, _ = test_user
+    user_session, old_refresh_token = auth_service.create_session(user.id)
+    try:
+        auth_service.rotate_session(old_refresh_token, rotation_id="b" * 64)
+        with pytest.raises(ValueError, match="Refresh token replay detected"):
+            auth_service.rotate_session(old_refresh_token, rotation_id="c" * 64)
+        persisted = auth_service.get_session(user_session.id)
+        assert persisted is not None
+        assert persisted.revoked_at is not None
+    finally:
+        with Session(engine) as session:
+            session.delete(session.get(UserSession, user_session.id))
+            session.commit()
+
+
+def test_reusing_rotated_refresh_token_after_grace_is_rejected(
     auth_service,
     test_user,
 ):
@@ -354,6 +407,21 @@ def test_reusing_rotated_refresh_token_is_rejected(
         auth_service.rotate_session(
             old_refresh_token,
         )
+
+        with Session(engine) as session:
+            history = session.scalar(
+                select(RefreshTokenHistory).where(
+                    RefreshTokenHistory.token_hash
+                    == auth_service._hash_refresh_token(old_refresh_token)
+                )
+            )
+            history.replaced_at = (
+                auth_service._utc_now_naive()
+                - timedelta(
+                    seconds=AuthService.REFRESH_TOKEN_RETRY_GRACE_SECONDS + 1
+                )
+            )
+            session.commit()
 
         with pytest.raises(ValueError) as exc_info:
             auth_service.rotate_session(

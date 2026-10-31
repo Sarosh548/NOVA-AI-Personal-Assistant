@@ -289,7 +289,7 @@ def test_fetch_parses_html_and_validates_response(
     monkeypatch.setattr(
         url_module,
         "build_opener",
-        lambda handler: opener,
+        lambda *handlers: opener,
     )
 
     result = WebPageParserService().fetch(
@@ -324,7 +324,7 @@ def test_fetch_rejects_non_html_response(
     monkeypatch.setattr(
         url_module,
         "build_opener",
-        lambda handler: opener,
+        lambda *handlers: opener,
     )
 
     with pytest.raises(
@@ -355,7 +355,7 @@ def test_fetch_rejects_oversized_response(
     monkeypatch.setattr(
         url_module,
         "build_opener",
-        lambda handler: opener,
+        lambda *handlers: opener,
     )
 
     with pytest.raises(
@@ -389,7 +389,7 @@ def test_fetch_rejects_declared_oversized_response(
     monkeypatch.setattr(
         url_module,
         "build_opener",
-        lambda handler: opener,
+        lambda *handlers: opener,
     )
 
     with pytest.raises(
@@ -418,7 +418,7 @@ def test_fetch_wraps_network_errors(
     monkeypatch.setattr(
         url_module,
         "build_opener",
-        lambda handler: opener,
+        lambda *handlers: opener,
     )
 
     with pytest.raises(
@@ -428,3 +428,189 @@ def test_fetch_wraps_network_errors(
         WebPageParserService().fetch(
             "https://example.com"
         )
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "100.64.0.1",
+        "100.127.255.254",
+        "192.0.0.8",
+        "198.18.0.1",
+        "198.51.100.25",
+        "203.0.113.9",
+        "2001:db8::1",
+        "64:ff9b::a00:1",
+    ],
+)
+def test_url_validation_rejects_shared_and_special_use_addresses(address):
+    with pytest.raises(ValueError, match="restricted network address"):
+        WebPageParserService._validate_hostname(address)
+
+
+def test_url_validation_rejects_dns_answer_if_any_resolved_ip_is_not_public(
+    monkeypatch,
+):
+    answers = [
+        (url_module.socket.AF_INET, url_module.socket.SOCK_STREAM,
+         url_module.socket.IPPROTO_TCP, "", ("8.8.8.8", 443)),
+        (url_module.socket.AF_INET, url_module.socket.SOCK_STREAM,
+         url_module.socket.IPPROTO_TCP, "", ("100.64.0.7", 443)),
+    ]
+    monkeypatch.setattr(
+        url_module.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: answers,
+    )
+
+    with pytest.raises(ValueError, match="restricted network address"):
+        WebPageParserService._validate_hostname("public-looking.example")
+
+
+def test_pinned_http_connection_uses_the_validated_numeric_sockaddr(monkeypatch):
+    class FakeSocket:
+        def __init__(self, family, socktype, proto):
+            self.family = family
+            self.socktype = socktype
+            self.proto = proto
+            self.connected_to = None
+            self.options = []
+
+        def settimeout(self, value):
+            self.timeout = value
+
+        def setsockopt(self, *values):
+            self.options.append(values)
+
+        def connect(self, sockaddr):
+            self.connected_to = sockaddr
+
+        def close(self):
+            self.closed = True
+
+    fake_socket = FakeSocket(
+        url_module.socket.AF_INET,
+        url_module.socket.SOCK_STREAM,
+        url_module.socket.IPPROTO_TCP,
+    )
+    monkeypatch.setattr(
+        url_module,
+        "_resolve_public_addresses",
+        lambda host, port: [
+            (
+                url_module.socket.AF_INET,
+                url_module.socket.SOCK_STREAM,
+                url_module.socket.IPPROTO_TCP,
+                "",
+                ("8.8.8.8", port),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        url_module.socket,
+        "socket",
+        lambda family, socktype, proto: fake_socket,
+    )
+
+    connection = url_module._PinnedHTTPConnection(
+        "public-looking.example",
+        port=443,
+        timeout=3,
+    )
+    connection.connect()
+
+    assert fake_socket.connected_to == ("8.8.8.8", 443)
+    assert connection.sock is fake_socket
+
+
+def test_dns_rebinding_to_private_ip_is_blocked_at_connection_time(monkeypatch):
+    answers = iter(
+        [
+            [
+                (url_module.socket.AF_INET, url_module.socket.SOCK_STREAM,
+                 url_module.socket.IPPROTO_TCP, "", ("8.8.8.8", 0)),
+            ],
+            [
+                (url_module.socket.AF_INET, url_module.socket.SOCK_STREAM,
+                 url_module.socket.IPPROTO_TCP, "", ("127.0.0.1", 80)),
+            ],
+        ]
+    )
+    monkeypatch.setattr(
+        url_module.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: next(answers),
+    )
+
+    # The preflight lookup is public, but DNS changes before TCP connect.
+    WebPageParserService._validate_hostname("rebinding.example")
+
+    def unexpected_socket(*args, **kwargs):
+        raise AssertionError("A socket must not be created for the private answer.")
+
+    monkeypatch.setattr(url_module.socket, "socket", unexpected_socket)
+    connection = url_module._PinnedHTTPConnection(
+        "rebinding.example",
+        port=80,
+        timeout=3,
+    )
+    with pytest.raises(ValueError, match="restricted network address"):
+        connection.connect()
+
+
+def test_redirect_handler_rejects_private_destination_before_following(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        url_module.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (
+                url_module.socket.AF_INET,
+                url_module.socket.SOCK_STREAM,
+                url_module.socket.IPPROTO_TCP,
+                "",
+                ("10.0.0.8", 80),
+            )
+        ],
+    )
+
+    handler = url_module._SafeRedirectHandler()
+    request = url_module.Request("https://public.example/start")
+
+    with pytest.raises(ValueError, match="restricted network address"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {"Location": "http://internal.example/"},
+            "http://internal.example/",
+        )
+
+
+
+def test_fetch_opener_ignores_environment_proxies_and_uses_pinned_handlers(
+    monkeypatch,
+):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7777")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7777")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:7777")
+
+    opener = WebPageParserService()._build_opener()
+
+    # urllib omits ProxyHandler({}) from the final handler chain entirely.
+    # Crucially, it also does not install the environment-derived default
+    # ProxyHandler, so every request goes through our pinned TCP handlers.
+    assert not any(
+        isinstance(handler, url_module.ProxyHandler)
+        for handler in opener.handlers
+    )
+    assert any(
+        isinstance(handler, url_module._PinnedHTTPHandler)
+        for handler in opener.handlers
+    )
+    assert any(
+        isinstance(handler, url_module._PinnedHTTPSHandler)
+        for handler in opener.handlers
+    )

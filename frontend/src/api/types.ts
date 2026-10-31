@@ -16,7 +16,7 @@ export type TokenResponse = {
 }
 
 export type RegisterResponse = {
-  user: NovaUser
+  user: NovaUser | null
   email_verification_required: boolean
   message: string
 }

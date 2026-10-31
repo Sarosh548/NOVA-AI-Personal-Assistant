@@ -386,7 +386,7 @@ def get_current_auth_context(
 @router.post(
     "/register",
     response_model=RegisterResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
         Depends(enforce_auth_endpoint_rate_limit)
     ],
@@ -403,88 +403,63 @@ def register(
     ],
 ) -> RegisterResponse:
     """
-    Register a new NOVA account using an email address.
-
-    Account creation never authenticates the user. A verification code
-    is sent before the account can be used for password sign-in.
+    Register a local NOVA account without disclosing whether the email
+    address is already associated with an account.
     """
     try:
-        email = verification_service.normalize_email(
-            request.identifier
-        )
-
-        user, _identity = (
-            auth_service.register_password_user(
-                identifier=email,
-                password=request.password,
-                display_name=request.display_name,
-            )
-        )
-
-        sent = verification_service.issue_verification_code(
-            email=email,
-            user_id=user.id,
-        )
-
-        if not sent:
-            _record_auth_audit(
-                action="register",
-                status_value="failure",
-                user_id=user.id,
-                metadata={
-                    "reason": "verification_email_delivery_failed"
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    "Account created, but NOVA could not send the "
-                    "verification email. Please try again later."
-                ),
-            )
-
-    except HTTPException:
-        raise
+        email = verification_service.normalize_email(request.identifier)
     except EmailVerificationError as exc:
         _record_auth_audit(
             action="register",
             status_value="failure",
-            metadata={
-                "reason": "invalid_registration_email"
-            },
+            metadata={"reason": "invalid_registration_email"},
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
-    except ValueError as exc:
+
+    try:
+        user, _identity = auth_service.register_password_user(
+            identifier=email,
+            password=request.password,
+            display_name=request.display_name,
+        )
+    except ValueError:
+        # Duplicate identities intentionally receive the same public
+        # acknowledgement as a newly accepted registration.
         _record_auth_audit(
             action="register",
             status_value="failure",
+            metadata={"reason": "registration_not_created"},
+        )
+    else:
+        try:
+            sent = verification_service.issue_verification_code(
+                email=email,
+                user_id=user.id,
+            )
+        except Exception:
+            sent = False
+
+        _record_auth_audit(
+            action="register",
+            status_value="success" if sent else "partial",
+            user_id=user.id,
             metadata={
-                "reason": "registration_failed"
+                "email_verification_required": True,
+                "verification_delivery_accepted": bool(sent),
             },
         )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-
-    _record_auth_audit(
-        action="register",
-        status_value="success",
-        user_id=user.id,
-        metadata={
-            "email_verification_required": True
-        },
-    )
 
     return RegisterResponse(
-        user=UserResponse.model_validate(user),
+        user=None,
         email_verification_required=True,
-        message="Verification code sent to your email.",
+        message=(
+            "If the address can be registered, check your inbox "
+            "for verification instructions."
+        ),
     )
-
 
 @router.post(
     "/verify-email",
@@ -508,7 +483,7 @@ def verify_email(
     except EmailVerificationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail="Invalid or expired verification request.",
         ) from exc
 
     _record_auth_audit(
@@ -535,10 +510,14 @@ def resend_verification(
     ],
 ) -> dict[str, str]:
     try:
-        email = verification_service.normalize_email(
-            request.email
-        )
+        email = verification_service.normalize_email(request.email)
+    except EmailVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A valid email address is required.",
+        ) from exc
 
+    try:
         with Session(verification_service.engine) as session:
             identity = session.scalar(
                 select(AuthIdentity).where(
@@ -547,44 +526,23 @@ def resend_verification(
                 )
             )
 
-            if identity is None:
-                raise EmailVerificationError(
-                    "No account exists for that email address."
-                )
-
-            sent = verification_service.issue_verification_code(
+        if identity is not None:
+            verification_service.issue_verification_code(
                 email=email,
                 user_id=identity.user_id,
                 enforce_cooldown=True,
             )
-
-        if not sent:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    "NOVA could not send the verification email. "
-                    "Please try again later."
-                ),
-            )
-
-    except HTTPException:
-        raise
-    except EmailVerificationRateLimited as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
-            headers={"Retry-After": "60"},
-        ) from exc
-    except EmailVerificationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+    except (EmailVerificationRateLimited, EmailVerificationError):
+        # Account existence, verification and cooldown status are private.
+        pass
+    except Exception:
+        logger.exception("Could not process an email-verification resend.")
 
     return {
-        "message": "A new verification code has been sent.",
+        "message": (
+            "If the account requires verification, a new code may be sent."
+        ),
     }
-
 
 @router.post(
     "/request-password-reset",
@@ -604,12 +562,10 @@ def request_password_reset(
         reset_service.request_reset(
             email=request.email,
         )
-    except PasswordResetRateLimited as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
-            headers={"Retry-After": "60"},
-        ) from exc
+    except PasswordResetRateLimited:
+        # The generic 200 response below is intentional: do not expose whether
+        # an account exists by returning 429 only for known addresses.
+        pass
     except EmailVerificationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -644,15 +600,10 @@ def reset_password(
             code=request.code,
             new_password=request.new_password,
         )
-    except PasswordResetError as exc:
+    except (PasswordResetError, EmailVerificationError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-    except EmailVerificationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail="Invalid or expired password reset request.",
         ) from exc
 
     _record_auth_audit(
@@ -703,9 +654,8 @@ def login(
                 "reason": "email_not_verified"
             },
         )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
+        raise _unauthorized(
+            "Incorrect username or password."
         ) from exc
     except ValueError as exc:
         _record_auth_audit(
@@ -811,6 +761,7 @@ def refresh(
         user_session, refresh_token = (
             auth_service.rotate_session(
                 request.refresh_token,
+                rotation_id=request.rotation_id,
             )
         )
     except RefreshTokenReplayDetected as exc:

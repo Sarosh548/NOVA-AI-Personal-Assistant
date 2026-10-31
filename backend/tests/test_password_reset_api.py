@@ -19,6 +19,7 @@ from config import Settings
 from database.connection import engine
 from models.auth_identity import AuthIdentity
 from models.password_reset_challenge import PasswordResetChallenge
+from models.password_reset_attempt import PasswordResetAttempt
 from models.user import User
 from models.user_session import UserSession
 from services.auth_service import AuthService
@@ -57,6 +58,11 @@ class FakeEmailNotificationService:
 
 def _cleanup_user(user_id: str) -> None:
     with Session(engine) as session:
+        session.execute(
+            delete(PasswordResetAttempt).where(
+                PasswordResetAttempt.user_id == user_id
+            )
+        )
         session.execute(
             delete(PasswordResetChallenge).where(
                 PasswordResetChallenge.user_id == user_id

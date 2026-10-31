@@ -5,12 +5,13 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from database.connection import engine
 from models.auth_identity import AuthIdentity
 from models.password_reset_challenge import PasswordResetChallenge
+from models.password_reset_attempt import PasswordResetAttempt
 from models.user import User
 from models.user_session import UserSession
 from services.auth_service import AuthService
@@ -51,6 +52,11 @@ class FakeEmailNotificationService:
 
 def _cleanup_user(user_id: str) -> None:
     with Session(engine) as session:
+        session.execute(
+            delete(PasswordResetAttempt).where(
+                PasswordResetAttempt.user_id == user_id
+            )
+        )
         session.execute(
             delete(PasswordResetChallenge).where(
                 PasswordResetChallenge.user_id == user_id
@@ -177,6 +183,128 @@ def test_wrong_code_is_bounded_to_five_attempts(
 
         assert challenge is not None
         assert challenge.attempt_count == 5
+    finally:
+        _cleanup_user(user.id)
+
+
+def test_resending_reset_code_does_not_reset_account_attempt_window(
+    reset_service,
+    monkeypatch,
+):
+    codes = iter(["123456", "654321"])
+    monkeypatch.setattr(
+        PasswordResetService,
+        "_generate_code",
+        classmethod(lambda cls: next(codes)),
+    )
+    identifier = f"reset-{uuid4().hex[:12]}@example.test"
+    user, _identity = AuthService(engine=engine).register_password_user(
+        identifier=identifier,
+        password="OldPassword123!",
+    )
+
+    try:
+        assert reset_service.request_reset(email=identifier) is True
+        for _attempt in range(PasswordResetService.MAX_ATTEMPTS):
+            with pytest.raises(PasswordResetError):
+                reset_service.reset_password(
+                    email=identifier,
+                    code="000000",
+                    new_password="NewPassword123!",
+                )
+
+        with Session(engine) as session:
+            first_challenge = session.scalar(
+                select(PasswordResetChallenge)
+                .where(PasswordResetChallenge.user_id == user.id)
+                .order_by(PasswordResetChallenge.created_at.desc())
+            )
+            assert first_challenge is not None
+            first_challenge.sent_at = (
+                datetime.now(timezone.utc).replace(tzinfo=None)
+                - timedelta(seconds=PasswordResetService.RESEND_COOLDOWN_SECONDS + 1)
+            )
+            session.commit()
+
+        assert reset_service.request_reset(email=identifier) is True
+        assert len(reset_service._test_notifications.messages) == 2
+
+        with Session(engine) as session:
+            attempts = session.scalar(
+                select(func.count(PasswordResetAttempt.id)).where(
+                    PasswordResetAttempt.user_id == user.id
+                )
+            )
+            latest = session.scalar(
+                select(PasswordResetChallenge)
+                .where(PasswordResetChallenge.user_id == user.id)
+                .order_by(PasswordResetChallenge.created_at.desc())
+            )
+
+        assert attempts == PasswordResetService.MAX_ATTEMPTS
+        assert latest is not None
+        assert latest.attempt_count == 0
+
+        with pytest.raises(PasswordResetRateLimited, match="Too many incorrect attempts"):
+            reset_service.reset_password(
+                email=identifier,
+                code="654321",
+                new_password="NewPassword123!",
+            )
+
+        with Session(engine) as session:
+            persisted = session.get(PasswordResetChallenge, latest.id)
+            assert persisted is not None
+            assert persisted.attempt_count == 0
+    finally:
+        _cleanup_user(user.id)
+
+
+def test_password_reset_attempts_expire_after_the_rolling_window(
+    reset_service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        PasswordResetService,
+        "_generate_code",
+        classmethod(lambda cls: "123456"),
+    )
+    identifier = f"reset-{uuid4().hex[:12]}@example.test"
+    user, _identity = AuthService(engine=engine).register_password_user(
+        identifier=identifier,
+        password="OldPassword123!",
+    )
+
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    PasswordResetAttempt(
+                        user_id=user.id,
+                        attempted_at=now
+                        - timedelta(seconds=PasswordResetService.ATTEMPT_WINDOW_SECONDS + 1),
+                    )
+                    for _ in range(PasswordResetService.MAX_ATTEMPTS)
+                ]
+            )
+            session.commit()
+
+        assert reset_service.request_reset(email=identifier) is True
+        reset_user = reset_service.reset_password(
+            email=identifier,
+            code="123456",
+            new_password="NewPassword123!",
+        )
+        assert reset_user.id == user.id
+
+        with Session(engine) as session:
+            remaining = session.scalar(
+                select(func.count(PasswordResetAttempt.id)).where(
+                    PasswordResetAttempt.user_id == user.id
+                )
+            )
+        assert remaining == 0
     finally:
         _cleanup_user(user.id)
 

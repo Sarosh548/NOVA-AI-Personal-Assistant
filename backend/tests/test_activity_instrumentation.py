@@ -113,6 +113,7 @@ class FakeReminderService:
     ):
         self.completed_ids = []
         self.pending_ids = []
+        self.retry_attempts = 0
         self.complete_result = (
             complete_result
         )
@@ -216,6 +217,27 @@ class FakeReminderService:
             reminder_id
         )
         return True
+
+    def schedule_reminder_retry(
+        self,
+        reminder_id,
+        *,
+        claim_token,
+        permanent=False,
+    ):
+        self.retry_attempts += 1
+        if permanent or self.retry_attempts >= 5:
+            return {
+                "status": "failed",
+                "attempt_count": self.retry_attempts,
+                "next_attempt_at": None,
+            }
+        self.pending_ids.append(reminder_id)
+        return {
+            "status": "pending",
+            "attempt_count": self.retry_attempts,
+            "next_attempt_at": None,
+        }
 
 
 class FakeNotificationService:
@@ -603,6 +625,7 @@ async def test_scheduler_records_successful_reminder_completion():
 @pytest.mark.asyncio
 async def test_scheduler_records_failed_delivery():
     reminder_service = FakeReminderService()
+    reminder_service.retry_attempts = 4
     notification_service = (
         FakeNotificationService(
             result=False
@@ -628,7 +651,7 @@ async def test_scheduler_records_failed_delivery():
 
     assert (
         reminder_service.pending_ids
-        == [601]
+        == []
     )
 
     assert len(
@@ -651,6 +674,7 @@ async def test_scheduler_records_failed_delivery():
 @pytest.mark.asyncio
 async def test_scheduler_records_notification_exception():
     reminder_service = FakeReminderService()
+    reminder_service.retry_attempts = 4
     activity_service = (
         FakeActivityEventService()
     )
@@ -674,7 +698,7 @@ async def test_scheduler_records_notification_exception():
 
     assert (
         reminder_service.pending_ids
-        == [601]
+        == []
     )
 
     assert len(
@@ -692,6 +716,46 @@ async def test_scheduler_records_notification_exception():
         event["status"]
         == "failed"
     )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_record_an_activity_event_for_each_transient_retry():
+    reminder_service = FakeReminderService()
+    notification_service = FakeNotificationService(result=False)
+    activity_service = FakeActivityEventService()
+    scheduler = ReminderScheduler(
+        interval_seconds=5,
+        reminder_service=reminder_service,
+        notification_service=notification_service,
+        activity_event_service=activity_service,
+    )
+
+    await scheduler.process_due_reminders()
+    await scheduler.process_due_reminders()
+
+    assert reminder_service.retry_attempts == 2
+    assert reminder_service.pending_ids == [601, 601]
+    assert activity_service.events == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_record_an_activity_event_for_each_transient_retry():
+    reminder_service = FakeReminderService()
+    notification_service = FakeNotificationService(result=False)
+    activity_service = FakeActivityEventService()
+    scheduler = ReminderScheduler(
+        interval_seconds=5,
+        reminder_service=reminder_service,
+        notification_service=notification_service,
+        activity_event_service=activity_service,
+    )
+
+    await scheduler.process_due_reminders()
+    await scheduler.process_due_reminders()
+
+    assert reminder_service.retry_attempts == 2
+    assert reminder_service.pending_ids == [601, 601]
+    assert activity_service.events == []
 
 
 @pytest.mark.asyncio

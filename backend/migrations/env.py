@@ -42,6 +42,7 @@ from models.audit_event import AuditEvent
 from models.notification_delivery import NotificationDelivery
 from models.idempotency_record import IdempotencyRecord
 from models.rate_limit_counter import RateLimitCounter
+from models.password_reset_attempt import PasswordResetAttempt
 
 # Alembic Config object
 config = context.config

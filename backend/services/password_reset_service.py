@@ -6,12 +6,13 @@ import hmac
 import secrets
 
 from pwdlib import PasswordHash
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from database.connection import engine as default_engine
 from models.auth_identity import AuthIdentity
 from models.password_reset_challenge import PasswordResetChallenge
+from models.password_reset_attempt import PasswordResetAttempt
 from models.user import User
 from models.user_session import UserSession
 from services.email_verification_service import EmailVerificationService
@@ -31,6 +32,7 @@ class PasswordResetService:
     CODE_SPACE = 1_000_000
     EXPIRY_MINUTES = 10
     MAX_ATTEMPTS = 5
+    ATTEMPT_WINDOW_SECONDS = 3600
     RESEND_COOLDOWN_SECONDS = 60
 
     MIN_PASSWORD_LENGTH = 8
@@ -188,7 +190,22 @@ class PasswordResetService:
                 return False
 
             user, _identity = user_identity
+            locked_user = session.scalar(
+                select(User)
+                .where(User.id == user.id)
+                .with_for_update()
+            )
+            if locked_user is None or not locked_user.is_active:
+                return False
+            user = locked_user
             user_id = user.id
+            cutoff = now - timedelta(seconds=self.ATTEMPT_WINDOW_SECONDS)
+            session.execute(
+                delete(PasswordResetAttempt).where(
+                    PasswordResetAttempt.user_id == user_id,
+                    PasswordResetAttempt.attempted_at < cutoff,
+                )
+            )
 
             self._check_resend_cooldown(
                 session=session,
@@ -281,6 +298,34 @@ class PasswordResetService:
                 )
 
             user, identity = user_identity
+            locked_user = session.scalar(
+                select(User)
+                .where(User.id == user.id)
+                .with_for_update()
+            )
+            if locked_user is None or not locked_user.is_active:
+                raise PasswordResetError(
+                    "Invalid or expired password reset request."
+                )
+            user = locked_user
+
+            cutoff = now - timedelta(seconds=self.ATTEMPT_WINDOW_SECONDS)
+            session.execute(
+                delete(PasswordResetAttempt).where(
+                    PasswordResetAttempt.user_id == user.id,
+                    PasswordResetAttempt.attempted_at < cutoff,
+                )
+            )
+            account_attempt_count = session.scalar(
+                select(func.count(PasswordResetAttempt.id)).where(
+                    PasswordResetAttempt.user_id == user.id,
+                    PasswordResetAttempt.attempted_at >= cutoff,
+                )
+            ) or 0
+            if account_attempt_count >= self.MAX_ATTEMPTS:
+                raise PasswordResetRateLimited(
+                    "Too many incorrect attempts. Try again later."
+                )
 
             challenge = session.scalar(
                 select(PasswordResetChallenge)
@@ -305,11 +350,6 @@ class PasswordResetService:
                     "This password reset code has expired. Request a new code."
                 )
 
-            if challenge.attempt_count >= self.MAX_ATTEMPTS:
-                raise PasswordResetError(
-                    "Too many incorrect attempts. Request a new code."
-                )
-
             expected_hash = self._hash_code(
                 code=normalized_code,
                 salt=challenge.code_salt,
@@ -321,12 +361,18 @@ class PasswordResetService:
             ):
                 challenge.attempt_count += 1
                 challenge.updated_at = now
+                session.add(
+                    PasswordResetAttempt(
+                        user_id=user.id,
+                        attempted_at=now,
+                    )
+                )
                 session.commit()
 
                 remaining = max(
                     0,
                     self.MAX_ATTEMPTS
-                    - challenge.attempt_count,
+                    - (int(account_attempt_count) + 1),
                 )
 
                 if remaining == 0:
@@ -371,6 +417,13 @@ class PasswordResetService:
                 .values(
                     revoked_at=now,
                     updated_at=now,
+                )
+            )
+            # A successful proof of account ownership clears the active
+            # brute-force window; resends alone never clear it.
+            session.execute(
+                delete(PasswordResetAttempt).where(
+                    PasswordResetAttempt.user_id == user.id,
                 )
             )
 

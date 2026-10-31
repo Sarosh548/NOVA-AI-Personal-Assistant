@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import base64
 import hashlib
+import hmac
+import logging
 import secrets
 from typing import Any
 
@@ -10,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from config import get_settings
 from database.connection import engine as default_engine
 from models.auth_identity import AuthIdentity
 from models.user import User
@@ -19,6 +23,9 @@ from services.email_verification_service import (
     EmailNotVerified,
     EmailVerificationService,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class RefreshTokenReplayDetected(ValueError):
@@ -52,11 +59,14 @@ class AuthService:
     MAX_IDENTIFIER_LENGTH = 255
 
     DEFAULT_SESSION_DAYS = 30
+    REFRESH_TOKEN_RETRY_GRACE_SECONDS = 120
 
     _password_hash = PasswordHash.recommended()
 
-    def __init__(self, engine=None):
+    def __init__(self, engine=None, refresh_rotation_secret: str | None = None):
         self.engine = engine or default_engine
+        configured_secret = refresh_rotation_secret or get_settings().auth_jwt_secret_key
+        self._refresh_rotation_secret = configured_secret.encode("utf-8")
 
     @classmethod
     def _validate_password(cls, password: str) -> str:
@@ -125,6 +135,29 @@ class AuthService:
         return hashlib.sha256(
             refresh_token.encode("utf-8")
         ).hexdigest()
+
+    @staticmethod
+    def _hash_rotation_request_id(rotation_id: str) -> str:
+        return hashlib.sha256(rotation_id.encode("utf-8")).hexdigest()
+
+    def _derive_rotation_refresh_token(
+        self,
+        *,
+        previous_refresh_token: str,
+        rotation_id: str,
+    ) -> str:
+        """Derive a retry-stable replacement without persisting its plaintext."""
+        derivation_key = hmac.new(
+            self._refresh_rotation_secret,
+            b"NOVA refresh-token rotation v1",
+            hashlib.sha256,
+        ).digest()
+        digest = hmac.new(
+            derivation_key,
+            previous_refresh_token.encode("utf-8") + b":" + rotation_id.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
     @classmethod
     def _verify_password(
@@ -354,6 +387,7 @@ class AuthService:
         self,
         refresh_token: str,
         session_days: int | None = None,
+        rotation_id: str | None = None,
     ) -> tuple[UserSession, str]:
         """
         Atomically rotate a refresh token.
@@ -368,8 +402,17 @@ class AuthService:
         if not refresh_token:
             raise ValueError("refresh_token cannot be empty.")
 
-        old_hash = self._hash_refresh_token(
-            refresh_token
+        old_hash = self._hash_refresh_token(refresh_token)
+        if rotation_id is not None and (
+            not isinstance(rotation_id, str)
+            or len(rotation_id) != 64
+            or any(character not in "0123456789abcdef" for character in rotation_id)
+        ):
+            raise ValueError("rotation_id must be a 64-character lowercase hexadecimal value.")
+        rotation_request_hash = (
+            self._hash_rotation_request_id(rotation_id)
+            if rotation_id is not None
+            else None
         )
 
         days = (
@@ -424,10 +467,30 @@ class AuthService:
                         "Invalid refresh token."
                     )
 
+                grace_cutoff = now - timedelta(
+                    seconds=self.REFRESH_TOKEN_RETRY_GRACE_SECONDS
+                )
+                if (
+                    rotation_request_hash is not None
+                    and history.rotation_request_hash == rotation_request_hash
+                    and replay_session.revoked_at is None
+                    and replay_session.expires_at > now
+                    and history.replaced_at >= grace_cutoff
+                    and replay_session.refresh_token_hash == history.replaced_by_token_hash
+                ):
+                    recovered_token = self._derive_rotation_refresh_token(
+                        previous_refresh_token=refresh_token,
+                        rotation_id=rotation_id,
+                    )
+                    if hmac.compare_digest(
+                        self._hash_refresh_token(recovered_token),
+                        history.replaced_by_token_hash,
+                    ):
+                        return replay_session, recovered_token
+
                 if replay_session.revoked_at is None:
                     replay_session.revoked_at = now
                     replay_session.updated_at = now
-
                     session.commit()
 
                 raise RefreshTokenReplayDetected(
@@ -449,16 +512,22 @@ class AuthService:
             if user is None or not user.is_active:
                 raise ValueError("User is unavailable.")
 
-            new_refresh_token = self._generate_refresh_token()
-            new_hash = self._hash_refresh_token(
-                new_refresh_token
+            new_refresh_token = (
+                self._derive_rotation_refresh_token(
+                    previous_refresh_token=refresh_token,
+                    rotation_id=rotation_id,
+                )
+                if rotation_id is not None
+                else self._generate_refresh_token()
             )
+            new_hash = self._hash_refresh_token(new_refresh_token)
             new_expires_at = now + timedelta(days=days)
 
             history = RefreshTokenHistory(
                 session_id=user_session.id,
                 token_hash=old_hash,
                 replaced_by_token_hash=new_hash,
+                rotation_request_hash=rotation_request_hash,
                 replaced_at=now,
             )
 

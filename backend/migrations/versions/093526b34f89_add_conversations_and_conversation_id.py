@@ -22,8 +22,45 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
 
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+
+    # Historical installations created these two base tables through
+    # SQLAlchemy metadata before Alembic was introduced. A genuinely fresh
+    # database has no such tables, so establish their pre-conversation schema
+    # here before applying the original conversation migration.
+    if not inspector.has_table("messages"):
+        op.create_table(
+            "messages",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("user_id", sa.String(length=100), nullable=False),
+            sa.Column("role", sa.String(length=20), nullable=False),
+            sa.Column("content", sa.Text(), nullable=False),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.PrimaryKeyConstraint("id"),
+        )
+
+    if not inspector.has_table("memories"):
+        op.create_table(
+            "memories",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("user_id", sa.String(length=100), nullable=False),
+            sa.Column("memory_text", sa.Text(), nullable=False),
+            sa.Column("category", sa.String(length=50), nullable=False),
+            sa.Column(
+                "importance",
+                sa.String(length=20),
+                nullable=False,
+                server_default="medium",
+            ),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(), nullable=False),
+            sa.PrimaryKeyConstraint("id"),
+        )
+
     # 1. Create conversations table
-    op.create_table(
+    if not inspector.has_table("conversations"):
+        op.create_table(
         "conversations",
         sa.Column(
             "id",
@@ -55,14 +92,19 @@ def upgrade() -> None:
     )
 
     # 2. Add conversation_id temporarily as nullable
-    op.add_column(
-        "messages",
-        sa.Column(
-            "conversation_id",
-            sa.Integer(),
-            nullable=True,
-        ),
-    )
+    message_columns = {
+        column["name"]
+        for column in sa.inspect(op.get_bind()).get_columns("messages")
+    }
+    if "conversation_id" not in message_columns:
+        op.add_column(
+            "messages",
+            sa.Column(
+                "conversation_id",
+                sa.Integer(),
+                nullable=True,
+            ),
+        )
 
     # 3. Create one conversation for each existing user
     op.execute(
