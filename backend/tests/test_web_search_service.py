@@ -318,6 +318,11 @@ def test_live_sports_search_never_returns_a_stale_score_as_current(monkeypatch):
     service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
     monkeypatch.setattr(
         service,
+        "_request_cricbuzz_live_scores",
+        lambda _query, _max_results: [],
+    )
+    monkeypatch.setattr(
+        service,
         "_request_tavily",
         lambda _payload: {
             "results": [
@@ -338,7 +343,10 @@ def test_live_sports_search_never_returns_a_stale_score_as_current(monkeypatch):
         max_results=5,
     )
 
-    assert results == []
+    assert len(results) == 1
+    assert "No active live cricket scorecard" in results[0]["title"]
+    assert "No score is available to report as live" in results[0]["content"]
+    assert results[0]["published_date"] is None
 
 
 def test_live_sports_result_ranking_prefers_scorecards_over_previews():
@@ -1709,6 +1717,11 @@ def test_today_ai_news_query_promotes_general_search_to_news_day_scope(monkeypat
         }
 
     monkeypatch.setattr(service, "_request_tavily", fake_tavily)
+    monkeypatch.setattr(
+        service,
+        "_request_google_news_rss",
+        lambda **_kwargs: {"results": []},
+    )
 
     results = service.search(
         query="Search the web for the latest AI news from today",
@@ -1796,6 +1809,153 @@ def test_ai_news_query_retries_without_provider_date_filter_when_relevance_filte
     # The unfiltered retry only returned 13 October coverage, stale for a
     # day-scoped request on 26 October. Do not present it as the latest update.
     assert results == []
+
+def test_tavily_partial_ai_news_results_are_topped_up_from_fresh_google_rss(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    now = datetime.now(timezone.utc)
+    captured = []
+
+    monkeypatch.setattr(
+        service,
+        "_request_tavily",
+        lambda _payload: {
+            "results": [{
+                "title": "OpenAI announces a new AI model",
+                "url": "https://openai.com/index/model-update/",
+                "content": "OpenAI announced a new artificial intelligence model today.",
+                "published_date": now.isoformat(),
+            }]
+        },
+    )
+
+    def rss(*, query, time_range):
+        captured.append((query, time_range))
+        if query.startswith('"artificial intelligence"'):
+            return {"results": [
+                {
+                    "title": "Anthropic announces new AI safety research",
+                    "url": "https://example.com/anthropic-research",
+                    "content": "Source: Example News Anthropic published new AI safety research.",
+                    "published_date": (now - timedelta(hours=2)).isoformat(),
+                },
+                {
+                    "title": "Google introduces a new Gemini AI capability",
+                    "url": "https://example.com/gemini-capability",
+                    "content": "Source: Example News Google introduced a Gemini AI capability.",
+                    "published_date": (now - timedelta(hours=3)).isoformat(),
+                },
+            ]}
+        return {"results": []}
+
+    monkeypatch.setattr(service, "_request_google_news_rss", rss)
+
+    results = service.search(
+        query="latest AI news today",
+        topic="news",
+        time_range="day",
+        max_results=5,
+    )
+
+    assert len(results) == 3
+    assert {
+        "https://openai.com/index/model-update/",
+        "https://example.com/anthropic-research",
+        "https://example.com/gemini-capability",
+    }.issubset({item["url"] for item in results})
+    assert len(captured) == 1
+    assert captured[0][1] == "day"
+
+
+def test_usd_to_pkr_uses_live_exchange_rate_endpoint_and_provider_timestamp(monkeypatch):
+    service = WebSearchService(api_key="", searxng_endpoint="")
+    captured = {}
+    updated = "Sat, 31 Oct 2026 00:02:31 +0000"
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return FakeResponse({
+            "result": "success",
+            "base_code": "USD",
+            "time_last_update_utc": updated,
+            "rates": {"PKR": 281.75},
+        })
+
+    monkeypatch.setattr("services.web_search_service.urlopen", fake_urlopen)
+
+    results = service.search(
+        query="What is the current USD to PKR exchange rate?",
+        topic="finance",
+    )
+
+    assert captured["url"] == "https://open.er-api.com/v6/latest/USD"
+    assert captured["timeout"] == 3
+    assert len(results) == 1
+    assert "1 USD = 281.750000 PKR" in results[0]["content"]
+    assert updated in results[0]["content"]
+    assert results[0]["published_date"] == WebSearchService._normalize_publication_timestamp(updated)
+
+
+def test_currency_pair_parser_supports_slash_codes_and_currency_names():
+    assert WebSearchService._extract_currency_pair("USD/PKR current rate") == ("USD", "PKR")
+    assert WebSearchService._extract_currency_pair("US dollar to Pakistani rupee") == ("USD", "PKR")
+    assert WebSearchService._extract_currency_pair("latest AI news") is None
+
+
+def test_voice_assistant_comparison_uses_tavily_before_optional_searxng(monkeypatch):
+    service = WebSearchService(api_key="tvly-test", searxng_endpoint="")
+    now = datetime.now(timezone.utc).isoformat()
+    calls = []
+
+    def tavily(payload):
+        calls.append(payload)
+        return {"results": [
+            {
+                "title": "Gemini Live voice assistant gains new capabilities",
+                "url": "https://example.com/gemini",
+                "content": "Google describes new capabilities for its Gemini Live voice assistant.",
+                "published_date": now,
+            },
+            {
+                "title": "Amazon Alexa+ voice assistant update",
+                "url": "https://example.com/alexa",
+                "content": "Amazon describes new Alexa+ voice assistant capabilities.",
+                "published_date": now,
+            },
+            {
+                "title": "Apple previews new Siri voice assistant features",
+                "url": "https://example.com/siri",
+                "content": "Apple describes upcoming Siri voice assistant features.",
+                "published_date": now,
+            },
+            {
+                "title": "OpenAI expands ChatGPT Voice capabilities",
+                "url": "https://example.com/chatgpt-voice",
+                "content": "OpenAI describes recent ChatGPT Voice assistant capabilities.",
+                "published_date": now,
+            },
+        ]}
+
+    monkeypatch.setattr(service, "_request_tavily", tavily)
+    monkeypatch.setattr(
+        service,
+        "_request_searxng",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("SearXNG should not be needed")),
+    )
+
+    results = service.search(
+        query="Compare Gemini Live, Alexa+, Siri and ChatGPT Voice assistant capabilities",
+        topic="news",
+        time_range="week",
+        max_results=5,
+    )
+
+    assert len(calls) == 1
+    assert len(results) == 4
+    assert {WebSearchService._voice_assistant_vendor(item) for item in results} == {
+        "google", "amazon", "apple", "openai"
+    }
+
 
 def test_openai_news_result_filter_rejects_roundups_forums_stale_and_undated_items():
     now = datetime.now(timezone.utc)
