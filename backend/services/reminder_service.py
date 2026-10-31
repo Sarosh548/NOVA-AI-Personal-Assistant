@@ -17,6 +17,10 @@ class ReminderService:
     DEFAULT_CLAIM_BATCH_SIZE = 100
     MAX_CLAIM_BATCH_SIZE = 500
 
+    MAX_DELIVERY_ATTEMPTS = 5
+    RETRY_BASE_SECONDS = 60
+    RETRY_MAX_SECONDS = 3600
+
     def __init__(self, engine=None):
         self.engine = (
             engine
@@ -376,8 +380,11 @@ class ReminderService:
             or_(
                 and_(
                     Reminder.status == "pending",
-                    Reminder.reminder_time
-                    <= current_time,
+                    Reminder.reminder_time <= current_time,
+                    or_(
+                        Reminder.next_attempt_at.is_(None),
+                        Reminder.next_attempt_at <= current_time,
+                    ),
                 ),
                 and_(
                     Reminder.status == "processing",
@@ -474,50 +481,84 @@ class ReminderService:
 
             return result.rowcount == 1
 
+    def schedule_reminder_retry(
+        self,
+        reminder_id: int,
+        *,
+        claim_token: str,
+        permanent: bool = False,
+        now: datetime | None = None,
+    ) -> dict | None:
+        """
+        Persist a bounded retry or a terminal failure.
+
+        Retry times are durable so a failed reminder leaves the due batch
+        until its backoff expires. Only the worker holding the live lease
+        may move the reminder to pending/failed.
+        """
+        normalized_token = str(claim_token).strip()
+        if not normalized_token:
+            raise ValueError("claim_token cannot be empty.")
+
+        current_time = now if now is not None else self._utc_now_naive()
+        if current_time.tzinfo is not None:
+            current_time = current_time.astimezone(timezone.utc).replace(tzinfo=None)
+
+        with Session(self.engine) as session:
+            reminder = session.scalar(
+                select(Reminder)
+                .where(
+                    Reminder.id == reminder_id,
+                    Reminder.status == "processing",
+                    Reminder.claim_token == normalized_token,
+                    Reminder.lease_until.is_not(None),
+                    Reminder.lease_until > current_time,
+                )
+                .with_for_update()
+            )
+
+            if reminder is None:
+                return None
+
+            attempt_count = int(reminder.attempt_count or 0) + 1
+            terminal = permanent or attempt_count >= self.MAX_DELIVERY_ATTEMPTS
+
+            if terminal:
+                reminder.status = "failed"
+                reminder.next_attempt_at = None
+            else:
+                delay_seconds = min(
+                    self.RETRY_MAX_SECONDS,
+                    self.RETRY_BASE_SECONDS * (2 ** (attempt_count - 1)),
+                )
+                reminder.status = "pending"
+                reminder.next_attempt_at = current_time + timedelta(
+                    seconds=delay_seconds
+                )
+
+            reminder.attempt_count = attempt_count
+            reminder.claim_token = None
+            reminder.lease_until = None
+            reminder.updated_at = current_time
+            session.commit()
+
+            return {
+                "status": reminder.status,
+                "attempt_count": attempt_count,
+                "next_attempt_at": reminder.next_attempt_at,
+            }
+
     def mark_reminder_pending(
         self,
         reminder_id: int,
         *,
         claim_token: str,
     ) -> bool:
-        """
-        Return a failed reminder to pending only when the worker still
-        owns its lease.
-        """
-
-        normalized_token = str(
-            claim_token
-        ).strip()
-
-        if not normalized_token:
-            raise ValueError(
-                "claim_token cannot be empty."
-            )
-
-        now = self._utc_now_naive()
-
-        with Session(self.engine) as session:
-            result = session.execute(
-                update(Reminder)
-                .where(
-                    Reminder.id == reminder_id,
-                    Reminder.status == "processing",
-                    Reminder.claim_token
-                    == normalized_token,
-                    Reminder.lease_until.is_not(None),
-                    Reminder.lease_until > now,
-                )
-                .values(
-                    status="pending",
-                    claim_token=None,
-                    lease_until=None,
-                    updated_at=now,
-                )
-            )
-
-            session.commit()
-
-            return result.rowcount == 1
+        """Compatibility wrapper for callers that only need an ownership result."""
+        return self.schedule_reminder_retry(
+            reminder_id,
+            claim_token=claim_token,
+        ) is not None
 
     def get_due_reminders(self) -> list[dict]:
         """

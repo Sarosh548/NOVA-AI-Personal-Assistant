@@ -301,7 +301,9 @@ class EmailVerificationService:
             user, _identity = user_identity
 
             if user.email_verified_at is not None:
-                return user
+                raise EmailVerificationError(
+                    "Invalid or expired verification request."
+                )
 
             challenge = session.scalar(
                 select(EmailVerificationChallenge)

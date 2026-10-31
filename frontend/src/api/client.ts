@@ -3,6 +3,7 @@ import type { ApiError, TokenResponse } from "./types"
 
 const ACCESS_TOKEN_KEY = "nova.access_token"
 const REFRESH_TOKEN_KEY = "nova.refresh_token"
+const REFRESH_CLIENT_KEY = "nova.refresh_client_key"
 export const SESSION_EXPIRED_EVENT = "nova:session-expired"
 
 let refreshPromise: Promise<TokenResponse> | null = null
@@ -48,7 +49,17 @@ export function getRefreshToken(): string | null {
   return readStoredValue(REFRESH_TOKEN_KEY)
 }
 
+function ensureRefreshClientKey(): string {
+  let clientKey = window.localStorage.getItem(REFRESH_CLIENT_KEY)
+  if (!clientKey) {
+    clientKey = window.crypto.randomUUID()
+    window.localStorage.setItem(REFRESH_CLIENT_KEY, clientKey)
+  }
+  return clientKey
+}
+
 export function persistTokenResponse(response: TokenResponse): void {
+  ensureRefreshClientKey()
   writeStoredValue(ACCESS_TOKEN_KEY, response.access_token)
   writeStoredValue(REFRESH_TOKEN_KEY, response.refresh_token)
 }
@@ -173,6 +184,25 @@ export async function apiRequest<T>(
   return performRequest(path, options, timeoutMs)
 }
 
+async function getRefreshRotationId(refreshToken: string): Promise<string> {
+  if (typeof window === "undefined" || !window.crypto?.subtle) {
+    throw new ApiRequestError(0, "Secure refresh recovery is unavailable in this browser.")
+  }
+
+  const clientKey = window.navigator.locks
+    ? await window.navigator.locks.request(
+        "nova-refresh-client-key",
+        () => ensureRefreshClientKey(),
+      )
+    : ensureRefreshClientKey()
+
+  const digest = await window.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${clientKey}:${refreshToken}`),
+  )
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+}
+
 async function rotateAccessSession(): Promise<TokenResponse> {
   const refreshToken = getRefreshToken()
 
@@ -180,6 +210,7 @@ async function rotateAccessSession(): Promise<TokenResponse> {
     throw new ApiRequestError(401, "No refresh session is available.")
   }
 
+  const rotationId = await getRefreshRotationId(refreshToken)
   const response = await performRequest<TokenResponse>("/auth/refresh", {
     method: "POST",
     headers: {
@@ -187,6 +218,7 @@ async function rotateAccessSession(): Promise<TokenResponse> {
     },
     body: JSON.stringify({
       refresh_token: refreshToken,
+      rotation_id: rotationId,
     }),
   })
 

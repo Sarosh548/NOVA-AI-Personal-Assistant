@@ -46,6 +46,8 @@ def seed_reminder(
     reminder_time=None,
     claim_token=None,
     lease_until=None,
+    attempt_count=0,
+    next_attempt_at=None,
 ):
     with Session(service.engine) as session:
         reminder = Reminder(
@@ -64,6 +66,8 @@ def seed_reminder(
             status=status,
             claim_token=claim_token,
             lease_until=lease_until,
+            attempt_count=attempt_count,
+            next_attempt_at=next_attempt_at,
         )
 
         session.add(reminder)
@@ -400,6 +404,125 @@ def test_pending_transition_requires_current_claim(
     assert stored.status == "pending"
     assert stored.claim_token is None
     assert stored.lease_until is None
+
+
+def test_failed_delivery_uses_exponential_backoff_and_leaves_due_batch(
+    reminder_service,
+):
+    now = datetime(2030, 1, 1, 12, 0)
+    reminder_id = seed_reminder(
+        reminder_service,
+        reminder_time=now - timedelta(minutes=1),
+    )
+
+    claimed = reminder_service.claim_due_reminders(now=now)
+    assert [item["id"] for item in claimed] == [reminder_id]
+
+    retry = reminder_service.schedule_reminder_retry(
+        reminder_id,
+        claim_token=claimed[0]["claim_token"],
+        now=now,
+    )
+
+    assert retry["status"] == "pending"
+    assert retry["attempt_count"] == 1
+    assert retry["next_attempt_at"] == now + timedelta(seconds=60)
+
+    # A backoff reminder is not eligible for the due batch yet.
+    assert reminder_service.claim_due_reminders(
+        now=now + timedelta(seconds=59)
+    ) == []
+
+    # It becomes claimable again as soon as its persisted delay expires.
+    retried = reminder_service.claim_due_reminders(
+        now=now + timedelta(seconds=60)
+    )
+    assert [item["id"] for item in retried] == [reminder_id]
+
+
+def test_failed_delivery_becomes_terminal_after_max_attempts(
+    reminder_service,
+):
+    now = datetime(2030, 1, 1, 12, 0)
+    reminder_id = seed_reminder(
+        reminder_service,
+        reminder_time=now - timedelta(minutes=1),
+    )
+
+    for attempt in range(1, reminder_service.MAX_DELIVERY_ATTEMPTS + 1):
+        claimed = reminder_service.claim_due_reminders(now=now)
+        assert [item["id"] for item in claimed] == [reminder_id]
+
+        retry = reminder_service.schedule_reminder_retry(
+            reminder_id,
+            claim_token=claimed[0]["claim_token"],
+            now=now,
+        )
+        assert retry["attempt_count"] == attempt
+
+        if attempt < reminder_service.MAX_DELIVERY_ATTEMPTS:
+            assert retry["status"] == "pending"
+            now = retry["next_attempt_at"]
+        else:
+            assert retry["status"] == "failed"
+            assert retry["next_attempt_at"] is None
+
+    assert reminder_service.claim_due_reminders(now=now + timedelta(days=1)) == []
+    assert get_reminder(reminder_service, reminder_id).status == "failed"
+
+
+def test_permanent_delivery_failure_skips_retries(
+    reminder_service,
+):
+    now = datetime(2030, 1, 1, 12, 0)
+    reminder_id = seed_reminder(
+        reminder_service,
+        reminder_time=now - timedelta(minutes=1),
+    )
+    claimed = reminder_service.claim_due_reminders(now=now)
+
+    result = reminder_service.schedule_reminder_retry(
+        reminder_id,
+        claim_token=claimed[0]["claim_token"],
+        permanent=True,
+        now=now,
+    )
+
+    assert result == {
+        "status": "failed",
+        "attempt_count": 1,
+        "next_attempt_at": None,
+    }
+
+
+def test_backoff_reminders_do_not_starve_newer_due_reminders(
+    reminder_service,
+):
+    now = datetime(2030, 1, 1, 12, 0)
+    delayed_ids = [
+        seed_reminder(
+            reminder_service,
+            reminder_time=now - timedelta(hours=2, minutes=index),
+            attempt_count=2,
+            next_attempt_at=now + timedelta(hours=1),
+        )
+        for index in range(5)
+    ]
+    due_id = seed_reminder(
+        reminder_service,
+        reminder_time=now - timedelta(minutes=1),
+    )
+
+    claimed = reminder_service.claim_due_reminders(
+        now=now,
+        batch_size=2,
+    )
+
+    assert [item["id"] for item in claimed] == [due_id]
+    assert all(
+        get_reminder(reminder_service, reminder_id).status == "pending"
+        for reminder_id in delayed_ids
+    )
 
 
 def test_mark_completion_rejects_expired_current_lease(

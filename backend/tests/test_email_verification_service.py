@@ -176,11 +176,14 @@ def test_verify_email_marks_user_verified_and_code_cannot_be_reused(
             assert challenge is not None
             assert challenge.used_at is not None
 
-        verified_again = service.verify_code(
-            email=email,
-            code="654321",
-        )
-        assert verified_again.id == user_id
+        with pytest.raises(
+            EmailVerificationError,
+            match="Invalid or expired verification request",
+        ):
+            service.verify_code(
+                email=email,
+                code="654321",
+            )
 
     finally:
         _cleanup_user(user_id)

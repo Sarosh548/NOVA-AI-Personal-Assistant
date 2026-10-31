@@ -34,6 +34,12 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(
         min_length=1,
     )
+    rotation_id: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class RegisterResponse(BaseModel):
@@ -44,7 +50,7 @@ class RegisterResponse(BaseModel):
     registrations must verify their email before sign-in is allowed.
     """
 
-    user: "UserResponse"
+    user: "UserResponse | None" = None
     email_verification_required: bool
     message: str
 

@@ -62,12 +62,15 @@ class FakeSession:
         duplicate=None,
         visible_user_id=None,
         search_rows=None,
+        unembedded_rows=None,
     ):
         self.engine = engine
         self.document = document
         self.visible_user_id = visible_user_id
         self.search_rows = list(search_rows or [])
+        self.unembedded_rows = list(unembedded_rows or [])
         self.last_statement = None
+        self.unembedded_statement = None
         self.chunk_count = chunk_count
         self.duplicate = duplicate
         self.added = []
@@ -164,11 +167,18 @@ class FakeSession:
         return Result()
 
     def execute(self, statement):
-        self.last_statement = statement
+        statement_text = str(statement).lower()
+        is_unembedded_query = "knowledge_chunks.embedding is null" in statement_text
+        if is_unembedded_query:
+            self.unembedded_statement = statement
+            rows = self.unembedded_rows
+        else:
+            self.last_statement = statement
+            rows = self.search_rows
 
         class Result:
             def all(inner_self):
-                return list(self.search_rows)
+                return list(rows)
 
         return Result()
 
@@ -452,6 +462,73 @@ def test_search_query_contains_user_ownership_filters():
 
     assert "knowledge_chunks.user_id" in sql
     assert "knowledge_documents.user_id" in sql
+
+
+def test_search_merges_lexical_matches_for_chunks_without_embeddings(
+    monkeypatch,
+):
+    vector_document = FakeDocument(
+        id=7,
+        title="Vector indexed guide",
+        source="manual",
+        content="A vector indexed passage.",
+    )
+    legacy_document = FakeDocument(
+        id=8,
+        title="Lost refresh token response",
+        source="uploaded notes",
+        content="Refresh token response from rotation was lost.",
+    )
+    session = FakeSession(
+        None,
+        search_rows=[
+            (
+                FakeChunk(
+                    document_id=7,
+                    chunk_index=0,
+                    content="A vector indexed passage.",
+                    embedding=[0.1, 0.2, 0.3],
+                ),
+                vector_document,
+                0.10,
+            ),
+        ],
+        unembedded_rows=[
+            (
+                FakeChunk(
+                    document_id=8,
+                    chunk_index=0,
+                    content="Refresh token response from rotation was lost.",
+                    embedding=None,
+                ),
+                legacy_document,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        knowledge_module,
+        "Session",
+        lambda engine: session,
+    )
+    service = KnowledgeService(
+        embedding_service=FakeEmbedding(),
+        reranker_service=FakeReranker(),
+    )
+
+    results = service.search(
+        user_id="user-001",
+        query="refresh token response",
+        threshold=0.65,
+        limit=5,
+    )
+
+    assert {item["document_id"] for item in results} == {7, 8}
+    assert all(item["similarity"] > 0 for item in results)
+    unembedded_sql = str(session.unembedded_statement)
+    assert "knowledge_chunks.embedding IS NULL" in unembedded_sql
+    assert "knowledge_chunks.user_id" in unembedded_sql
+    assert "knowledge_documents.user_id" in unembedded_sql
 
 
 def test_search_can_rerank_candidates_after_similarity_filter(

@@ -12,6 +12,7 @@ class FakeReminderService:
         self.completed_calls = []
         self.pending_calls = []
         self.batch_sizes = []
+        self.failed_calls = []
 
     def claim_due_reminders(self, *, batch_size):
         self.batch_sizes.append(batch_size)
@@ -55,6 +56,26 @@ class FakeReminderService:
             }
         )
         return True
+
+    def schedule_reminder_retry(
+        self,
+        reminder_id,
+        *,
+        claim_token,
+        permanent=False,
+    ):
+        if permanent:
+            self.failed_calls.append(reminder_id)
+            return {
+                "status": "failed",
+                "attempt_count": 1,
+                "next_attempt_at": None,
+            }
+        self.mark_reminder_pending(
+            reminder_id,
+            claim_token=claim_token,
+        )
+        return {"status": "pending", "attempt_count": 1}
 
 
 class FakeNotificationService:
@@ -173,6 +194,36 @@ async def test_scheduler_returns_failed_notification_to_pending():
         }
     ]
     assert len(notification_service.notifications) == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_records_one_terminal_event_for_missing_email_destination():
+    class MissingDestinationNotificationService(FakeNotificationService):
+        def has_delivery_destination(self, *, user_id, channel=None):
+            return False
+
+    class ActivityRecorder:
+        def __init__(self):
+            self.events = []
+
+        def record_event(self, **event):
+            self.events.append(event)
+
+    reminder_service = FakeReminderService()
+    activity_recorder = ActivityRecorder()
+    scheduler = ReminderScheduler(
+        interval_seconds=5,
+        reminder_service=reminder_service,
+        notification_service=MissingDestinationNotificationService(result=False),
+        activity_event_service=activity_recorder,
+    )
+
+    await scheduler.process_due_reminders()
+
+    assert reminder_service.failed_calls == [101]
+    assert reminder_service.pending_calls == []
+    assert len(activity_recorder.events) == 1
+    assert activity_recorder.events[0]["event_type"] == "reminder_delivery_failed"
 
 
 @pytest.mark.asyncio

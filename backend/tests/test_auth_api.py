@@ -164,6 +164,16 @@ def _unique_identifier() -> str:
     )
 
 
+def _user_id_for_email(identifier: str) -> str:
+    with Session(engine) as session:
+        user_id = session.query(AuthIdentity.user_id).filter(
+            AuthIdentity.provider == "password",
+            AuthIdentity.provider_subject == identifier,
+        ).scalar()
+    assert user_id is not None
+    return user_id
+
+
 def _login_registered_user(client, identifier: str) -> dict:
     response = client.post(
         "/auth/login",
@@ -196,28 +206,28 @@ def test_register_creates_account_without_authenticating(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 202
 
     body = response.json()
-
-    assert body["user"]["display_name"] == "API Test User"
-    assert body["user"]["is_active"] is True
+    assert body["user"] is None
     assert body["email_verification_required"] is True
-    assert body["message"] == "Verification code sent to your email."
-    assert "access_token" not in body
-    assert "refresh_token" not in body
-    assert "session_id" not in body
+    assert body["message"] == (
+        "If the address can be registered, check your inbox "
+        "for verification instructions."
+    )
+    user_id = _user_id_for_email(identifier)
 
     with Session(engine) as session:
+        user = session.get(User, user_id)
+        assert user is not None
+        assert user.display_name == "API Test User"
+        assert user.is_active is True
         sessions = session.scalars(
-            select(UserSession).where(
-                UserSession.user_id == body["user"]["id"]
-            )
+            select(UserSession).where(UserSession.user_id == user_id)
         ).all()
 
     assert sessions == []
-
-    _cleanup_user(body["user"]["id"])
+    _cleanup_user(user_id)
 
 
 def test_unverified_email_cannot_sign_in(
@@ -237,8 +247,8 @@ def test_unverified_email_cannot_sign_in(
         },
     )
 
-    assert response.status_code == 201
-    user_id = response.json()["user"]["id"]
+    assert response.status_code == 202
+    user_id = _user_id_for_email(identifier)
 
     try:
         login_response = client.post(
@@ -250,11 +260,21 @@ def test_unverified_email_cannot_sign_in(
             },
         )
 
-        assert login_response.status_code == 403
-        assert (
-            login_response.json()["detail"]
-            == "Please verify your email before signing in."
+        assert login_response.status_code == 401
+        assert login_response.json()["detail"] == (
+            "Incorrect username or password."
         )
+
+        unknown_login_response = client.post(
+            "/auth/login",
+            data={
+                "grant_type": "password",
+                "username": _unique_identifier(),
+                "password": "CorrectPassword123!",
+            },
+        )
+        assert unknown_login_response.status_code == login_response.status_code
+        assert unknown_login_response.json() == login_response.json()
     finally:
         _cleanup_user(user_id)
 
@@ -284,8 +304,8 @@ def test_verify_email_then_sign_in(
         },
     )
 
-    assert response.status_code == 201
-    user_id = response.json()["user"]["id"]
+    assert response.status_code == 202
+    user_id = _user_id_for_email(identifier)
 
     try:
         verify_response = client.post(
@@ -314,7 +334,36 @@ def test_verify_email_then_sign_in(
         _cleanup_user(user_id)
 
 
-def test_register_duplicate_identifier_returns_400(
+def test_verify_email_does_not_disclose_account_state(
+    api_context,
+):
+    client, auth_service, _token_service = api_context
+    existing_email = _unique_identifier()
+    user, _identity = auth_service.register_password_user(
+        identifier=existing_email,
+        password="CorrectPassword123!",
+    )
+    try:
+        wrong_code = client.post(
+            "/auth/verify-email",
+            json={"email": existing_email, "code": "000000"},
+        )
+        unknown_email = client.post(
+            "/auth/verify-email",
+            json={"email": _unique_identifier(), "code": "000000"},
+        )
+
+        assert wrong_code.status_code == 400
+        assert unknown_email.status_code == wrong_code.status_code
+        assert unknown_email.json() == wrong_code.json()
+        assert wrong_code.json()["detail"] == (
+            "Invalid or expired verification request."
+        )
+    finally:
+        _cleanup_user(user.id)
+
+
+def test_register_duplicate_identifier_returns_generic_acknowledgement(
     api_context,
 ):
     client, _auth_service, _token_service = (
@@ -331,9 +380,10 @@ def test_register_duplicate_identifier_returns_400(
         },
     )
 
-    assert first.status_code == 201
-
-    user_id = first.json()["user"]["id"]
+    assert first.status_code == 202
+    first_body = first.json()
+    assert first_body["user"] is None
+    user_id = _user_id_for_email(identifier)
 
     try:
         second = client.post(
@@ -344,9 +394,86 @@ def test_register_duplicate_identifier_returns_400(
             },
         )
 
-        assert second.status_code == 400
+        assert second.status_code == 202
+        assert second.json() == first_body
     finally:
         _cleanup_user(user_id)
+
+
+def test_resend_verification_does_not_disclose_account_state(
+    api_context,
+):
+    client, auth_service, _token_service = api_context
+    existing_email = _unique_identifier()
+    user, _identity = auth_service.register_password_user(
+        identifier=existing_email,
+        password="CorrectPassword123!",
+    )
+    unknown_email = _unique_identifier()
+    known_response = client.post(
+        "/auth/resend-verification",
+        json={"email": existing_email},
+    )
+    cooldown_response = client.post(
+        "/auth/resend-verification",
+        json={"email": existing_email},
+    )
+    unknown_response = client.post(
+        "/auth/resend-verification",
+        json={"email": unknown_email},
+    )
+
+    assert known_response.status_code == 200
+    assert cooldown_response.status_code == 200
+    assert unknown_response.status_code == 200
+    assert known_response.json() == cooldown_response.json()
+    assert known_response.json() == unknown_response.json()
+
+    _cleanup_user(user.id)
+
+
+def test_request_password_reset_does_not_disclose_account_or_cooldown_state(
+    api_context,
+):
+    from api.auth import get_password_reset_service
+    from services.password_reset_service import PasswordResetService
+
+    notifications = FakeEmailNotificationService()
+    reset_service = PasswordResetService(
+        notification_service=notifications,
+        engine=engine,
+        secret_key=TEST_SECRET,
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_password_reset_service] = lambda: reset_service
+    app.dependency_overrides[get_auth_service] = lambda: AuthService(engine=engine)
+    client = TestClient(app)
+
+    existing_email = _unique_identifier()
+    user, _identity = AuthService(engine=engine).register_password_user(
+        identifier=existing_email,
+        password="CorrectPassword123!",
+    )
+    try:
+        first = client.post(
+            "/auth/request-password-reset",
+            json={"email": existing_email},
+        )
+        second = client.post(
+            "/auth/request-password-reset",
+            json={"email": existing_email},
+        )
+        unknown = client.post(
+            "/auth/request-password-reset",
+            json={"email": _unique_identifier()},
+        )
+
+        assert first.status_code == second.status_code == unknown.status_code == 200
+        assert first.json() == second.json() == unknown.json()
+    finally:
+        _cleanup_user(user.id)
+        app.dependency_overrides.clear()
 
 
 def test_register_short_password_is_rejected(
@@ -490,10 +617,8 @@ def test_me_returns_authenticated_user(
         },
     )
 
-    assert register_response.status_code == 201
-
-    body = register_response.json()
-    user_id = body["user"]["id"]
+    assert register_response.status_code == 202
+    user_id = _user_id_for_email(identifier)
     _mark_email_verified(user_id)
 
     try:
@@ -572,10 +697,8 @@ def test_refresh_rotates_refresh_token(
         },
     )
 
-    assert register_response.status_code == 201
-
-    body = register_response.json()
-    user_id = body["user"]["id"]
+    assert register_response.status_code == 202
+    user_id = _user_id_for_email(identifier)
     _mark_email_verified(user_id)
     login_body = _login_registered_user(
         client,
@@ -584,10 +707,12 @@ def test_refresh_rotates_refresh_token(
     old_refresh_token = login_body["refresh_token"]
 
     try:
+        rotation_id = "e" * 64
         response = client.post(
             "/auth/refresh",
             json={
-                "refresh_token": old_refresh_token
+                "refresh_token": old_refresh_token,
+                "rotation_id": rotation_id,
             },
         )
 
@@ -605,25 +730,30 @@ def test_refresh_rotates_refresh_token(
             != login_body["access_token"]
         )
 
-        reused = client.post(
+        # A lost response is recovered only when the same client idempotency
+        # key is presented. The exact same replacement token is returned.
+        recovered = client.post(
             "/auth/refresh",
             json={
-                "refresh_token": old_refresh_token
+                "refresh_token": old_refresh_token,
+                "rotation_id": rotation_id,
             },
         )
 
-        assert reused.status_code == 401
+        assert recovered.status_code == 200
+        recovered_body = recovered.json()
+        assert recovered_body["refresh_token"] == rotated["refresh_token"]
 
-        revoked_access = client.get(
+        active_session = client.get(
             "/auth/me",
             headers={
                 "Authorization": (
-                    f"Bearer {rotated['access_token']}"
+                    f"Bearer {recovered_body['access_token']}"
                 )
             },
         )
 
-        assert revoked_access.status_code == 401
+        assert active_session.status_code == 200
     finally:
         _cleanup_user(user_id)
 
@@ -662,10 +792,8 @@ def test_logout_revokes_current_session(
         },
     )
 
-    assert register_response.status_code == 201
-
-    body = register_response.json()
-    user_id = body["user"]["id"]
+    assert register_response.status_code == 202
+    user_id = _user_id_for_email(identifier)
     _mark_email_verified(user_id)
     login_body = _login_registered_user(
         client,
@@ -730,10 +858,8 @@ def test_refresh_after_logout_returns_401(
         },
     )
 
-    assert register_response.status_code == 201
-
-    body = register_response.json()
-    user_id = body["user"]["id"]
+    assert register_response.status_code == 202
+    user_id = _user_id_for_email(identifier)
     _mark_email_verified(user_id)
     login_body = _login_registered_user(
         client,
@@ -792,13 +918,13 @@ def test_access_token_from_one_user_cannot_be_changed_to_another(
         },
     )
 
-    assert first.status_code == 201
-    assert second.status_code == 201
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["user"] is None
+    assert second.json()["user"] is None
 
-    first_body = first.json()
-    second_body = second.json()
-    first_user_id = first_body["user"]["id"]
-    second_user_id = second_body["user"]["id"]
+    first_user_id = _user_id_for_email(first_identifier)
+    second_user_id = _user_id_for_email(second_identifier)
     _mark_email_verified(first_user_id)
     _mark_email_verified(second_user_id)
 

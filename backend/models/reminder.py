@@ -44,6 +44,17 @@ class Reminder(Base):
         default="pending",
     )
 
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     claim_token: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,

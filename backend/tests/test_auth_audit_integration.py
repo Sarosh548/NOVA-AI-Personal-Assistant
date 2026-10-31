@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 import api.auth as auth_module
 from api.auth import (
+    enforce_auth_endpoint_rate_limit,
     get_auth_service,
     get_email_verification_service,
     get_token_service,
@@ -169,6 +170,10 @@ def test_authentication_lifecycle_writes_audit_events(
         app.dependency_overrides[
             get_email_verification_service
         ] = lambda: FakeEmailVerificationService()
+        # This test verifies audit event wiring, not rate-limit capacity.
+        app.dependency_overrides[
+            enforce_auth_endpoint_rate_limit
+        ] = lambda: None
 
         client = TestClient(app)
 
@@ -188,10 +193,14 @@ def test_authentication_lifecycle_writes_audit_events(
             },
         )
 
-        assert register.status_code == 201
+        assert register.status_code == 202
 
-        body = register.json()
-        user_id = body["user"]["id"]
+        with Session(db_engine) as session:
+            user_id = session.query(AuthIdentity.user_id).filter(
+                AuthIdentity.provider == "password",
+                AuthIdentity.provider_subject == identifier,
+            ).scalar()
+        assert user_id is not None
 
         with Session(db_engine) as session:
             user = session.get(User, user_id)

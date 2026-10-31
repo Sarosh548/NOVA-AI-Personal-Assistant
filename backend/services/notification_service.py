@@ -1059,6 +1059,47 @@ class NotificationService:
             "subject": str(subject).strip()[:200],
         }
 
+    def has_delivery_destination(
+        self,
+        *,
+        user_id: str,
+        channel: str | None = None,
+    ) -> bool | None:
+        """
+        Check whether the selected notification channel has a usable
+        user destination. None means the lookup itself failed and should
+        be treated as transient rather than permanent.
+        """
+        selected_channel = (
+            self.default_channel
+            if channel is None
+            else NotificationChannelRegistry._normalize_name(channel)
+        )
+        if selected_channel != "email":
+            return True
+
+        if self.destination_service is None:
+            return False
+
+        try:
+            destination_record = self.destination_service.get_default_destination(
+                user_id=user_id,
+                channel="email",
+            )
+        except Exception:
+            logger.exception(
+                "Could not check email destination for user=%s.",
+                user_id,
+            )
+            return None
+
+        destination = (
+            str(destination_record.get("destination") or "").strip()
+            if destination_record is not None
+            else ""
+        )
+        return bool(destination)
+
     def notify(
         self,
         *,

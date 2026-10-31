@@ -82,10 +82,22 @@ def _build_app() -> FastAPI:
     return app
 
 
+def _user_id_for_email(identifier: str) -> str:
+    with Session(engine) as session:
+        user_id = session.query(AuthIdentity.user_id).filter(
+            AuthIdentity.provider == "password",
+            AuthIdentity.provider_subject == identifier,
+        ).scalar()
+    assert user_id is not None
+    return user_id
+
+
 def _register_user(
     client: TestClient,
     label: str,
 ) -> dict:
+
+
     identifier = (
         f"isolation-{label}-{uuid4().hex[:12]}"
         "@example.test"
@@ -100,10 +112,9 @@ def _register_user(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 202
 
-    body = response.json()
-    user_id = body["user"]["id"]
+    user_id = _user_id_for_email(identifier)
 
     with Session(engine) as session:
         persisted_user = session.get(User, user_id)

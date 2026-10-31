@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import re
 import socket
@@ -8,7 +9,10 @@ from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunparse
 from urllib.request import (
+    HTTPHandler,
+    HTTPSHandler,
     HTTPRedirectHandler,
+    ProxyHandler,
     Request,
     build_opener,
 )
@@ -18,6 +22,28 @@ MAX_URL_LENGTH = 2048
 MAX_RESPONSE_BYTES = 5_000_000
 REQUEST_TIMEOUT_SECONDS = 10
 MAX_REDIRECTS = 5
+
+# Non-public ranges that must never be reachable through URL ingestion.
+# is_global rejects the normal private/loopback/link-local/reserved ranges;
+# explicit networks cover shared/CGNAT and special-purpose transition ranges.
+_NON_PUBLIC_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in (
+        "100.64.0.0/10",       # RFC 6598 shared address space / CGNAT
+        "192.0.0.0/24",        # IETF protocol assignments
+        "192.0.2.0/24",        # documentation
+        "198.18.0.0/15",       # benchmarking
+        "198.51.100.0/24",     # documentation
+        "203.0.113.0/24",      # documentation
+        "240.0.0.0/4",         # reserved
+        "64:ff9b::/96",        # well-known NAT64
+        "64:ff9b:1::/48",      # local-use NAT64
+        "100::/64",            # discard-only
+        "2001::/23",           # IETF special-purpose assignments
+        "2001:db8::/32",       # documentation
+        "2002::/16",           # 6to4 transition
+    )
+)
 
 SUPPORTED_SCHEMES = {"http", "https"}
 SUPPORTED_CONTENT_TYPES = {
@@ -186,9 +212,160 @@ class _WebPageHTMLParser(HTMLParser):
         )
 
 
-class _SafeRedirectHandler(
-    HTTPRedirectHandler
-):
+def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return _is_public_address(address.ipv4_mapped)
+
+    if not address.is_global:
+        return False
+
+    return not any(
+        address.version == network.version and address in network
+        for network in _NON_PUBLIC_NETWORKS
+    )
+
+
+def _resolve_public_addresses(host: str, port: int) -> list[tuple[int, int, int, str, tuple]]:
+    """Resolve once, validate every DNS answer, and return numeric socket targets."""
+    normalized_host = str(host).strip().strip("[]").rstrip(".").lower()
+    if not normalized_host:
+        raise ValueError("url must contain a valid hostname.")
+
+    try:
+        literal = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        literal = None
+
+    if literal is not None:
+        if not _is_public_address(literal):
+            raise ValueError("url hostname resolves to a restricted network address.")
+        if literal.version == 4:
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (str(literal), port))]
+        return [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (str(literal), port, 0, 0))]
+
+    try:
+        resolved = socket.getaddrinfo(
+            normalized_host,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except socket.gaierror as exc:
+        raise ValueError("url hostname could not be resolved.") from exc
+
+    validated: list[tuple[int, int, int, str, tuple]] = []
+    seen: set[tuple[int, tuple]] = set()
+
+    for family, socktype, proto, canonname, sockaddr in resolved:
+        ip_text = sockaddr[0]
+        try:
+            address = ipaddress.ip_address(ip_text)
+        except ValueError as exc:
+            raise ValueError("url hostname resolved to an invalid address.") from exc
+
+        # Reject the entire DNS answer if even one A/AAAA record is unsafe.
+        # Do not silently select only its public records.
+        if not _is_public_address(address):
+            raise ValueError("url hostname resolves to a restricted network address.")
+
+        key = (family, sockaddr)
+        if key not in seen:
+            seen.add(key)
+            validated.append((family, socktype, proto, canonname, sockaddr))
+
+    if not validated:
+        raise ValueError("url hostname could not be resolved.")
+
+    return validated
+
+
+def _open_pinned_socket(
+    host: str,
+    port: int,
+    *,
+    timeout,
+    source_address,
+    socket_options,
+) -> socket.socket:
+    """Connect directly to a validated numeric DNS result, never re-resolve it."""
+    addresses = _resolve_public_addresses(host, port)
+    last_error: OSError | None = None
+
+    for family, socktype, proto, _canonname, sockaddr in addresses:
+        sock = socket.socket(family, socktype, proto)
+        try:
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            for level, option, value in socket_options:
+                sock.setsockopt(level, option, value)
+            if source_address:
+                sock.bind(source_address)
+            # sockaddr already contains the IP returned by the validated
+            # getaddrinfo call. Passing it directly prevents a second DNS lookup.
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+
+    if last_error is not None:
+        raise last_error
+    raise OSError("Could not connect to a validated public address.")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        if self._tunnel_host:
+            raise OSError("Proxy tunnels are not supported for URL ingestion.")
+        self.sock = _open_pinned_socket(
+            self.host,
+            self.port,
+            timeout=self.timeout,
+            source_address=self.source_address,
+            socket_options=getattr(self, "socket_options", ()),
+        )
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        if self._tunnel_host:
+            raise OSError("Proxy tunnels are not supported for URL ingestion.")
+        raw_socket = _open_pinned_socket(
+            self.host,
+            self.port,
+            timeout=self.timeout,
+            source_address=self.source_address,
+            socket_options=getattr(self, "socket_options", ()),
+        )
+        try:
+            # Keep the original hostname for SNI and certificate verification,
+            # while the TCP socket is already pinned to the validated IP.
+            self.sock = self._context.wrap_socket(
+                raw_socket,
+                server_hostname=self.host.strip("[]"),
+            )
+        except Exception:
+            raw_socket.close()
+            raise
+
+
+class _PinnedHTTPHandler(HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(
+            _PinnedHTTPSConnection,
+            req,
+            context=self._context,
+            check_hostname=self._check_hostname,
+        )
+
+
+class _SafeRedirectHandler(HTTPRedirectHandler):
     max_redirections = MAX_REDIRECTS
 
     def redirect_request(
@@ -200,10 +377,10 @@ class _SafeRedirectHandler(
         headers,
         newurl,
     ):
-        WebPageParserService._validate_url(
-            newurl
-        )
-
+        # Validate the new host before urllib constructs the next request.
+        # The pinned connection handler resolves and validates it again at
+        # connection time, then connects to that exact validated sockaddr.
+        WebPageParserService._validate_url(newurl)
         return super().redirect_request(
             req,
             fp,
@@ -336,44 +513,16 @@ class WebPageParserService:
                 "url hostname resolves to a local network name."
             )
 
-        try:
-            addresses = socket.getaddrinfo(
-                normalized_host,
-                None,
-                type=socket.SOCK_STREAM,
-            )
-        except socket.gaierror as exc:
-            raise ValueError(
-                "url hostname could not be resolved."
-            ) from exc
-
-        for address in addresses:
-            ip_text = address[4][0]
-
-            try:
-                ip_address = ipaddress.ip_address(
-                    ip_text
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    "url hostname resolved to an invalid address."
-                ) from exc
-
-            if (
-                ip_address.is_private
-                or ip_address.is_loopback
-                or ip_address.is_link_local
-                or ip_address.is_multicast
-                or ip_address.is_reserved
-                or ip_address.is_unspecified
-            ):
-                raise ValueError(
-                    "url hostname resolves to a restricted network address."
-                )
+        _resolve_public_addresses(normalized_host, 0)
 
     def _build_opener(self):
+        # Do not inherit HTTP(S)_PROXY environment variables: an external
+        # proxy would perform DNS resolution outside NOVA's pinned socket.
         return build_opener(
-            _SafeRedirectHandler()
+            ProxyHandler({}),
+            _SafeRedirectHandler(),
+            _PinnedHTTPHandler(),
+            _PinnedHTTPSHandler(),
         )
 
     def fetch(

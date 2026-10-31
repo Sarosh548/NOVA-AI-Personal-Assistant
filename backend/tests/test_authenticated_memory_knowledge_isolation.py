@@ -76,7 +76,19 @@ def _app() -> FastAPI:
     return app
 
 
+def _user_id_for_email(identifier: str) -> str:
+    with Session(engine) as session:
+        user_id = session.query(AuthIdentity.user_id).filter(
+            AuthIdentity.provider == "password",
+            AuthIdentity.provider_subject == identifier,
+        ).scalar()
+    assert user_id is not None
+    return user_id
+
+
 def _register(client: TestClient, label: str) -> dict[str, str]:
+
+
     identifier = f"isolation-{label}-{uuid4().hex[:12]}@example.test"
     response = client.post(
         "/auth/register",
@@ -86,9 +98,8 @@ def _register(client: TestClient, label: str) -> dict[str, str]:
             "display_name": f"Isolation {label}",
         },
     )
-    assert response.status_code == 201
-    body = response.json()
-    user_id = body["user"]["id"]
+    assert response.status_code == 202
+    user_id = _user_id_for_email(identifier)
 
     with Session(engine) as session:
         user = session.get(User, user_id)

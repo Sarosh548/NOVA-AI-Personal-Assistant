@@ -85,6 +85,11 @@ class RefreshTokenHistory(Base):
         nullable=False,
     )
 
+    rotation_request_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
     replaced_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,

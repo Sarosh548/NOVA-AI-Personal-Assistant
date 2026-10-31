@@ -16,6 +16,7 @@ from models.email_verification_challenge import (
     EmailVerificationChallenge,
 )
 from models.password_reset_challenge import PasswordResetChallenge
+from models.password_reset_attempt import PasswordResetAttempt
 from models.user_notification_preferences import (
     UserNotificationPreferences,
 )

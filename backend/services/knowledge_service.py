@@ -544,10 +544,24 @@ class KnowledgeService:
             .limit(retrieval_limit)
         )
 
+        unembedded_statement = (
+            select(KnowledgeChunk, KnowledgeDocument)
+            .join(
+                KnowledgeDocument,
+                KnowledgeDocument.id == KnowledgeChunk.document_id,
+            )
+            .where(
+                KnowledgeChunk.user_id == user_id,
+                KnowledgeDocument.user_id == user_id,
+                KnowledgeChunk.embedding.is_(None),
+            )
+            .order_by(KnowledgeChunk.created_at.desc())
+            .limit(1000)
+        )
+
         with Session(engine) as session:
-            results = session.execute(
-                statement
-            ).all()
+            results = session.execute(statement).all()
+            unembedded_results = session.execute(unembedded_statement).all()
 
             matches: list[dict] = []
 
@@ -572,6 +586,38 @@ class KnowledgeService:
                         ),
                     }
                 )
+
+            for chunk, document in unembedded_results:
+                searchable_text = " ".join(
+                    part
+                    for part in (
+                        document.title,
+                        document.source or "",
+                        chunk.content,
+                    )
+                    if part
+                )
+                similarity = lexical_relevance(
+                    normalized_query,
+                    searchable_text,
+                )
+                if similarity <= 0:
+                    continue
+                matches.append(
+                    {
+                        "document_id": document.id,
+                        "title": document.title,
+                        "source": document.source,
+                        "chunk_index": chunk.chunk_index,
+                        "content": chunk.content,
+                        "similarity": round(similarity, 4),
+                    }
+                )
+
+            matches.sort(
+                key=lambda item: item["similarity"],
+                reverse=True,
+            )
 
             if not rerank or not matches:
                 return matches[:limit]
