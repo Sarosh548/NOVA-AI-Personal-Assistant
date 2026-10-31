@@ -651,11 +651,19 @@ export function GeminiLiveVoiceSurface({
             body: JSON.stringify({ message: requestText, conversation_id: conversationId }),
           })
           finishSearchProgress(turn, requestText, result)
+          // The authenticated NOVA response is the authoritative text result.
+          // Render it immediately instead of relying on Gemini to emit an
+          // output-transcription event (audio can arrive without readable text).
+          const answer = typeof result.response === "string" ? result.response.trim() : ""
+          turn.assistantText = answer || "NOVA returned no text summary for this request."
+          setResponse(turn.assistantText)
           output = boundedToolOutput(result)
         }
       } catch (toolError) {
         const messageText = readableError(toolError, "NOVA could not complete the request.")
         finishSearchProgress(turn, requestText, null, messageText)
+        turn.assistantText = messageText
+        setResponse(messageText)
         output = {
           error: messageText,
           action_taken: false,
@@ -717,9 +725,13 @@ export function GeminiLiveVoiceSurface({
       })
 
       finishSearchProgress(turn, sourceUtterance, result)
+      const answer = typeof result.response === "string" ? result.response.trim() : ""
+      // Keep NOVA's text answer visible while Gemini prepares/speaks its concise
+      // audio rendering. The UI must not depend on provider transcription.
+      turn.assistantText = answer || "NOVA processed the request but returned no text answer."
+      setResponse(turn.assistantText)
       const resultSummary = JSON.stringify(boundedToolOutput(result))
       if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN) {
-        const answer = typeof result.response === "string" ? result.response : ""
         turn.assistantText = answer || "NOVA processed the request, but the voice connection closed before it could speak the result."
         turn.responseDone = true
         setResponse(turn.assistantText)
@@ -754,7 +766,8 @@ export function GeminiLiveVoiceSurface({
       // This is a follow-up spoken turn, not a function response: no model
       // function call was received for the original request.
       suppressPlaybackRef.current = false
-      setResponse("")
+      // Do not clear the authoritative backend answer: Gemini's follow-up is
+      // for audio playback, while the text result remains visible on screen.
       setAudioState("preparing")
       socket.send(JSON.stringify({
         clientContent: {
@@ -769,6 +782,8 @@ export function GeminiLiveVoiceSurface({
       suppressPlaybackRef.current = false
       const message = readableError(routeError, "NOVA could not complete the request.")
       finishSearchProgress(turn, sourceUtterance, null, message)
+      turn.assistantText = message
+      setResponse(message)
       if (pendingToolCalls.length > 0 && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
           toolResponse: {
@@ -948,8 +963,13 @@ export function GeminiLiveVoiceSurface({
 
       if (outputChunk) {
         const turn = activeTurnRef.current
-        turn.assistantText = appendTranscript(turn.assistantText, outputChunk)
-        setResponse(turn.assistantText)
+        // For tool-backed turns, keep the server's full grounded answer as the
+        // visible transcript. Gemini's output transcription is only an audio
+        // paraphrase and can duplicate or replace that authoritative result.
+        if (!turn.toolUsed) {
+          turn.assistantText = appendTranscript(turn.assistantText, outputChunk)
+          setResponse(turn.assistantText)
+        }
         setAudioState((current) => current === "idle" ? "preparing" : current)
         setState("speaking")
       }
@@ -988,8 +1008,10 @@ export function GeminiLiveVoiceSurface({
           setState("speaking")
         } else if (typeof part?.text === "string" && part.text.trim()) {
           const turn = activeTurnRef.current
-          turn.assistantText = appendTranscript(turn.assistantText, part.text)
-          setResponse(turn.assistantText)
+          if (!turn.toolUsed) {
+            turn.assistantText = appendTranscript(turn.assistantText, part.text)
+            setResponse(turn.assistantText)
+          }
         }
       }
 

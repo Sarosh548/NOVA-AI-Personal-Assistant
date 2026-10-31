@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,7 @@ DEFAULT_TAVILY_ENDPOINT = "https://api.tavily.com/search"
 DEFAULT_BRAVE_SEARCH_API_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_SEARXNG_ENDPOINT = "http://127.0.0.1:8080/search"
 DEFAULT_GOOGLE_NEWS_RSS_ENDPOINT = "https://news.google.com/rss/search"
+DEFAULT_EXCHANGE_RATE_ENDPOINT = "https://open.er-api.com/v6/latest"
 DEFAULT_CRICBUZZ_LIVE_SCORES_URL = "https://www.cricbuzz.com/cricket-match/live-scores"
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_RESULTS = 5
@@ -435,6 +437,50 @@ class WebSearchService:
         return text[:max_length].strip()
 
     @staticmethod
+    def _extract_currency_pair(query: str) -> tuple[str, str] | None:
+        """Recognize explicit currency pairs without guessing from arbitrary prices."""
+        normalized = " ".join(str(query or "").upper().split())
+        supported = {
+            "USD", "PKR", "EUR", "GBP", "INR", "AED", "SAR", "CAD",
+            "AUD", "JPY", "CNY", "CHF", "SGD", "NZD", "BDT", "TRY",
+        }
+        pair = re.search(
+            r"\b([A-Z]{3})\s*(?:/|:|\s+TO\s+|\s+INTO\s+)\s*([A-Z]{3})\b",
+            normalized,
+        )
+        if pair and pair.group(1) in supported and pair.group(2) in supported:
+            return pair.group(1), pair.group(2)
+
+        aliases = (
+            ("PAKISTANI RUPEE", "PKR"), ("PAKISTAN RUPEE", "PKR"),
+            ("US DOLLARS", "USD"), ("US DOLLAR", "USD"),
+            ("AMERICAN DOLLAR", "USD"), ("U.S. DOLLAR", "USD"),
+            ("INDIAN RUPEE", "INR"), ("BRITISH POUND", "GBP"),
+            ("POUND STERLING", "GBP"), ("UNITED ARAB EMIRATES DIRHAM", "AED"),
+            ("SAUDI RIYAL", "SAR"),
+        )
+        found: list[tuple[int, str]] = []
+        for alias, code in aliases:
+            match = re.search(rf"\b{re.escape(alias)}\b", normalized)
+            if match:
+                found.append((match.start(), code))
+        if "USD" in normalized.split():
+            found.append((normalized.index("USD"), "USD"))
+        if "PKR" in normalized.split():
+            found.append((normalized.index("PKR"), "PKR"))
+        if "EUR" in normalized.split():
+            found.append((normalized.index("EUR"), "EUR"))
+        if "GBP" in normalized.split():
+            found.append((normalized.index("GBP"), "GBP"))
+        if "INR" in normalized.split():
+            found.append((normalized.index("INR"), "INR"))
+        if len(found) >= 2:
+            found.sort(key=lambda item: item[0])
+            if found[0][1] != found[1][1]:
+                return found[0][1], found[1][1]
+        return None
+
+    @staticmethod
     def _normalize_max_results(max_results: int) -> int:
         if max_results < 1 or max_results > MAX_MAX_RESULTS:
             raise ValueError(
@@ -777,7 +823,16 @@ class WebSearchService:
             title = str(result.get("title") or "").lower()
             tokens = {
                 token for token in re.findall(r"[a-z0-9]+", title)
-                if token not in {"the", "a", "an", "and", "or", "to", "of", "in", "on", "says", "said", "voice", "assistant", "assistants", "update", "updates", "new", "current", "latest"}
+                if token not in {
+                    "the", "a", "an", "and", "or", "to", "of", "in", "on",
+                    "says", "said", "voice", "assistant", "assistants",
+                    "update", "updates", "new", "current", "latest",
+                    "ai", "artificial", "intelligence", "announce", "announces",
+                    "announced", "announcement", "launch", "launches", "launched",
+                    "introduces", "introduced", "model", "models", "research",
+                    "technology", "tech", "company", "companies", "release",
+                    "releases", "released",
+                }
             }
             date = published_at(result)
             duplicate_story = False
@@ -1467,6 +1522,58 @@ class WebSearchService:
             "site:techcrunch.com OpenAI",
         ]
 
+    def _search_exchange_rate(self, base: str, target: str) -> list[dict]:
+        """Fetch a keyless reference exchange rate and retain the provider timestamp."""
+        request_url = f"{DEFAULT_EXCHANGE_RATE_ENDPOINT}/{base}"
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "NOVA-AI-Personal-Assistant/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=min(self.timeout_seconds, 3)) as response:
+                payload = self._parse_provider_json(response.read())
+        except HTTPError as exc:
+            raise RuntimeError(
+                f"Exchange-rate provider returned HTTP {exc.code}."
+            ) from exc
+        except (OSError, URLError, TimeoutError) as exc:
+            raise RuntimeError(
+                "Exchange-rate provider could not be reached."
+            ) from exc
+
+        if payload.get("result") != "success":
+            raise RuntimeError("Exchange-rate provider did not return a successful rate.")
+        rates = payload.get("rates")
+        if not isinstance(rates, dict) or target not in rates:
+            raise RuntimeError(
+                f"Exchange-rate provider did not return a {base}/{target} rate."
+            )
+        try:
+            rate = float(rates[target])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Exchange-rate provider returned an invalid rate.") from exc
+        if not (rate > 0):
+            raise RuntimeError("Exchange-rate provider returned a non-positive rate.")
+
+        updated = str(payload.get("time_last_update_utc") or "").strip()
+        updated_local = self._normalize_publication_timestamp(updated)
+        content = (
+            f"Reference exchange rate: 1 {base} = {rate:,.6f} {target}. "
+            f"Provider last updated: {updated or 'timestamp not supplied'}. "
+            "This is a reference market rate; your bank or exchange service may use a different rate."
+        )
+        return [{
+            "title": f"Exchange rate: {base} to {target}",
+            "url": request_url,
+            "content": content,
+            "score": None,
+            "published_date": updated_local,
+        }]
+
     @staticmethod
     def _open_meteo_weather_code(code: int) -> str:
         labels = {
@@ -1662,6 +1769,10 @@ class WebSearchService:
         normalized_time_range = self._normalize_time_range(time_range)
         is_live_sports_query = self._is_live_sports_query(normalized_query)
 
+        currency_pair = self._extract_currency_pair(normalized_query)
+        if currency_pair:
+            return self._search_exchange_rate(*currency_pair)
+
         if normalized_topic == "weather":
             return self._search_weather(normalized_query)
 
@@ -1675,7 +1786,22 @@ class WebSearchService:
                 normalized_max_results,
             )
             if live_scores is not None:
-                return live_scores
+                if live_scores:
+                    return live_scores
+                checked_at = datetime.now(timezone.utc).astimezone(
+                    timezone(timedelta(hours=5))
+                ).isoformat(timespec="seconds")
+                return [{
+                    "title": "No active live cricket scorecard found for the requested teams",
+                    "url": DEFAULT_CRICBUZZ_LIVE_SCORES_URL,
+                    "content": (
+                        f"Cricbuzz live scores were checked at {checked_at} (Pakistan time). "
+                        "The live-score page did not list an active scorecard matching this query. "
+                        "No score is available to report as live; this check does not confirm a future fixture."
+                    ),
+                    "score": None,
+                    "published_date": None,
+                }]
 
         is_voice_comparison = self._is_voice_assistant_comparison_query(normalized_query)
         is_openai_news = self._is_openai_news_query(normalized_query)
@@ -1794,12 +1920,26 @@ class WebSearchService:
                     )
                 ]
             found: list[dict] = []
-            for scoped_query in queries:
+
+            def fetch_one(scoped_query: str) -> list[dict]:
                 try:
-                    items = fetch_scoped("rss" if rss else "searxng", scoped_query)
+                    return fetch_scoped("rss" if rss else "searxng", scoped_query)
                 except Exception as exc:
                     logger.warning("Scoped web search failed: %s", type(exc).__name__)
-                    continue
+                    return []
+
+            # Vendor-scoped RSS lookups are independent. Run them concurrently
+            # so a missing provider cannot add 2–3 seconds for every vendor.
+            if rss and len(queries) > 1:
+                with ThreadPoolExecutor(
+                    max_workers=min(4, len(queries)),
+                    thread_name_prefix="nova-news",
+                ) as executor:
+                    result_batches = list(executor.map(fetch_one, queries))
+            else:
+                result_batches = [fetch_one(scoped_query) for scoped_query in queries]
+
+            for items in result_batches:
                 for item in items:
                     if not isinstance(item, dict):
                         continue
@@ -1811,17 +1951,45 @@ class WebSearchService:
         # Comparisons and OpenAI news are evidence-sensitive: broad roundups
         # are not accepted as substitutes for primary/publisher-scoped pages.
         if is_voice_comparison or is_openai_news:
-            provider = "searxng"
+            provider = "tavily" if self.api_key else "searxng"
             broad: list[dict] = []
-            try:
-                response = self._request_searxng(
-                    query=normalized_query,
-                    topic=normalized_topic,
-                    time_range=normalized_time_range,
-                )
-                broad = response.get("results", []) if isinstance(response, dict) else []
-            except Exception as exc:
-                logger.warning("Primary news search failed; using RSS fallback: %s", type(exc).__name__)
+
+            # Evidence-sensitive searches must still use the configured primary
+            # provider. The previous route skipped Tavily entirely and went
+            # straight to SearXNG/RSS, which is often unavailable in cloud.
+            if self.api_key:
+                tavily_payload = {
+                    "query": normalized_query,
+                    "search_depth": "basic",
+                    "topic": normalized_topic,
+                    "max_results": min(MAX_MAX_RESULTS, max(5, normalized_max_results * 2)),
+                    "include_answer": False,
+                    "include_raw_content": False,
+                    "include_images": False,
+                }
+                if normalized_time_range is not None:
+                    tavily_payload["time_range"] = normalized_time_range
+                try:
+                    response = self._request_tavily(tavily_payload)
+                    broad = response.get("results", []) if isinstance(response, dict) else []
+                except Exception as exc:
+                    logger.warning("Tavily evidence search failed; trying SearXNG: %s", type(exc).__name__)
+                    broad = []
+
+            if not broad:
+                provider = "searxng"
+                try:
+                    response = self._request_searxng(
+                        query=normalized_query,
+                        topic=normalized_topic,
+                        time_range=normalized_time_range,
+                    )
+                    broad = response.get("results", []) if isinstance(response, dict) else []
+                except Exception as exc:
+                    logger.warning("SearXNG evidence search failed: %s", type(exc).__name__)
+                    broad = []
+
+            if not broad:
                 provider = "rss"
                 try:
                     response = self._request_google_news_rss(
@@ -1860,7 +2028,14 @@ class WebSearchService:
                     )
                     candidates = candidates[:normalized_max_results]
 
-                normalized = normalize_results(candidates, rss=used_rss)
+                normalized = normalize_results(
+                    candidates,
+                    rss=used_rss,
+                    # The RSS result is already clickable. Resolving Google News
+                    # wrappers serially can add several seconds per source and
+                    # makes a multi-vendor voice answer feel stalled.
+                    resolve_rss_urls=False,
+                )
                 normalized = [
                     item for item in normalized
                     if self._voice_assistant_vendors(item)
@@ -1896,7 +2071,11 @@ class WebSearchService:
                             reverse=True,
                         )
                         for raw_item in options:
-                            selected = normalize_results([raw_item], rss=True)
+                            selected = normalize_results(
+                                [raw_item],
+                                rss=True,
+                                resolve_rss_urls=False,
+                            )
                             if not selected:
                                 continue
                             result = selected[0]
@@ -1942,6 +2121,9 @@ class WebSearchService:
             normalized = normalize_results(
                 raw_results,
                 rss=used_rss or (not scoped and provider != "rss"),
+                resolve_rss_urls=not (
+                    used_rss or (not scoped and provider != "rss")
+                ),
             )
             normalized = [
                 item for item in normalized
@@ -2211,6 +2393,55 @@ class WebSearchService:
                 except Exception as exc:
                     logger.warning("Unfiltered AI-news retry failed: %s", type(exc).__name__)
             normalized = relevant
+
+            # Tavily can return HTTP 200 with only one usable AI headline even
+            # when the request asks for several. Top up from independent RSS
+            # searches, keeping the same AI relevance and local freshness gates.
+            minimum_headlines = min(3, normalized_max_results)
+            if provider == "tavily" and len(normalized) < minimum_headlines:
+                existing_urls = {str(item.get("url") or "") for item in normalized}
+                supplemental_queries = (
+                    '"artificial intelligence" OR OpenAI OR Anthropic OR Gemini OR Microsoft',
+                    'AI model announcement OR artificial intelligence research OR AI company update',
+                )
+                for supplemental_query in supplemental_queries:
+                    try:
+                        supplemental_response = self._request_google_news_rss(
+                            query=supplemental_query,
+                            time_range=normalized_time_range,
+                        )
+                        supplemental_raw = (
+                            supplemental_response.get("results", [])
+                            if isinstance(supplemental_response, dict)
+                            else []
+                        )
+                        if not isinstance(supplemental_raw, list):
+                            continue
+                        supplemental = normalize_results(
+                            supplemental_raw,
+                            rss=True,
+                            resolve_rss_urls=False,
+                        )
+                        supplemental = [
+                            item for item in supplemental
+                            if self._matches_ai_news_query(item)
+                        ]
+                        if normalized_time_range == "day":
+                            supplemental = self._filter_results_to_fresh_window(supplemental)
+                        for item in supplemental:
+                            url = str(item.get("url") or "")
+                            if url and url not in existing_urls:
+                                normalized.append(item)
+                                existing_urls.add(url)
+                            if len(normalized) >= minimum_headlines:
+                                break
+                    except Exception as exc:
+                        logger.warning(
+                            "AI-news supplemental RSS search failed: %s",
+                            type(exc).__name__,
+                        )
+                    if len(normalized) >= minimum_headlines:
+                        break
 
         if normalized_topic == "news":
             normalized = self._rank_news_results(normalized_query, normalized)
