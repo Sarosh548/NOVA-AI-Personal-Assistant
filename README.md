@@ -1,8 +1,24 @@
+# NOVA — AI Personal Assistant
+
+A modular AI personal assistant for text and real-time voice conversations, built with LangGraph and FastAPI — with persistent memory, semantic RAG, and permission-aware tool workflows.
+
+Live app: https://sarosh548.github.io/NOVA-AI-Personal-Assistant/
+Stack: Python · FastAPI · LangGraph · PostgreSQL/pgvector · LiveKit · WebSockets
+
+## What NOVA does
+
+- **Text and real-time voice conversations** — LangGraph + FastAPI backend, with real-time voice via LiveKit and streaming responses over WebSockets
+- **Tool routing and task workflows** — routes requests to tools and task-oriented workflows instead of answering everything from the model alone
+- **Persistent conversation memory** — conversations are remembered across sessions, not treated as one-off chats
+- **Semantic RAG** — Sentence-Transformers embeddings with PostgreSQL/pgvector for context-aware retrieval
+- **Document ingestion** — PDF and DOCX ingestion so uploaded documents can inform responses
+- **Web search** — live web search as one of NOVA's permission-aware workflows
+- **Permission-aware workflows** — web search, desktop actions, email, calendar and tasks are developed and tested as permission-aware workflows, rather than unrestricted actions
+- **Authentication and engineering hygiene** — JWT/Argon2 authentication, Alembic migrations, Prometheus metrics, pytest test suite, and GitHub Actions CI
+
 # NOVA — Personal AI Executive Assistant
 
 NOVA is a local-first personal AI workspace for natural conversation, saved user context, planning, research, reminders, calendar workflows, and permission-aware actions. The product goal is an assistant that **understands a request, selects an appropriate tool, executes it, verifies the real result, and reports honestly**—not one that merely gives instructions or claims an action succeeded.
-
-> Development status: the working tree contains active, uncommitted implementation work. Test and build results in chat refer to the exact run reported there; do not assume every external integration or every application has passed live acceptance.
 
 ## Product principles
 
@@ -41,9 +57,19 @@ Main code locations:
 | `scripts/nova_startup.py` | Windows development startup orchestration |
 | `docker-compose.local.yml` | Local PostgreSQL, SearXNG, and containerized backend/migration configuration |
 
-## Windows development setup
+## Setup
 
-Prerequisites: Windows, Python 3.12, Node.js/npm compatible with `frontend/package.json`, Docker Desktop for the local database/Search/LiveKit services, and the provider credentials required by the features being tested.
+Prerequisites: Docker Desktop for the local database/Search/LiveKit services, plus Python 3.12 and Node.js/npm compatible with `frontend/package.json` for local development, and the provider credentials required by the features being tested.
+
+### Docker Compose — start the services first
+
+Start the local database and search services with Docker Compose:
+
+```powershell
+docker compose -f docker-compose.local.yml up -d postgres searxng
+```
+
+### Windows development setup
 
 1. Open PowerShell and go to the repository:
 
@@ -53,19 +79,13 @@ Prerequisites: Windows, Python 3.12, Node.js/npm compatible with `frontend/packa
 
 2. Create your private local `.env` from `.env.example` if you use environment-file configuration. Never commit credentials. The current startup script also reads supported values from the **current user's Windows environment**.
 
-3. Start the local database and search service if they are not already running:
-
-   ```powershell
-   docker compose -f docker-compose.local.yml up -d postgres searxng
-   ```
-
-4. Install Python dependencies in the project's Python 3.12 environment if needed:
+3. Install Python dependencies in the project's Python 3.12 environment if needed:
 
    ```powershell
    .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
    ```
 
-5. Apply the current database migrations:
+4. Apply the current database migrations:
 
    ```powershell
    Set-Location D:\NOVA\backend
@@ -73,7 +93,7 @@ Prerequisites: Windows, Python 3.12, Node.js/npm compatible with `frontend/packa
    Set-Location D:\NOVA
    ```
 
-6. Start NOVA with the repository's Windows orchestration script:
+5. Start NOVA with the repository's Windows orchestration script:
 
    ```powershell
    .\.venv\Scripts\python.exe scripts\nova_startup.py
@@ -81,7 +101,7 @@ Prerequisites: Windows, Python 3.12, Node.js/npm compatible with `frontend/packa
 
    The script starts missing local services and avoids launching duplicate backend, frontend, or voice-agent processes when it finds an existing one. It loads the selected Gemini/LiveKit and desktop-control configuration from the current user's Windows environment. If the LiveKit agent was already running, editing its Python source does not itself reload that running process; start a fresh voice session with the latest worker loaded when testing code changes.
 
-7. Open the local workspace at [http://127.0.0.1:5173](http://127.0.0.1:5173). The API readiness endpoint is [http://127.0.0.1:8000/health/ready](http://127.0.0.1:8000/health/ready).
+6. Open the local workspace at [http://127.0.0.1:5173](http://127.0.0.1:5173). The API readiness endpoint is [http://127.0.0.1:8000/health/ready](http://127.0.0.1:8000/health/ready).
 
 ### Provider configuration
 
@@ -150,11 +170,3 @@ A green unit-test suite is not live acceptance. For each voice action, inspect t
 - **Voice app opens login unexpectedly:** use an authenticated NOVA tab and confirm the expected session is still available. Do not bypass login or share credentials.
 - **Desktop command says it succeeded but nothing happened:** inspect the tool's exact `success/error/result` object and the visible Windows state. A claimed response is not evidence of execution.
 - **Migration mismatch:** check `alembic current` and `alembic heads` before applying schema changes. Do not reset the database to resolve a revision mismatch.
-
-## Development and repository safety
-
-The repository may contain uncommitted work from the current development session. Before making changes, inspect `git status --short`, the relevant diff, tests, active runtime processes, and current database state. Do not use destructive reset/clean/checkout/discard commands and do not stage, commit, push, or merge without explicit permission. Keep secrets, OAuth callback codes, personal email contents, and private user data out of logs and documentation.
-
-## Honest completion standard
-
-NOVA is complete only when critical workflows have passed live end-to-end acceptance with durable persistence, correct permissions/approvals, honest errors, duplicate prevention, and recovery from real provider/network failures. Passing tests and a production frontend build are strong verification evidence, but they do not mean that every desktop application, every external integration, or mobile device control is already implemented and accepted.
