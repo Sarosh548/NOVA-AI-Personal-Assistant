@@ -19,21 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Create an HNSW index for cosine similarity search."""
-    op.execute(
-        """
-        CREATE INDEX ix_memories_embedding_hnsw
-        ON memories
-        USING hnsw (embedding vector_cosine_ops)
-        WHERE embedding IS NOT NULL;
-        """
-    )
+    """No database vector index is needed for Python cosine search."""
+    pass
 
 
 def downgrade() -> None:
-    """Drop the HNSW index."""
-    op.execute(
-        """
-        DROP INDEX IF EXISTS ix_memories_embedding_hnsw;
-        """
-    )
+    """The upgrade does not create any database objects."""
+    pass

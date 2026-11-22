@@ -424,44 +424,35 @@ def test_delete_document_allows_owned_document(
     assert session.committed is True
 
 
-def test_search_query_contains_user_ownership_filters():
-    service = make_service()
+def test_search_query_contains_user_ownership_filters(monkeypatch):
+    from services.embedding_service import EmbeddingUnavailableError
 
-    vector = service.embedding_service.create_embedding(
-        "python"
-    ).tolist()
+    class DisabledEmbedding:
+        def create_embedding(self, _text):
+            raise EmbeddingUnavailableError("low memory")
 
-    distance_expression = (
-        KnowledgeChunk.embedding.cosine_distance(
-            vector
-        )
+    session = FakeSession(None)
+    monkeypatch.setattr(
+        knowledge_module,
+        "Session",
+        lambda engine: session,
+    )
+    service = KnowledgeService(
+        embedding_service=DisabledEmbedding(),
+        reranker_service=FakeReranker(),
     )
 
-    from sqlalchemy import select
-
-    statement = (
-        select(
-            KnowledgeChunk,
-            distance_expression.label("distance"),
-        )
-        .join(
-            knowledge_module.KnowledgeDocument,
-            knowledge_module.KnowledgeDocument.id
-            == KnowledgeChunk.document_id,
-        )
-        .where(
-            KnowledgeChunk.user_id == "user-001",
-            knowledge_module.KnowledgeDocument.user_id
-            == "user-001",
-        )
+    service.search(
+        user_id="user-001",
+        query="python",
+        limit=5,
     )
 
-    sql = str(
-        statement
-    )
-
+    sql = str(session.last_statement)
     assert "knowledge_chunks.user_id" in sql
     assert "knowledge_documents.user_id" in sql
+    assert "knowledge_chunks.embedding IS NULL" not in sql
+
 
 
 def test_search_merges_lexical_matches_for_chunks_without_embeddings(
@@ -490,7 +481,6 @@ def test_search_merges_lexical_matches_for_chunks_without_embeddings(
                     embedding=[0.1, 0.2, 0.3],
                 ),
                 vector_document,
-                0.10,
             ),
         ],
         unembedded_rows=[
@@ -560,27 +550,27 @@ def test_search_can_rerank_candidates_after_similarity_filter(
                 FakeChunk(
                     document_id=7,
                     content="Alpha passage",
+                    embedding=[0.1, 0.2, 0.3],
                 ),
                 document_a,
-                0.10,
             ),
             (
                 FakeChunk(
                     document_id=8,
                     content="Beta passage",
                     chunk_index=1,
+                    embedding=[0.11, 0.21, 0.31],
                 ),
                 document_b,
-                0.20,
             ),
             (
                 FakeChunk(
                     document_id=9,
                     content="Low similarity passage",
                     chunk_index=2,
+                    embedding=[-1.0, 0.0, 0.0],
                 ),
                 document_c,
-                0.50,
             ),
         ],
     )
@@ -635,7 +625,7 @@ def test_search_can_rerank_candidates_after_similarity_filter(
 
     params = session.last_statement.compile().params
 
-    assert 24 in params.values()
+    assert 2000 in params.values()
 
 
 def test_search_falls_back_to_similarity_order_when_reranker_fails(
@@ -660,24 +650,24 @@ def test_search_falls_back_to_similarity_order_when_reranker_fails(
                 FakeChunk(
                     document_id=7,
                     content="Alpha passage",
+                    embedding=[0.1, 0.2, 0.3],
                 ),
                 FakeDocument(
                     id=7,
                     content="Alpha passage",
                 ),
-                0.10,
             ),
             (
                 FakeChunk(
                     document_id=8,
                     content="Beta passage",
                     chunk_index=1,
+                    embedding=[0.11, 0.21, 0.31],
                 ),
                 FakeDocument(
                     id=8,
                     content="Beta passage",
                 ),
-                0.20,
             ),
         ],
     )
@@ -726,24 +716,24 @@ def test_search_without_rerank_returns_similarity_order(
                 FakeChunk(
                     document_id=7,
                     content="Alpha passage",
+                    embedding=[0.1, 0.2, 0.3],
                 ),
                 FakeDocument(
                     id=7,
                     content="Alpha passage",
                 ),
-                0.10,
             ),
             (
                 FakeChunk(
                     document_id=8,
                     content="Beta passage",
                     chunk_index=1,
+                    embedding=[0.11, 0.21, 0.31],
                 ),
                 FakeDocument(
                     id=8,
                     content="Beta passage",
                 ),
-                0.20,
             ),
         ],
     )
@@ -840,7 +830,10 @@ def test_knowledge_search_uses_user_scoped_keyword_fallback_when_embeddings_disa
             raise EmbeddingUnavailableError("low memory")
 
     document = FakeDocument()
-    chunk = FakeChunk(content="Python guide: use RAG for AI retrieval.")
+    chunk = FakeChunk(
+        content="Python guide: use RAG for AI retrieval.",
+        embedding=[0.1, 0.2, 0.3],
+    )
     session = FakeSession(
         engine="fake-engine",
         search_rows=[(chunk, document)],

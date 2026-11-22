@@ -2,6 +2,7 @@ import services.embedding_service as embedding_module
 
 
 def test_embedding_service_loads_shared_model_only_on_first_use(monkeypatch):
+    monkeypatch.setenv("NOVA_LOCAL_EMBEDDINGS_ENABLED", "true")
     calls = []
 
     class FakeModel:

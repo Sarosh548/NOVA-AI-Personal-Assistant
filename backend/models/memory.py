@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 
-from pgvector.sqlalchemy import VECTOR
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import DateTime, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.base import Base
@@ -65,6 +64,6 @@ class Memory(Base):
     )
 
     embedding: Mapped[list[float] | None] = mapped_column(
-        VECTOR(384),
+        JSON,
         nullable=True,
     )

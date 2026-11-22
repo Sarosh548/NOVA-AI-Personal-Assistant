@@ -1346,6 +1346,9 @@ def test_web_search_weather_requires_a_location():
 
 def test_voice_assistant_comparison_prefers_recent_diverse_sources_without_redundant_searches(monkeypatch):
     service = WebSearchService(api_key="", searxng_endpoint="http://127.0.0.1:8080/search")
+    recent_published_date = (
+        datetime.now(timezone.utc) - timedelta(days=1)
+    ).isoformat()
     comparison_query = (
         "consumer AI voice assistants 2026 Gemini Live Amazon Alexa+ "
         "Apple Siri ChatGPT Voice capabilities limitations official sources reviews"
@@ -1357,25 +1360,25 @@ def test_voice_assistant_comparison_prefers_recent_diverse_sources_without_redun
             "title": "Gemini Live adds new voice capabilities",
             "url": "https://www.androidauthority.com/gemini-live-voice-2026/",
             "content": "Gemini Live supports more natural voice conversations and interruptions.",
-            "publishedDate": "2026-10-01T10:00:00+00:00",
+            "publishedDate": recent_published_date,
         },
         {
             "title": "Amazon makes its AI-powered Alexa+ free on Fire TV",
             "url": "https://techcrunch.com/2026/08/19/amazon-makes-its-ai-powered-alexa-free-on-fire-tv-no-prime-required/",
             "content": "Amazon said Alexa+ will roll out to compatible Fire TV devices.",
-            "publishedDate": "2026-08-19T09:00:00+00:00",
+            "publishedDate": recent_published_date,
         },
         {
             "title": "Apple details new Siri AI capabilities",
             "url": "https://www.theverge.com/2026/9/14/siri-ai",
             "content": "Apple described Siri capabilities powered by Apple Intelligence.",
-            "publishedDate": "2026-09-14T10:00:00+00:00",
+            "publishedDate": recent_published_date,
         },
         {
             "title": "ChatGPT Voice updates improve spoken conversations",
             "url": "https://www.engadget.com/chatgpt-voice-2026-update/",
             "content": "ChatGPT Voice supports spoken conversations and voice interaction.",
-            "publishedDate": "2026-10-04T08:00:00+00:00",
+            "publishedDate": recent_published_date,
         },
     ]
 

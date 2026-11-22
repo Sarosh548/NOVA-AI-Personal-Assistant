@@ -8,7 +8,6 @@ REQUIRED_RUNTIME_DISTRIBUTIONS = {
     "langgraph",
     "openai",
     "PyJWT",
-    "pgvector",
     "psycopg",
     "pydantic",
     "pydantic-settings",

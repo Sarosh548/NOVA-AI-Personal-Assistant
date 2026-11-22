@@ -1,12 +1,13 @@
 import re
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database.connection import engine
 from models.memory import Memory
 from services.embedding_service import EmbeddingService, EmbeddingUnavailableError
 from services.lexical_retrieval import lexical_relevance, lexical_terms
+from services.vector_similarity import cosine_similarity
 from services.llm_service import LLMService
 
 
@@ -82,97 +83,44 @@ class MemoryService:
         limit: int = 10,
         category: str | None = None,
     ) -> list[dict]:
-        """
-        Find semantically similar memories.
-
-        Similarity is used to find candidate memories.
-        Importance provides a small ranking boost.
-        """
-
+        """Find semantic matches from portable JSON embeddings."""
         if not 0.0 <= threshold <= 1.0:
-            raise ValueError(
-                "threshold must be between 0.0 and 1.0"
-            )
-
+            raise ValueError("threshold must be between 0.0 and 1.0")
         if limit < 1:
-            raise ValueError(
-                "limit must be greater than 0"
-            )
-
-        distance_expression = (
-            Memory.embedding.cosine_distance(
-                query_embedding
-            )
-        )
+            raise ValueError("limit must be greater than 0")
 
         filters = [
             Memory.user_id == user_id,
             Memory.embedding.is_not(None),
         ]
-
         if category is not None:
-            filters.append(
-                Memory.category == category
-            )
+            filters.append(Memory.category == category)
 
         statement = (
-            select(
-                Memory,
-                distance_expression.label("distance"),
-            )
+            select(Memory)
             .where(*filters)
-            .order_by(distance_expression)
-            .limit(limit)
+            .order_by(Memory.updated_at.desc())
+            .limit(500)
         )
 
-        results = session.execute(
-            statement
-        ).all()
-
-        similar_memories = []
-
-        for memory, distance in results:
-            distance = float(distance)
-
-            similarity = 1.0 - distance
-
+        matches = []
+        for memory in session.scalars(statement).all():
+            similarity = cosine_similarity(query_embedding, memory.embedding)
             if similarity < threshold:
                 continue
 
-            importance_boost = (
-                IMPORTANCE_BOOST.get(
-                    memory.importance,
-                    0.02,
-                )
-            )
+            importance_boost = IMPORTANCE_BOOST.get(memory.importance, 0.02)
+            matches.append({
+                "id": memory.id,
+                "memory": memory.memory_text,
+                "category": memory.category,
+                "importance": memory.importance,
+                "similarity": round(similarity, 4),
+                "ranking_score": round(similarity + importance_boost, 4),
+            })
 
-            ranking_score = (
-                similarity + importance_boost
-            )
-
-            similar_memories.append(
-                {
-                    "id": memory.id,
-                    "memory": memory.memory_text,
-                    "category": memory.category,
-                    "importance": memory.importance,
-                    "similarity": round(
-                        similarity,
-                        4,
-                    ),
-                    "ranking_score": round(
-                        ranking_score,
-                        4,
-                    ),
-                }
-            )
-
-        similar_memories.sort(
-            key=lambda item: item["ranking_score"],
-            reverse=True,
-        )
-
-        return similar_memories[:limit]
+        matches.sort(key=lambda item: item["ranking_score"], reverse=True)
+        return matches[:limit]
 
     def _create_memory(
         self,
@@ -484,7 +432,6 @@ class MemoryService:
             # 4. Search related memories in SAME category
             # -------------------------------------------------
             if embedding_list is not None:
-                session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
                 similar_memories = self._find_similar_by_embedding(
                     session=session,
                     user_id=user_id,
@@ -837,7 +784,6 @@ class MemoryService:
                     limit=limit,
                 )
 
-            session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
             return self._find_similar_by_embedding(
                 session=session,
                 user_id=user_id,

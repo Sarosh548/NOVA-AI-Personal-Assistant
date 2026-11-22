@@ -11,6 +11,7 @@ from models.knowledge_document import KnowledgeDocument
 from services.embedding_service import EmbeddingService, EmbeddingUnavailableError
 from services.lexical_retrieval import lexical_relevance, lexical_terms
 from services.reranker_service import RerankerService
+from services.vector_similarity import cosine_similarity
 from services.url_parser_service import (
     ParsedWebPage,
     WebPageParserService,
@@ -402,7 +403,10 @@ class KnowledgeService:
         statement = (
             select(KnowledgeChunk, KnowledgeDocument)
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
-            .where(KnowledgeDocument.user_id == user_id)
+            .where(
+                KnowledgeChunk.user_id == user_id,
+                KnowledgeDocument.user_id == user_id,
+            )
             .order_by(KnowledgeChunk.created_at.desc())
             .limit(1000)
         )
@@ -450,28 +454,14 @@ class KnowledgeService:
         )
 
         if not 0.0 <= threshold <= 1.0:
-            raise ValueError(
-                "threshold must be between 0.0 and 1.0"
-            )
-
+            raise ValueError("threshold must be between 0.0 and 1.0")
         if limit < 1:
-            raise ValueError(
-                "limit must be greater than 0"
-            )
-
+            raise ValueError("limit must be greater than 0")
         if candidate_limit is not None and candidate_limit < 1:
-            raise ValueError(
-                "candidate_limit must be greater than 0"
-            )
+            raise ValueError("candidate_limit must be greater than 0")
 
         retrieval_limit = (
-            max(
-                candidate_limit
-                or (
-                    limit * 3
-                ),
-                limit,
-            )
+            max(candidate_limit or (limit * 3), limit)
             if rerank
             else limit
         )
@@ -491,57 +481,19 @@ class KnowledgeService:
             else list(vector)
         )
 
-        user_chunk_ids = (
-            select(
-                KnowledgeChunk.id.label(
-                    "chunk_id"
-                ),
-            )
-            .where(
-                KnowledgeChunk.user_id
-                == user_id,
-                KnowledgeChunk.embedding.is_not(
-                    None
-                ),
-            )
-            .cte(
-                "user_knowledge_chunk_ids"
-            )
-            .prefix_with("MATERIALIZED")
-        )
-
-        distance_expression = (
-            KnowledgeChunk.embedding.cosine_distance(
-                query_embedding
-            )
-        )
-
-        statement = (
-            select(
-                KnowledgeChunk,
-                KnowledgeDocument,
-                distance_expression.label(
-                    "distance"
-                ),
-            )
-            .join(
-                user_chunk_ids,
-                user_chunk_ids.c.chunk_id
-                == KnowledgeChunk.id,
-            )
+        embedded_statement = (
+            select(KnowledgeChunk, KnowledgeDocument)
             .join(
                 KnowledgeDocument,
-                KnowledgeDocument.id
-                == KnowledgeChunk.document_id,
+                KnowledgeDocument.id == KnowledgeChunk.document_id,
             )
             .where(
-                KnowledgeDocument.user_id
-                == user_id,
+                KnowledgeChunk.user_id == user_id,
+                KnowledgeDocument.user_id == user_id,
+                KnowledgeChunk.embedding.is_not(None),
             )
-            .order_by(
-                distance_expression
-            )
-            .limit(retrieval_limit)
+            .order_by(KnowledgeChunk.created_at.desc())
+            .limit(2000)
         )
 
         unembedded_statement = (
@@ -560,73 +512,54 @@ class KnowledgeService:
         )
 
         with Session(engine) as session:
-            results = session.execute(statement).all()
+            embedded_results = session.execute(embedded_statement).all()
             unembedded_results = session.execute(unembedded_statement).all()
 
-            matches: list[dict] = []
+        matches: list[dict] = []
+        for chunk, document in embedded_results:
+            similarity = cosine_similarity(query_embedding, chunk.embedding)
+            if similarity < threshold:
+                continue
 
-            for chunk, document, distance in results:
-                similarity = 1.0 - float(
-                    distance
-                )
+            matches.append({
+                "document_id": document.id,
+                "title": document.title,
+                "source": document.source,
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
+                "similarity": round(similarity, 4),
+            })
 
-                if similarity < threshold:
-                    continue
-
-                matches.append(
-                    {
-                        "document_id": document.id,
-                        "title": document.title,
-                        "source": document.source,
-                        "chunk_index": chunk.chunk_index,
-                        "content": chunk.content,
-                        "similarity": round(
-                            similarity,
-                            4,
-                        ),
-                    }
-                )
-
-            for chunk, document in unembedded_results:
-                searchable_text = " ".join(
-                    part
-                    for part in (
-                        document.title,
-                        document.source or "",
-                        chunk.content,
-                    )
-                    if part
-                )
-                similarity = lexical_relevance(
-                    normalized_query,
-                    searchable_text,
-                )
-                if similarity <= 0:
-                    continue
-                matches.append(
-                    {
-                        "document_id": document.id,
-                        "title": document.title,
-                        "source": document.source,
-                        "chunk_index": chunk.chunk_index,
-                        "content": chunk.content,
-                        "similarity": round(similarity, 4),
-                    }
-                )
-
-            matches.sort(
-                key=lambda item: item["similarity"],
-                reverse=True,
+        for chunk, document in unembedded_results:
+            searchable_text = " ".join(
+                part
+                for part in (document.title, document.source or "", chunk.content)
+                if part
             )
+            similarity = lexical_relevance(normalized_query, searchable_text)
+            if similarity <= 0:
+                continue
 
-            if not rerank or not matches:
-                return matches[:limit]
+            matches.append({
+                "document_id": document.id,
+                "title": document.title,
+                "source": document.source,
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
+                "similarity": round(similarity, 4),
+            })
 
-            try:
-                return self.reranker_service.rerank(
-                    normalized_query,
-                    matches,
-                    top_k=limit,
-                )
-            except Exception:
-                return matches[:limit]
+        matches.sort(key=lambda item: item["similarity"], reverse=True)
+        matches = matches[:retrieval_limit]
+
+        if not rerank or not matches:
+            return matches[:limit]
+
+        try:
+            return self.reranker_service.rerank(
+                normalized_query,
+                matches,
+                top_k=limit,
+            )
+        except Exception:
+            return matches[:limit]

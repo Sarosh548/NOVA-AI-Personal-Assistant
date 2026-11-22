@@ -135,7 +135,7 @@ def _run_evaluation(
 
 def run_baseline() -> dict:
     """
-    Run the locked bi-encoder/pgvector retrieval baseline.
+    Run the locked bi-encoder retrieval baseline with portable stored embeddings.
 
     This keeps the original benchmark semantics unchanged:
     threshold=0.0 and rerank=False.

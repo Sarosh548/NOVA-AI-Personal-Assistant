@@ -3,14 +3,14 @@
 A modular AI personal assistant for text and real-time voice conversations, built with LangGraph and FastAPI — with persistent memory, semantic RAG, and permission-aware tool workflows.
 
 Live app: https://sarosh548.github.io/NOVA-AI-Personal-Assistant/
-Stack: Python · FastAPI · LangGraph · PostgreSQL/pgvector · LiveKit · WebSockets
+Stack: Python ? FastAPI ? LangGraph ? PostgreSQL ? JSON embeddings ? LiveKit ? WebSockets
 
 ## What NOVA does
 
 - **Text and real-time voice conversations** — LangGraph + FastAPI backend, with real-time voice via LiveKit and streaming responses over WebSockets
 - **Tool routing and task workflows** — routes requests to tools and task-oriented workflows instead of answering everything from the model alone
 - **Persistent conversation memory** — conversations are remembered across sessions, not treated as one-off chats
-- **Semantic RAG** — Sentence-Transformers embeddings with PostgreSQL/pgvector for context-aware retrieval
+- **Semantic RAG** ? Sentence-Transformers embeddings stored as portable JSON and cosine-ranked in Python, with a low-memory keyword fallback
 - **Document ingestion** — PDF and DOCX ingestion so uploaded documents can inform responses
 - **Web search** — live web search as one of NOVA's permission-aware workflows
 - **Permission-aware workflows** — web search, desktop actions, email, calendar and tasks are developed and tested as permission-aware workflows, rather than unrestricted actions
@@ -31,7 +31,7 @@ NOVA is a local-first personal AI workspace for natural conversation, saved user
 
 ## Current architecture
 
-- **Backend:** FastAPI, Python 3.12 virtual environment, SQLAlchemy, PostgreSQL, Alembic, pgvector, and a shared conversation execution graph.
+- **Backend:** FastAPI, Python 3.12 virtual environment, SQLAlchemy, PostgreSQL, Alembic, JSON-backed embeddings, and a shared conversation execution graph.
 - **Agent/execution:** intent parsing, planning, permission and confirmation policies, a tool router, task/reminder/calendar/workflow services, memory, and activity/audit records.
 - **Voice:** LiveKit WebRTC room transport with a Gemini Live realtime model; classic voice and optional OpenAI Realtime paths remain available for provider testing. The Windows startup script loads provider settings from the current user's Windows environment.
 - **Frontend:** React, TypeScript, and Vite; the local development server runs on port 5173.

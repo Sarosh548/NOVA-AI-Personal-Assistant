@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     DateTime,
+    JSON,
     ForeignKey,
     Index,
     Integer,
@@ -62,7 +62,7 @@ class KnowledgeChunk(Base):
     )
 
     embedding: Mapped[list[float] | None] = mapped_column(
-        VECTOR(384),
+        JSON,
         nullable=True,
     )
 

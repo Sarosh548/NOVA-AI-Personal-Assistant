@@ -11,7 +11,7 @@ The Blueprint deliberately uses Render's free plans so the first cloud smoke tes
 - Before using NOVA as a persistent personal assistant or inviting real users, upgrade PostgreSQL to a paid persistent plan, review the service plans/costs in Render, and confirm backup/restore needs. Do not select a paid plan unless you approve its recurring cost.
 - The production configuration intentionally fails closed when required provider credentials and security settings are missing. Do not work around that validation by switching the public service to development mode.
 
-Render's current plan limitations are documented in [Deploy for Free](https://render.com/docs/free). PostgreSQL supports pgvector; the startup script enables the extension, initializes the legacy schema baseline required by the migration chain, and runs Alembic before starting FastAPI: [Supported PostgreSQL extensions](https://render.com/docs/postgresql-extensions).
+The cloud startup script initializes the legacy schema baseline required by the migration chain and runs Alembic before starting FastAPI. Embeddings are stored as portable JSON and cosine-ranked in Python, so a managed PostgreSQL server does not need the pgvector extension.
 
 ## Deploy it
 

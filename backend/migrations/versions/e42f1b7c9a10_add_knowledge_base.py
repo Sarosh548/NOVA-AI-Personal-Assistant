@@ -10,7 +10,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from pgvector.sqlalchemy import VECTOR
 
 
 revision: str = "e42f1b7c9a10"
@@ -114,7 +113,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "embedding",
-            VECTOR(384),
+            sa.JSON(),
             nullable=True,
         ),
         sa.Column(
@@ -149,24 +148,10 @@ def upgrade() -> None:
         unique=False,
     )
 
-    op.execute(
-        """
-        CREATE INDEX ix_knowledge_chunks_embedding_hnsw
-        ON knowledge_chunks
-        USING hnsw (embedding vector_cosine_ops)
-        WHERE embedding IS NOT NULL;
-        """
-    )
 
 
 def downgrade() -> None:
     """Remove knowledge chunks and documents."""
-
-    op.execute(
-        """
-        DROP INDEX IF EXISTS ix_knowledge_chunks_embedding_hnsw;
-        """
-    )
 
     op.drop_index(
         "ix_knowledge_chunks_user_id",
