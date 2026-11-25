@@ -153,6 +153,10 @@ export function ConversationSurface() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editingTitle, setEditingTitle] = useState("")
   const [deleteId, setDeleteId] = useState<number | null>(null)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [errorAction, setErrorAction] = useState<"retry" | null>(null)
   const [retryPayload, setRetryPayload] = useState<RetryPayload | null>(null)
@@ -789,6 +793,119 @@ export function ConversationSurface() {
     }
   }
 
+  const allSelected =
+    conversations.length > 0 && selectedIds.size === conversations.length
+
+  // Drop selected ids that are no longer in the loaded list (for example
+  // after a background refresh) so the count and bulk delete stay honest.
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (current.size === 0) return current
+      const visible = new Set(conversations.map((item) => item.id))
+      const next = new Set([...current].filter((id) => visible.has(id)))
+      return next.size === current.size ? current : next
+    })
+  }, [conversations])
+
+  const toggleSelectionMode = () => {
+    if (bulkDeleting) return
+    setSelectionMode((current) => !current)
+    setSelectedIds(new Set())
+    setEditingId(null)
+    clearError()
+  }
+
+  const toggleSelected = (id: number) => {
+    if (bulkDeleting) return
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (bulkDeleting) return
+    setSelectedIds(
+      allSelected ? new Set() : new Set(conversations.map((item) => item.id)),
+    )
+  }
+
+  const confirmBulkDelete = async () => {
+    if (selectedIds.size === 0 || bulkDeleting) return
+
+    const targets = [...selectedIds]
+    setBulkDeleting(true)
+    clearError()
+
+    const results = await Promise.allSettled(
+      targets.map((id) => deleteConversation(id)),
+    )
+    const failedIds = new Set(
+      targets.filter((_, index) => results[index].status === "rejected"),
+    )
+    const activeWasDeleted =
+      activeId !== null && targets.includes(activeId) && !failedIds.has(activeId)
+
+    try {
+      const result = await refreshConversations()
+
+      setBulkDeleteOpen(false)
+
+      if (failedIds.size > 0) {
+        // Keep the conversations that could not be deleted selected and
+        // stay in selection mode so the user can retry or deselect them.
+        setSelectedIds(failedIds)
+        setError(
+          failedIds.size === 1
+            ? "NOVA could not delete 1 conversation. It is still selected."
+            : `NOVA could not delete ${failedIds.size} conversations. They are still selected.`,
+        )
+        setErrorAction(null)
+      } else {
+        setSelectedIds(new Set())
+        setSelectionMode(false)
+      }
+
+      if (activeWasDeleted) {
+        if (result.length === 0) {
+          setActiveId(null)
+          setMessages([])
+        } else {
+          setActiveId(result[0].id)
+          await loadMessages(result[0].id)
+        }
+      }
+    } catch (err) {
+      // The deletes themselves settled; only the list refresh failed.
+      // Mirror the outcome locally so deleted threads do not reappear.
+      setBulkDeleteOpen(false)
+      setConversations((current) =>
+        current.filter(
+          (item) => !targets.includes(item.id) || failedIds.has(item.id),
+        ),
+      )
+      if (failedIds.size > 0) {
+        setSelectedIds(failedIds)
+      } else {
+        setSelectedIds(new Set())
+        setSelectionMode(false)
+      }
+      if (activeWasDeleted) {
+        setActiveId(null)
+        setMessages([])
+      }
+      setError(formatApiError(err, "NOVA could not refresh your conversations."))
+      setErrorAction(null)
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const active = conversations.find((item) => item.id === activeId)
   const deleteTarget = conversations.find((item) => item.id === deleteId)
   const handleConfirmation = async (
@@ -855,26 +972,81 @@ export function ConversationSurface() {
             <div className="section-kicker">CONVERSATIONS</div>
             <h1>Your threads</h1>
           </div>
-          <button
-            className="icon-action"
-            type="button"
-            aria-label="New conversation"
-            onClick={newConversation}
-            disabled={sending || savingId !== null || deletingId !== null}
-          >
-            <Icon name="plus" size={18} />
-          </button>
+          <div className="conversation-sidebar-actions">
+            <button
+              className={
+                selectionMode
+                  ? "conversation-select-toggle active"
+                  : "conversation-select-toggle"
+              }
+              type="button"
+              aria-pressed={selectionMode}
+              onClick={toggleSelectionMode}
+              disabled={
+                sending ||
+                savingId !== null ||
+                deletingId !== null ||
+                bulkDeleting ||
+                conversations.length === 0
+              }
+            >
+              {selectionMode ? "Done" : "Select"}
+            </button>
+            <button
+              className="icon-action"
+              type="button"
+              aria-label="New conversation"
+              onClick={newConversation}
+              disabled={sending || savingId !== null || deletingId !== null || bulkDeleting}
+            >
+              <Icon name="plus" size={18} />
+            </button>
+          </div>
         </div>
 
         <button
           className="conversation-new-button"
           type="button"
           onClick={newConversation}
-          disabled={sending || savingId !== null || deletingId !== null}
+          disabled={sending || savingId !== null || deletingId !== null || bulkDeleting}
         >
           <Icon name="plus" size={16} />
           New conversation
         </button>
+
+        {selectionMode && conversations.length > 0 && (
+          <div className="conversation-bulk-bar">
+            <label className="conversation-bulk-select-all">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                ref={(node) => {
+                  if (node) {
+                    node.indeterminate = selectedIds.size > 0 && !allSelected
+                  }
+                }}
+                onChange={toggleSelectAll}
+                disabled={bulkDeleting}
+              />
+              Select all
+            </label>
+            <span className="conversation-bulk-count" aria-live="polite">
+              {selectedIds.size} selected
+            </span>
+            <button
+              className="danger-action conversation-bulk-delete"
+              type="button"
+              onClick={() => {
+                setBulkDeleteOpen(true)
+                clearError()
+              }}
+              disabled={selectedIds.size === 0 || bulkDeleting}
+            >
+              <Icon name="trash" size={13} />
+              Delete selected ({selectedIds.size})
+            </button>
+          </div>
+        )}
 
         <div className="conversation-list" aria-label="Conversations">
           {loading ? (
@@ -894,14 +1066,18 @@ export function ConversationSurface() {
               const isEditing = conversation.id === editingId
               const isSaving = conversation.id === savingId
               const isDeleting = conversation.id === deletingId
+              const isSelected = selectedIds.has(conversation.id)
 
               return (
                 <div
-                  className={
-                    conversation.id === activeId
-                      ? "conversation-list-item active"
-                      : "conversation-list-item"
-                  }
+                  className={[
+                    "conversation-list-item",
+                    conversation.id === activeId ? "active" : "",
+                    selectionMode ? "selecting" : "",
+                    isSelected ? "selected" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   key={conversation.id}
                 >
                   {isEditing ? (
@@ -943,15 +1119,34 @@ export function ConversationSurface() {
                     </form>
                   ) : (
                     <>
+                      {selectionMode && (
+                        <input
+                          className="conversation-item-checkbox"
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelected(conversation.id)}
+                          disabled={bulkDeleting}
+                          aria-label={`Select ${conversation.title || "conversation"}`}
+                        />
+                      )}
                       <button
                         className="conversation-list-select"
                         type="button"
-                        onClick={() => void selectConversation(conversation.id)}
-                        disabled={sending || savingId !== null || deletingId !== null}
+                        onClick={() =>
+                          selectionMode
+                            ? toggleSelected(conversation.id)
+                            : void selectConversation(conversation.id)
+                        }
+                        disabled={
+                          selectionMode
+                            ? bulkDeleting
+                            : sending || savingId !== null || deletingId !== null
+                        }
                       >
                         <span>{conversation.title || "New Conversation"}</span>
                         <small>{formatTime(conversation.updated_at)}</small>
                       </button>
+                      {!selectionMode && (
                       <div className="conversation-item-actions" aria-label="Conversation actions">
                         <button
                           className="conversation-item-action"
@@ -977,6 +1172,7 @@ export function ConversationSurface() {
                           <Icon name="trash" size={14} />
                         </button>
                       </div>
+                      )}
                     </>
                   )}
                   {isDeleting && <div className="conversation-item-progress" aria-hidden="true" />}
@@ -1169,6 +1365,49 @@ export function ConversationSurface() {
                 disabled={deletingId !== null}
               >
                 {deletingId !== null ? "Deleting…" : "Delete conversation"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bulkDeleteOpen && (
+        <div className="conversation-dialog-backdrop">
+          <div
+            className="conversation-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="conversation-bulk-delete-title"
+          >
+            <div className="section-kicker">DELETE CONVERSATIONS</div>
+            <h3 id="conversation-bulk-delete-title">
+              Remove {selectedIds.size}{" "}
+              {selectedIds.size === 1 ? "thread" : "threads"}?
+            </h3>
+            <p>
+              The selected conversations will be permanently deleted. This
+              cannot be undone.
+            </p>
+            <div className="conversation-dialog-actions">
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => setBulkDeleteOpen(false)}
+                disabled={bulkDeleting}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger-action"
+                type="button"
+                onClick={() => void confirmBulkDelete()}
+                disabled={bulkDeleting || selectedIds.size === 0}
+              >
+                {bulkDeleting
+                  ? "Deleting…"
+                  : `Delete ${selectedIds.size} ${
+                      selectedIds.size === 1 ? "conversation" : "conversations"
+                    }`}
               </button>
             </div>
           </div>
