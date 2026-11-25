@@ -8,6 +8,7 @@
     "Segoe UI",
     sans-serif;
   color: #f5f7fb;
+  color-scheme: dark;
   background: #090b10;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -2691,6 +2692,15 @@ p {
   background: rgba(255,255,255,.025);
   font: inherit;
   font-size: 12px;
+}
+
+/* Native select popups: without styled options (and the dark
+   color-scheme declared on :root) browsers paint the open option list
+   with the default light popup background, while the selects above use
+   a near-white text colour — options looked invisible until hovered. */
+select option {
+  color: var(--text);
+  background: var(--panel-strong);
 }
 
 .field textarea,
@@ -5773,4 +5783,103 @@ button:disabled {
   }
   .nova-app.voice-app .gemini-live-search-source strong { font-size: 12px; }
   .nova-app.voice-app .gemini-live-search-source p { font-size: 11px; }
+}
+
+/* Conversation bulk selection */
+
+.conversation-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conversation-select-toggle {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.conversation-select-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: rgba(255,255,255,.05);
+}
+
+.conversation-select-toggle.active {
+  color: var(--text);
+  border-color: rgba(185,247,255,.3);
+  background: var(--accent-soft);
+}
+
+.conversation-select-toggle:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.conversation-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.conversation-bulk-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.conversation-bulk-count {
+  color: var(--muted-soft);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.conversation-bulk-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 10px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.conversation-list-item.selecting {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.conversation-list-item.selected {
+  border-color: rgba(185,247,255,.28);
+  background: rgba(185,247,255,.06);
+}
+
+.conversation-item-checkbox {
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  margin: 0 0 0 6px;
+  accent-color: #9edff0;
+  cursor: pointer;
+}
+
+.conversation-item-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: .5;
 }
